@@ -1,4 +1,3 @@
-import { useQuery } from '@tanstack/react-query'
 import { listen } from '@tauri-apps/api/event'
 import React, { useCallback, useEffect, useMemo, useRef } from 'react'
 import {
@@ -15,6 +14,7 @@ import {
   getRunningMode,
   getSystemProxy,
 } from '@/services/cmds'
+import { useQuery } from '@/services/query-client'
 import { queryClient } from '@/services/query-client'
 
 import {

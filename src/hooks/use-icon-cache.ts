@@ -1,8 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { useMemo } from 'react'
 
 import { downloadIconCache } from '@/services/cmds'
+import { useQuery } from '@/services/query-client'
 
 export interface UseIconCacheOptions {
   icon?: string | null

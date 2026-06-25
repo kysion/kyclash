@@ -1,4 +1,3 @@
-import { useQuery } from '@tanstack/react-query'
 import { selectNodeForGroup } from 'tauri-plugin-mihomo-api'
 
 import {
@@ -7,6 +6,7 @@ import {
   patchProfile,
   patchProfilesConfig,
 } from '@/services/cmds'
+import { useQuery } from '@/services/query-client'
 import { queryClient } from '@/services/query-client'
 import { debugLog } from '@/utils/debug'
 

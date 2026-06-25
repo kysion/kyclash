@@ -1,8 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
 import { getRunningMode, isAdmin, isServiceAvailable } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
+import { useQuery } from '@/services/query-client'
 
 import { useVerge } from './use-verge'
 

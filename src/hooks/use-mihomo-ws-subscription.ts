@@ -1,7 +1,8 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocalStorage } from 'foxact/use-local-storage'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { type Message, type MihomoWebSocket } from 'tauri-plugin-mihomo-api'
+
+import { queryClient, useQuery } from '@/services/query-client'
 
 export const RECONNECT_DELAY_MS = 1000
 
@@ -195,8 +196,6 @@ export const useMihomoWsSubscription = <T>(
   const responseCacheKey =
     subscriptionCacheKey ?? lastSubscriptionCacheKeyRef.current
 
-  const queryClient = useQueryClient()
-
   const wsRef = useRef<MihomoWebSocket | null>(null)
 
   const resolveNextData = useCallback(
@@ -211,7 +210,7 @@ export const useMihomoWsSubscription = <T>(
       }
       return data ?? fallbackData
     },
-    [queryClient, fallbackData],
+    [fallbackData],
   )
 
   const response = useQuery<T>({
@@ -355,7 +354,7 @@ export const useMihomoWsSubscription = <T>(
       queryClient.removeQueries({ queryKey: [subscriptionCacheKey] })
     }
     setDate(Date.now())
-  }, [queryClient, subscriptionCacheKey, setDate])
+  }, [subscriptionCacheKey, setDate])
 
   return { response, refresh, subscriptionCacheKey: responseCacheKey, wsRef }
 }

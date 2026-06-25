@@ -1,5 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
-
+import { useQuery } from '@/services/query-client'
 import { queryClient } from '@/services/query-client'
 import { checkUpdateSafe } from '@/services/update'
 

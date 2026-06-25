@@ -10,7 +10,6 @@ import {
   Typography,
 } from '@mui/material'
 import { useTheme } from '@mui/material/styles'
-import { useQuery } from '@tanstack/react-query'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual'
 import { useLockFn } from 'ahooks'
 import {
@@ -34,6 +33,7 @@ import { useVerge } from '@/hooks/use-verge'
 import { useProxiesData } from '@/providers/app-data-context'
 import { calcuProxies, updateProxyChainConfigInRuntime } from '@/services/cmds'
 import delayManager from '@/services/delay'
+import { useQuery } from '@/services/query-client'
 import { debugLog } from '@/utils/debug'
 
 import { ScrollTopButton } from '../layout/scroll-top-button'

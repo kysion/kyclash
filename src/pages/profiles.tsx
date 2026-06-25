@@ -21,7 +21,6 @@ import {
   TextSnippetOutlined,
 } from '@mui/icons-material'
 import { Box, Button, Divider, Grid, IconButton, Stack } from '@mui/material'
-import { useQuery } from '@tanstack/react-query'
 import { TauriEvent } from '@tauri-apps/api/event'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { readTextFile } from '@tauri-apps/plugin-fs'
@@ -65,6 +64,7 @@ import {
   updateProfile,
 } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
+import { useQuery } from '@/services/query-client'
 import { queryClient } from '@/services/query-client'
 import {
   useLoadingCache,
