@@ -27,7 +27,7 @@ import {
   styled,
 } from '@mui/material'
 import { useLockFn } from 'ahooks'
-import { dump, load } from 'js-yaml'
+import yaml from 'js-yaml'
 import {
   startTransition,
   useCallback,
@@ -407,7 +407,7 @@ export const RulesEditorViewer = (props: Props) => {
   }
   const fetchContent = useCallback(async () => {
     const data = await readProfileFile(property)
-    const obj = load(data) as ISeqProfileConfig | null
+    const obj = yaml.load(data) as ISeqProfileConfig | null
 
     setPrependSeq(obj?.prepend || [])
     setAppendSeq(obj?.append || [])
@@ -422,7 +422,7 @@ export const RulesEditorViewer = (props: Props) => {
       return
     }
 
-    const obj = load(currData) as ISeqProfileConfig | null
+    const obj = yaml.load(currData) as ISeqProfileConfig | null
     startTransition(() => {
       setPrependSeq(obj?.prepend ?? [])
       setAppendSeq(obj?.append ?? [])
@@ -439,7 +439,7 @@ export const RulesEditorViewer = (props: Props) => {
     const serialize = () => {
       try {
         setCurrData(
-          dump(
+          yaml.dump(
             { prepend: prependSeq, append: appendSeq, delete: deleteSeq },
             { forceQuotes: true },
           ),
@@ -471,13 +471,13 @@ export const RulesEditorViewer = (props: Props) => {
     const mergeData = await readProfileFile(mergeUid) // merge配置文件
     const globalMergeData = await readProfileFile('Merge') // global merge配置文件
 
-    const rulesObj = load(data) as { rules: [] } | null
+    const rulesObj = yaml.load(data) as { rules: [] } | null
 
-    const originGroupsObj = load(data) as {
+    const originGroupsObj = yaml.load(data) as {
       'proxy-groups': IProxyGroupConfig[]
     } | null
     const originGroups = originGroupsObj?.['proxy-groups'] || []
-    const moreGroupsObj = load(groupsData) as ISeqProfileConfig | null
+    const moreGroupsObj = yaml.load(groupsData) as ISeqProfileConfig | null
     const rawPrependGroups = moreGroupsObj?.['prepend']
     const morePrependGroups = Array.isArray(rawPrependGroups)
       ? (rawPrependGroups as IProxyGroupConfig[])
@@ -503,29 +503,29 @@ export const RulesEditorViewer = (props: Props) => {
       moreAppendGroups,
     )
 
-    const originRuleSetObj = load(data) as {
+    const originRuleSetObj = yaml.load(data) as {
       'rule-providers': Record<string, unknown>
     } | null
     const originRuleSet = originRuleSetObj?.['rule-providers'] || {}
-    const moreRuleSetObj = load(mergeData) as {
+    const moreRuleSetObj = yaml.load(mergeData) as {
       'rule-providers': Record<string, unknown>
     } | null
     const moreRuleSet = moreRuleSetObj?.['rule-providers'] || {}
-    const globalRuleSetObj = load(globalMergeData) as {
+    const globalRuleSetObj = yaml.load(globalMergeData) as {
       'rule-providers': Record<string, unknown>
     } | null
     const globalRuleSet = globalRuleSetObj?.['rule-providers'] || {}
     const ruleSet = Object.assign({}, originRuleSet, moreRuleSet, globalRuleSet)
 
-    const originSubRuleObj = load(data) as {
+    const originSubRuleObj = yaml.load(data) as {
       'sub-rules': Record<string, unknown>
     } | null
     const originSubRule = originSubRuleObj?.['sub-rules'] || {}
-    const moreSubRuleObj = load(mergeData) as {
+    const moreSubRuleObj = yaml.load(mergeData) as {
       'sub-rules': Record<string, unknown>
     } | null
     const moreSubRule = moreSubRuleObj?.['sub-rules'] || {}
-    const globalSubRuleObj = load(globalMergeData) as {
+    const globalSubRuleObj = yaml.load(globalMergeData) as {
       'sub-rules': Record<string, unknown>
     } | null
     const globalSubRule = globalSubRuleObj?.['sub-rules'] || {}
