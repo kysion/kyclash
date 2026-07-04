@@ -168,31 +168,48 @@ pub fn on_web_content_process_terminated(webview: &tauri::Webview) {
         webview.label()
     );
 
-    // 关键步骤：清理 Rust 侧所有 Mihomo WebSocket 订阅。
-    // 旧页面遗留的孤儿订阅（traffic/memory/connections/logs）自此停止向已死亡的
-    // IPC Channel 推送数据，阻断 ChannelDataIpcQueue 泄漏；
-    // 托盘速率任务的订阅也会被一并关闭，但其内部循环会在约 1 秒后自动重连。
-    crate::process::AsyncHandler::spawn(|| async move {
+    let window = webview.window();
+    let is_user_visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+
+    // 懒重载标记仅供主窗口；其它 webview（update-splash）无消费通道，不可见时直接 reload 兜底
+    let is_main_window = webview.label() == "main";
+    let reload_now = is_user_visible || !is_main_window;
+
+    if !reload_now {
+        // 主窗口不可见：置标记，延迟到下次 activate_window / reload_main_window_if_needed 再 reload
+        WEBVIEW_NEEDS_RELOAD.store(true, std::sync::atomic::Ordering::SeqCst);
+        logging!(info, Type::Window, "窗口不可见，页面将在下次打开窗口时重载");
+    }
+
+    // 清理全部 Mihomo WS 订阅，阻断 ChannelDataIpcQueue 泄漏（托盘速率任务约 1s 后自重连）。
+    // reload 必须与清理同任务、排在其后，否则清理可能误清重载后新页面的订阅（竞态）。
+    let webview = webview.clone();
+    crate::process::AsyncHandler::spawn(move || async move {
         if let Err(err) = handle::Handle::mihomo().await.clear_all_ws_connections().await {
             logging!(warn, Type::Window, "清理 Mihomo WebSocket 连接失败: {err}");
         } else {
             logging!(info, Type::Window, "已清理全部 Mihomo WebSocket 连接");
         }
+        if reload_now {
+            logging_error!(Type::Window, webview.reload());
+        }
     });
+}
 
-    // is_user_visible：窗口是否处于用户可感知的可见状态（未隐藏且未最小化）
-    let window = webview.window();
-    let is_user_visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
-
-    if is_user_visible {
-        // 关键步骤：窗口正被用户看着，立即 reload。加载请求会让 WKWebView
-        // 自动重新拉起渲染进程，恢复页面内容（解决白屏）。
-        logging_error!(Type::Window, webview.reload());
-    } else {
-        // 关键步骤：窗口不可见，延迟到下次激活窗口时再 reload（见
-        // WindowManager::activate_window），避免在内存压力下重建无人观看的页面。
-        WEBVIEW_NEEDS_RELOAD.store(true, std::sync::atomic::Ordering::SeqCst);
-        logging!(info, Type::Window, "窗口不可见，页面将在下次打开窗口时重载");
+/// 消费待重载标记并 reload 主窗口（macOS）。
+/// 兜底原生取消最小化（Dock 缩略图/调度中心/窗口菜单）只触发 Focused(true)、不走
+/// activate_window 的情况。与 activate_window 共用 swap 标记，先取先得、不重复 reload。
+#[cfg(target_os = "macos")]
+pub fn reload_main_window_if_needed() {
+    if !take_webview_needs_reload() {
+        return;
+    }
+    let Some(window) = crate::utils::window_manager::WindowManager::get_main_window() else {
+        return;
+    };
+    logging!(info, Type::Window, "渲染进程曾被系统终止，窗口聚焦后重载页面");
+    if let Err(e) = window.reload() {
+        logging!(warn, Type::Window, "重载页面失败: {e}");
     }
 }
 

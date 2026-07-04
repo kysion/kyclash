@@ -458,6 +458,11 @@ pub fn run() {
                 event_handlers::handle_window_close(&event);
             }
             tauri::WindowEvent::Focused(focused) => {
+                // 兜底：原生取消最小化只触发 Focused、不走 activate_window（macOS）
+                #[cfg(target_os = "macos")]
+                if focused {
+                    crate::utils::resolve::window::reload_main_window_if_needed();
+                }
                 event_handlers::handle_window_focus(focused);
             }
             #[cfg(target_os = "macos")]
