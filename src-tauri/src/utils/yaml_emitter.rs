@@ -1,104 +1,113 @@
-use serde::{Serialize, ser};
+use serde::Serialize;
 use serde_yaml_ng::Result;
 
 pub fn to_mihomo_config_string<T: Serialize>(data: &T) -> Result<String> {
-    let value = serde_yaml_ng::to_value(data)?;
-    Ok(emit_value(&value, 0, &DEFAULT_OPTIONS)? + "\n")
+    let yaml = serde_yaml_ng::to_string(data)?;
+    Ok(quote_fake_ip_filter_wildcards(&yaml))
 }
 
-#[derive(Clone)]
-struct Options {
-    checkout_wildcard: bool,
+fn quote_fake_ip_filter_wildcards(yaml: &str) -> String {
+    let mut result = String::with_capacity(yaml.len());
+    let mut in_fake_ip_filter = false;
+    let mut fake_ip_filter_indent = 0;
+
+    for line in yaml.lines() {
+        let indent = leading_spaces(line);
+        let trimmed = &line[indent..];
+
+        if in_fake_ip_filter && indent <= fake_ip_filter_indent && !trimmed.starts_with("- ") {
+            in_fake_ip_filter = false;
+        }
+
+        if !in_fake_ip_filter && trimmed == "fake-ip-filter:" {
+            in_fake_ip_filter = true;
+            fake_ip_filter_indent = indent;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        if in_fake_ip_filter && indent >= fake_ip_filter_indent && trimmed.starts_with("- ") {
+            result.push_str(&line[..indent]);
+            result.push_str("- ");
+            result.push_str(&quote_wildcard_item(&trimmed[2..]));
+            result.push('\n');
+            continue;
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    result
 }
 
-const DEFAULT_OPTIONS: Options = Options {
-    checkout_wildcard: false,
-};
+fn leading_spaces(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
 
-fn serde_yaml_ng_to_string_without_last<T: ?Sized + ser::Serialize>(value: &T) -> Result<String> {
-    let value = serde_yaml_ng::to_string(value)?;
-    if value.ends_with('\n') {
-        Ok(value[..value.len() - 1].to_string())
+fn quote_wildcard_item(item: &str) -> String {
+    if !item.starts_with('\"') && !item.starts_with('\'') && contains_wildcard(item) {
+        quote_string(item)
     } else {
-        Ok(value)
+        item.to_string()
     }
-}
-
-fn emit_value(value: &serde_yaml_ng::Value, depth: usize, options: &Options) -> Result<String> {
-    match value {
-        serde_yaml_ng::Value::Null => serde_yaml_ng_to_string_without_last(&value),
-        serde_yaml_ng::Value::Bool(b) => serde_yaml_ng_to_string_without_last(&b),
-        serde_yaml_ng::Value::Number(number) => serde_yaml_ng_to_string_without_last(&number),
-        serde_yaml_ng::Value::String(s) => emit_string(s, options),
-        serde_yaml_ng::Value::Sequence(values) => {
-            if values.is_empty() {
-                return Ok("[]".to_string());
-            }
-            let mut result = String::new();
-            let mut first = true;
-            for value in values {
-                if !first || depth > 0 {
-                    result.push('\n');
-                }
-                first = false;
-                result.push_str(&"  ".repeat(depth));
-                result.push_str("- ");
-                result.push_str(&emit_value(value, depth + 1, options)?);
-            }
-            Ok(result)
-        }
-        serde_yaml_ng::Value::Mapping(mapping) => {
-            if mapping.is_empty() {
-                return Ok("{}".to_string());
-            }
-            let mut result = String::new();
-            let mut first = true;
-            for (key, value) in mapping {
-                if !first || depth > 0 {
-                    result.push('\n');
-                }
-                first = false;
-                result.push_str(&"  ".repeat(depth));
-                let new_key = emit_value(key, depth + 1, options)?;
-                result.push_str(&new_key);
-                result.push_str(": ");
-                let mut value_emiter_options = options.clone();
-                if need_checkout_wildcard(key) {
-                    value_emiter_options.checkout_wildcard = true;
-                }
-                result.push_str(&emit_value(value, depth + 1, &value_emiter_options)?);
-            }
-            Ok(result)
-        }
-        serde_yaml_ng::Value::Tagged(tagged_value) => {
-            let mut result = String::new();
-            result.push_str(&format!("!{} ", tagged_value.tag));
-            result.push_str(&emit_value(&tagged_value.value, depth, options)?);
-            Ok(result)
-        }
-    }
-}
-
-fn emit_string(s: &str, options: &Options) -> Result<String> {
-    let mut s = serde_yaml_ng_to_string_without_last(s)?;
-    if !s.starts_with('\"') && !s.starts_with('\'') && options.checkout_wildcard && contains_wildcard(&s) {
-        s = quote_string(&s)
-    }
-    Ok(s)
 }
 
 fn quote_string(s: &str) -> String {
     "\'".to_string() + s.replace('\'', "''").as_str() + "\'"
 }
 
-fn need_checkout_wildcard(key: &serde_yaml_ng::Value) -> bool {
-    if let serde_yaml_ng::Value::String(key_str) = key {
-        key_str == "fake-ip-filter"
-    } else {
-        false
-    }
-}
-
 fn contains_wildcard(value: &str) -> bool {
     value.contains('*') || value.starts_with('+') || value.starts_with('.')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_mihomo_config_string;
+
+    fn roundtrip(input: &str) {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(input).expect("input yaml should parse");
+        let output = to_mihomo_config_string(&value).expect("yaml should serialize");
+        let reparsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&output).expect("serialized yaml should parse");
+
+        assert_eq!(reparsed, value);
+    }
+
+    #[test]
+    fn quotes_fake_ip_filter_wildcards_without_changing_values() {
+        let input = r#"
+dns:
+  fake-ip-filter:
+    - "*.lan"
+    - "+.market.xiaomi.com"
+    - ".example.com"
+    - "time.*.com"
+    - "plain.example.com"
+"#;
+
+        roundtrip(input);
+
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(input).expect("input yaml should parse");
+        let output = to_mihomo_config_string(&value).expect("yaml should serialize");
+
+        assert!(output.contains("- '*.lan'"));
+        assert!(output.contains("- '+.market.xiaomi.com'"));
+        assert!(output.contains("- '.example.com'"));
+        assert!(output.contains("- 'time.*.com'"));
+        assert!(output.contains("- plain.example.com"));
+    }
+
+    #[test]
+    fn nested_multiline_strings_roundtrip() {
+        roundtrip(
+            r#"
+items:
+  - name: demo
+    desc: |
+      line1
+      line2
+"#,
+        );
+    }
 }
