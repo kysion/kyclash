@@ -17,6 +17,8 @@
 - 修复 JS 脚本验证因 console 方法调用导致的执行失败问题
 - 修复 macOS 内存压力下 WebView 渲染进程被系统终止引发的白屏与主进程内存泄漏
 - 删除覆盖全局热键开关的冗余写入
+- 修复编辑节点下base64解码未能正确处理非ASCII字符
+- 修复订阅规则编辑器自定义规则偶发显示为空的问题
 
 <details>
 <summary><strong> ✨ 新增功能 </strong></summary>
