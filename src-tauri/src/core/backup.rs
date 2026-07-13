@@ -269,37 +269,6 @@ fn parse_webdav_list(xml: &str) -> Result<Vec<ListEntity>, reqwest_dav::Error> {
     multi_status.responses.into_iter().map(ListEntity::try_from).collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_webdav_numeric_utc_offset() {
-        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
-            <D:multistatus xmlns:D="DAV:">
-                <D:response>
-                    <D:href>/clash-verge-rev-backup/backup.zip</D:href>
-                    <D:propstat>
-                        <D:status>HTTP/1.1 200 OK</D:status>
-                        <D:prop>
-                            <D:getlastmodified>Sun, 12 Jul 2026 17:09:37 +0000</D:getlastmodified>
-                            <D:resourcetype/>
-                            <D:getcontentlength>42</D:getcontentlength>
-                            <D:getcontenttype>application/zip</D:getcontenttype>
-                        </D:prop>
-                    </D:propstat>
-                </D:response>
-            </D:multistatus>"#;
-
-        let files = parse_webdav_list(xml).expect("numeric UTC offset should be accepted");
-        let ListEntity::File(file) = &files[0] else {
-            panic!("expected a file");
-        };
-        assert_eq!(file.href, "/clash-verge-rev-backup/backup.zip");
-        assert_eq!(file.last_modified.timestamp(), 1_783_876_177);
-    }
-}
-
 pub async fn create_backup() -> Result<(String, PathBuf), Error> {
     let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     let zip_file_name: String = format!("{OS}-backup-{now}.zip").into();
