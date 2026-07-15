@@ -90,7 +90,7 @@ impl Handle {
             return;
         }
 
-        NotificationSystem::send_event(event);
+        NotificationSystem::send_event(Self::app_handle().clone(), event);
     }
 }
 
