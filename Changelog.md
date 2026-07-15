@@ -43,6 +43,7 @@
 <details>
 <summary><strong> ✨ 新增功能 </strong></summary>
 
+- **Mihomo(Meta) 内核升级至 v1.19.28**
 - 增加 TrustTunnel、OpenVPN、Tailscale、GostRelay 节点显示支持
 - 全局扩展脚本增加恢复默认按钮
 - DNS 添加 fake-ip-range6 可配置项
@@ -63,6 +64,7 @@
 - 支持 Provider 节点延迟检测
 - 优化页面不可见时的 Mihomo WebSocket 订阅，减少后台资源占用
 - 代理组支持分别恢复普通模式和链式代理模式的滚动位置
+- 重构改进订阅配置切换逻辑
 
 </details>
 

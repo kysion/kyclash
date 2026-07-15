@@ -93,6 +93,10 @@ export async function getRuntimeConfig() {
   return invoke<IConfigData | null>('get_runtime_config')
 }
 
+export async function getRuntimeProxyGroupOrder() {
+  return invoke<string[]>('get_runtime_proxy_group_order')
+}
+
 export async function getRuntimeYaml() {
   return invoke<string | null>('get_runtime_yaml')
 }
@@ -132,10 +136,12 @@ export async function calcuProxies(): Promise<{
   records: Record<string, IProxyItem>
   proxies: IProxyItem[]
 }> {
-  const [proxyResponse, providerResponse] = await Promise.all([
-    getProxies(),
-    calcuProxyProviders(),
-  ])
+  const [proxyResponse, providerResponse, runtimeGroupOrder] =
+    await Promise.all([
+      getProxies(),
+      calcuProxyProviders(),
+      getRuntimeProxyGroupOrder(),
+    ])
 
   const proxyRecord = proxyResponse.proxies
   const providerRecord = providerResponse
@@ -198,6 +204,19 @@ export async function calcuProxies(): Promise<{
       })
       .concat(globalGroups)
   }
+
+  const groupOrder = new Map(
+    runtimeGroupOrder.map((name, index) => [name, index]),
+  )
+
+  groups.sort((a, b) => {
+    const aIndex = groupOrder.get(a.name) ?? Number.MAX_SAFE_INTEGER
+    const bIndex = groupOrder.get(b.name) ?? Number.MAX_SAFE_INTEGER
+    if (aIndex !== bIndex) return aIndex - bIndex
+    if (a.name < b.name) return -1
+    if (a.name > b.name) return 1
+    return 0
+  })
 
   const proxies = [direct, reject].concat(
     Object.values(proxyRecord).filter(
