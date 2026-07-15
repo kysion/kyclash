@@ -379,7 +379,7 @@ export interface TranslationResources {
             importSuccess: string
             profileReactivated: string
             profileSwitched: string
-            switchInterrupted: string
+            switchBusy: string
           }
         }
         importForm: {

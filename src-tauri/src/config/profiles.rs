@@ -3,7 +3,7 @@ use super::{
     prfitem::{PrfItem, PrfSelected},
 };
 use crate::{
-    core::handle,
+    core::{handle, tray::Tray},
     utils::{
         dirs::{self, PathBufExec as _},
         help,
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Mapping;
 use smartstring::alias::String;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         LazyLock,
         atomic::{AtomicU64, Ordering},
@@ -762,6 +762,73 @@ async fn select_node_with_timeout(group_name: &String, node: &String) -> Result<
     .with_context(|| format!("failed to select node [{node}] for group [{group_name}]"))
 }
 
+fn remaining_activations(
+    activations: &[(String, String)],
+    completed: &HashMap<String, String>,
+) -> Vec<(String, String)> {
+    activations
+        .iter()
+        .filter(|(group_name, node)| completed.get(group_name) != Some(node))
+        .cloned()
+        .collect()
+}
+
+async fn apply_activations(
+    activations: &[(String, String)],
+    completed: &mut HashMap<String, String>,
+    generation: u64,
+) -> Option<usize> {
+    let mut activated_count = 0;
+    for (group_name, node) in remaining_activations(activations, completed) {
+        if !is_activation_current(generation) {
+            return None;
+        }
+        match select_node_with_timeout(&group_name, &node).await {
+            Ok(()) => {
+                if !is_activation_current(generation) {
+                    return None;
+                }
+                logging!(
+                    info,
+                    Type::Config,
+                    "Selected node for proxy: {group_name}, node: {node}"
+                );
+                completed.insert(group_name, node);
+                activated_count += 1;
+            }
+            Err(err) => logging!(error, Type::Config, "{err:#}"),
+        }
+        if !is_activation_current(generation) {
+            return None;
+        }
+    }
+    Some(activated_count)
+}
+
+async fn update_tray_after_activation(generation: u64) {
+    if !is_activation_current(generation) {
+        return;
+    }
+    if let Err(err) = Tray::global().update_tooltip().await {
+        logging!(
+            warn,
+            Type::Config,
+            "failed to update tray tooltip after profile switch: {err:#}"
+        );
+    }
+
+    if !is_activation_current(generation) {
+        return;
+    }
+    if let Err(err) = Tray::global().update_menu().await {
+        logging!(
+            warn,
+            Type::Config,
+            "failed to update tray menu after profile switch: {err:#}"
+        );
+    }
+}
+
 async fn persist_reconciled_selected(
     profile_uid: &String,
     original_selected: &[PrfSelected],
@@ -812,35 +879,55 @@ async fn activate_selected_nodes_worker(
         return Ok(());
     }
 
-    let (previous_snapshot, current_snapshot) = if selected_nodes_need_confirmation(&selected, &first_snapshot) {
+    let needs_confirmation = selected_nodes_need_confirmation(&selected, &first_snapshot);
+    let immediate_plan = reconcile_selected_nodes(&selected, None, &first_snapshot);
+    logging!(
+        debug,
+        Type::Config,
+        "immediate selected nodes activation plan: {immediate_plan:?}"
+    );
+
+    let mut completed_activations = HashMap::new();
+    if apply_activations(&immediate_plan.activations, &mut completed_activations, generation)
+        .await
+        .is_none()
+    {
+        return Ok(());
+    }
+
+    if is_activation_current(generation) {
+        handle::Handle::refresh_clash();
+    }
+
+    let plan = if needs_confirmation {
         tokio::time::sleep(SELECTED_NODES_RECHECK_DELAY).await;
         if !is_activation_current(generation) {
             return Ok(());
         }
-        let current_snapshot = fetch_proxies_with_timeout().await?;
-        (Some(first_snapshot), current_snapshot)
-    } else {
-        (None, first_snapshot)
-    };
-    if !is_activation_current(generation) {
-        return Ok(());
-    }
-
-    let plan = reconcile_selected_nodes(&selected, previous_snapshot.as_ref(), &current_snapshot);
-    logging!(debug, Type::Config, "selected nodes activation plan: {plan:?}");
-
-    for (group_name, node) in &plan.activations {
+        let second_snapshot = fetch_proxies_with_timeout().await?;
         if !is_activation_current(generation) {
             return Ok(());
         }
-        match select_node_with_timeout(group_name, node).await {
-            Ok(()) => logging!(
-                info,
-                Type::Config,
-                "Selected node for proxy: {group_name}, node: {node}"
-            ),
-            Err(err) => logging!(error, Type::Config, "{err:#}"),
+        let confirmed_plan = reconcile_selected_nodes(&selected, Some(&first_snapshot), &second_snapshot);
+        logging!(
+            debug,
+            Type::Config,
+            "confirmed selected nodes activation plan: {confirmed_plan:?}"
+        );
+        let Some(confirmed_activated_count) =
+            apply_activations(&confirmed_plan.activations, &mut completed_activations, generation).await
+        else {
+            return Ok(());
+        };
+        if confirmed_activated_count > 0 && is_activation_current(generation) {
+            handle::Handle::refresh_clash();
         }
+        confirmed_plan
+    } else {
+        immediate_plan
+    };
+    if !is_activation_current(generation) {
+        return Ok(());
     }
 
     if plan.repaired_count > 0 && is_activation_current(generation) {
@@ -853,9 +940,6 @@ async fn activate_selected_nodes_worker(
         persist_reconciled_selected(&profile_uid, &selected, plan.selected, generation).await?;
     }
 
-    if is_activation_current(generation) {
-        handle::Handle::refresh_clash();
-    }
     Ok(())
 }
 
@@ -884,6 +968,9 @@ pub fn activate_selected_nodes() -> Result<()> {
                 .unwrap_or_default();
 
             if selected.is_empty() {
+                if is_activation_current(generation) {
+                    handle::Handle::refresh_clash();
+                }
                 return Ok(());
             }
             activate_selected_nodes_worker(current, selected, generation).await
@@ -893,7 +980,10 @@ pub fn activate_selected_nodes() -> Result<()> {
         if is_activation_current(generation) {
             if let Err(err) = result {
                 logging!(error, Type::Config, "failed to activate selected nodes: {err:#}");
+                // The profile itself is already active even if node restoration failed.
+                handle::Handle::refresh_clash();
             }
+            update_tray_after_activation(generation).await;
             logging!(info, Type::Config, "activating selected nodes done!");
         }
     });
@@ -905,7 +995,6 @@ pub fn activate_selected_nodes() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use tauri_plugin_mihomo::models::Proxy;
 
     fn selected(group: &str, node: &str) -> PrfSelected {
@@ -1050,5 +1139,39 @@ mod tests {
         assert_eq!(plan.selected, vec![selected("group", "new")]);
         assert_eq!(plan.activations, vec![("group".into(), "new".into())]);
         assert_eq!(plan.repaired_count, 1);
+    }
+
+    #[test]
+    fn activates_valid_nodes_before_confirming_invalid_records() {
+        let saved = vec![selected("valid-group", "saved"), selected("stale-group", "missing")];
+        let first_snapshot = proxies(vec![
+            ("valid-group", &["current", "saved"], Some("current")),
+            ("stale-group", &["fallback"], Some("fallback")),
+        ]);
+
+        assert!(selected_nodes_need_confirmation(&saved, &first_snapshot));
+        let immediate_plan = reconcile_selected_nodes(&saved, None, &first_snapshot);
+
+        assert_eq!(immediate_plan.selected, saved);
+        assert_eq!(immediate_plan.activations, vec![("valid-group".into(), "saved".into())]);
+        assert_eq!(immediate_plan.repaired_count, 0);
+    }
+
+    #[test]
+    fn skips_only_activations_that_already_succeeded() {
+        let activations = vec![
+            ("first-group".into(), "saved".into()),
+            ("second-group".into(), "new".into()),
+            ("first-group".into(), "replacement".into()),
+        ];
+        let completed = HashMap::from([("first-group".into(), "saved".into())]);
+
+        assert_eq!(
+            remaining_activations(&activations, &completed),
+            vec![
+                ("second-group".into(), "new".into()),
+                ("first-group".into(), "replacement".into()),
+            ]
+        );
     }
 }

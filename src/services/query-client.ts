@@ -6,6 +6,10 @@ import useSWR, {
 } from 'swr'
 
 type QueryKey = string | readonly unknown[]
+type QueryDataUpdater<T> =
+  | T
+  | undefined
+  | ((current: T | undefined) => T | undefined)
 
 type QueryOptions<T> = {
   queryKey: QueryKey
@@ -53,19 +57,37 @@ export const getCacheData = <T>(queryKey: QueryKey): T | undefined => {
   return queryCache.get(serializeQueryKey(queryKey)) as T | undefined
 }
 
-export const setCacheData = <T>(
+const updateCachedData = <T>(
   queryKey: QueryKey,
-  updaterOrData: T | undefined | ((current: T | undefined) => T | undefined),
+  updaterOrData: QueryDataUpdater<T>,
 ) => {
   const current = getCacheData<T>(queryKey)
   const next =
     typeof updaterOrData === 'function'
       ? (updaterOrData as (current: T | undefined) => T | undefined)(current)
       : updaterOrData
-
   setCachedData(queryKey, next)
+  return next
+}
 
+export const setCacheData = <T>(
+  queryKey: QueryKey,
+  updaterOrData: QueryDataUpdater<T>,
+) => {
+  const next = updateCachedData(queryKey, updaterOrData)
   void swrMutate(queryKey, next, {
+    populateCache: true,
+    revalidate: false,
+  })
+  return next
+}
+
+export const setCacheDataAsync = async <T>(
+  queryKey: QueryKey,
+  updaterOrData: QueryDataUpdater<T>,
+) => {
+  const next = updateCachedData(queryKey, updaterOrData)
+  await swrMutate(queryKey, next, {
     populateCache: true,
     revalidate: false,
   })

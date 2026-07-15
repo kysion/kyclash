@@ -213,16 +213,8 @@ async fn restore_previous_profile(prev_profile: &String) -> CmdResult<()> {
 
 async fn handle_success(current_value: Option<&String>) -> CmdResult<ValidationOutcome> {
     Config::profiles().await.apply();
+    // Runtime refresh and tray rebuilding happen after saved node selections are restored.
     profiles::activate_selected_nodes().stringify_err()?;
-    handle::Handle::refresh_clash();
-
-    if let Err(e) = Tray::global().update_tooltip().await {
-        logging!(warn, Type::Cmd, "Warning: 异步更新托盘提示失败: {e}");
-    }
-
-    if let Err(e) = Tray::global().update_menu().await {
-        logging!(warn, Type::Cmd, "Warning: 异步更新托盘菜单失败: {e}");
-    }
 
     if let Err(e) = profiles_save_file_safe().await {
         logging!(warn, Type::Cmd, "Warning: 异步保存配置文件失败: {e}");
