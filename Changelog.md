@@ -39,6 +39,7 @@
 - 修复编辑订阅配置时清空 HTTP 请求超时会报错的问题
 - 修复纯 IP 连接的主机地址显示错误，并保留目标 IP 为空时的地址回退
 - 修复 Windows 管理员模式下启动 TUN 时因等待不可用 Service 导致延迟 30 秒的问题
+- 修复 VLESS xhttp 链接解析及 IPv6 地址格式问题
 
 <details>
 <summary><strong> ✨ 新增功能 </strong></summary>
