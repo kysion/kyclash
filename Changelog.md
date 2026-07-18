@@ -41,11 +41,12 @@
 - 修复 Windows 管理员模式下启动 TUN 时因等待不可用 Service 导致延迟 30 秒的问题
 - 修复内核启动慢导致首页上下跳动的问题
 - 修复 VLESS xhttp 链接解析及 IPv6 地址格式问题
+- 修复通过普通导入或深链导入订阅后，自动更新任务未及时生效的问题
 
 <details>
 <summary><strong> ✨ 新增功能 </strong></summary>
 
-- **Mihomo(Meta) 内核升级至 v1.19.28**
+- **Mihomo(Meta) 内核升级至 v1.19.29**
 - 增加 TrustTunnel、OpenVPN、Tailscale、GostRelay 节点显示支持
 - 全局扩展脚本增加恢复默认按钮
 - DNS 添加 fake-ip-range6 可配置项
