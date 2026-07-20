@@ -152,6 +152,15 @@ Completed in the current workspace:
 - Added the IPv4/IPv6 coexistence matrix for Mihomo split routes, unknown VPN
   routes, exact conflicts, more-specific conflicts, and default underlay
   routes, with all mutation effects confined to the in-memory adapter.
+- Added a shell-free macOS route-command planner for normalized IPv4/IPv6
+  add/delete arguments, including option-injection and malformed-interface
+  refusal. The planner returns data only and never starts `/sbin/route`.
+
+Remaining authorization-dependent validation:
+
+- Execute the planned route mutations and forced-exit cleanup in a disposable
+  macOS lab host after explicit system-route authorization. Until then the
+  production adapter remains read-only and Iteration 3 is not release-closed.
 
 Exit criteria:
 

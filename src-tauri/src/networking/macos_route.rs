@@ -1,16 +1,77 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[cfg(target_os = "macos")]
 use std::{path::PathBuf, process::Command};
 
-use super::{ExistingRoute, NetworkErrorCode};
 #[cfg(target_os = "macos")]
-use super::{RoutePlatform, RouteSpec};
+use super::RoutePlatform;
+use super::{ExistingRoute, NetworkErrorCode, RouteSpec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacOsRouteFamily {
     Ipv4,
     Ipv6,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacOsRouteAction {
+    Add,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacOsRouteCommand {
+    pub program: &'static str,
+    pub arguments: Vec<String>,
+}
+
+/// Build an argv-only macOS route command without invoking a shell or process.
+/// Execution remains outside this adapter until isolated-lab authorization is
+/// available.
+pub fn plan_macos_route_command(
+    action: MacOsRouteAction,
+    route: &RouteSpec,
+) -> Result<MacOsRouteCommand, NetworkErrorCode> {
+    let (address, prefix) = route
+        .destination
+        .rsplit_once('/')
+        .ok_or(NetworkErrorCode::InvalidConfiguration)?;
+    let address = address
+        .parse::<IpAddr>()
+        .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    let prefix = prefix
+        .parse::<u8>()
+        .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    if prefix > if address.is_ipv4() { 32 } else { 128 }
+        || route.interface.is_empty()
+        || route.interface.starts_with('-')
+        || !route
+            .interface
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+    {
+        return Err(NetworkErrorCode::InvalidConfiguration);
+    }
+    let mut arguments = vec![
+        "-n".into(),
+        match action {
+            MacOsRouteAction::Add => "add".into(),
+            MacOsRouteAction::Delete => "delete".into(),
+        },
+    ];
+    if address.is_ipv6() {
+        arguments.push("-inet6".into());
+    }
+    arguments.extend([
+        "-net".into(),
+        format!("{address}/{prefix}"),
+        "-interface".into(),
+        route.interface.clone(),
+    ]);
+    Ok(MacOsRouteCommand {
+        program: "/sbin/route",
+        arguments,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -224,6 +285,64 @@ fe80::1%lo0                             fe80::1%lo0                     UH      
             ),
             Err(NetworkErrorCode::RouteDiscoveryFailed)
         );
+    }
+
+    #[test]
+    fn plans_argv_only_ipv4_and_ipv6_mutations_without_execution() -> Result<(), NetworkErrorCode> {
+        let ipv4 = RouteSpec {
+            destination: "10.64.0.0/16".into(),
+            interface: "utun.kyclash".into(),
+        };
+        assert_eq!(
+            plan_macos_route_command(MacOsRouteAction::Add, &ipv4)?,
+            MacOsRouteCommand {
+                program: "/sbin/route",
+                arguments: ["-n", "add", "-net", "10.64.0.0/16", "-interface", "utun.kyclash"]
+                    .map(str::to_owned)
+                    .into(),
+            }
+        );
+        let ipv6 = RouteSpec {
+            destination: "fd00:64::/48".into(),
+            interface: "utun.kyclash".into(),
+        };
+        assert_eq!(
+            plan_macos_route_command(MacOsRouteAction::Delete, &ipv6)?.arguments,
+            [
+                "-n",
+                "delete",
+                "-inet6",
+                "-net",
+                "fd00:64::/48",
+                "-interface",
+                "utun.kyclash",
+            ]
+            .map(str::to_owned)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn route_command_planner_rejects_option_injection_and_invalid_cidr() {
+        for route in [
+            RouteSpec {
+                destination: "10.64.0.0/99".into(),
+                interface: "utun.kyclash".into(),
+            },
+            RouteSpec {
+                destination: "10.64.0.0/16".into(),
+                interface: "-delete".into(),
+            },
+            RouteSpec {
+                destination: "10.64.0.0/16".into(),
+                interface: "utun0;whoami".into(),
+            },
+        ] {
+            assert_eq!(
+                plan_macos_route_command(MacOsRouteAction::Add, &route),
+                Err(NetworkErrorCode::InvalidConfiguration)
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
