@@ -263,6 +263,10 @@ Completed in the current workspace:
   netstack on both ends. A TCP ping/pong crosses real WireGuard encryption and
   the KyClash custom Bind entirely in memory, proving data-plane integration
   without creating a host interface, route, DNS entry, or external connection.
+- Added the production sidecar executable bootstrap boundary. It refuses all
+  command-line arguments, accepts one bounded and strict stdin message, validates
+  protocol/instance/auth/private-key fields, emits only an HMAC authentication
+  proof, redacts formatting and errors, and clears owned secret buffers.
 
 Remaining:
 
