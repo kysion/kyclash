@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::Write as _,
     net::IpAddr,
@@ -56,6 +56,35 @@ pub trait RoutePlatform {
 pub trait RouteJournal {
     fn entries(&self) -> Result<Vec<RouteJournalEntry>, NetworkErrorCode>;
     fn save(&mut self, entry: &RouteJournalEntry) -> Result<(), NetworkErrorCode>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RouteConflictPolicy {
+    mihomo_tun_interfaces: HashSet<String>,
+}
+
+impl RouteConflictPolicy {
+    /// Trust only interface names obtained from the active Mihomo TUN
+    /// configuration. Interface-name patterns such as `utun*` are deliberately
+    /// not inferred because another VPN may own an interface with that shape.
+    pub fn with_mihomo_tun_interfaces(interfaces: impl IntoIterator<Item = String>) -> Result<Self, NetworkErrorCode> {
+        let interfaces = interfaces.into_iter().collect::<HashSet<_>>();
+        if interfaces.iter().any(String::is_empty) {
+            return Err(NetworkErrorCode::InvalidConfiguration);
+        }
+        Ok(Self {
+            mihomo_tun_interfaces: interfaces,
+        })
+    }
+
+    fn permits_more_specific_route(
+        &self,
+        existing: &ExistingRoute,
+        existing_network: IpNetwork,
+        desired: IpNetwork,
+    ) -> bool {
+        self.mihomo_tun_interfaces.contains(&existing.interface) && existing_network.prefix < desired.prefix
+    }
 }
 
 const ROUTE_JOURNAL_VERSION: u8 = 1;
@@ -176,11 +205,26 @@ fn ensure_private_directory(path: &Path) -> Result<(), NetworkErrorCode> {
 pub struct RouteOrchestrator<P, J> {
     platform: P,
     journal: J,
+    conflict_policy: RouteConflictPolicy,
 }
 
 impl<P: RoutePlatform, J: RouteJournal> RouteOrchestrator<P, J> {
-    pub const fn new(platform: P, journal: J) -> Self {
-        Self { platform, journal }
+    pub fn new(platform: P, journal: J) -> Self {
+        Self {
+            platform,
+            journal,
+            conflict_policy: RouteConflictPolicy {
+                mihomo_tun_interfaces: HashSet::new(),
+            },
+        }
+    }
+
+    pub const fn with_conflict_policy(platform: P, journal: J, conflict_policy: RouteConflictPolicy) -> Self {
+        Self {
+            platform,
+            journal,
+            conflict_policy,
+        }
     }
 
     pub fn apply(
@@ -207,7 +251,7 @@ impl<P: RoutePlatform, J: RouteJournal> RouteOrchestrator<P, J> {
         }
 
         let previous_routes = self.platform.list_routes()?;
-        reject_conflicts(&previous_routes, &desired_routes)?;
+        reject_conflicts(&previous_routes, &desired_routes, &self.conflict_policy)?;
         let mut entry = RouteJournalEntry {
             transaction_id,
             profile_id,
@@ -323,7 +367,11 @@ fn validate_plan(transaction_id: &str, profile_id: &str, routes: &[RouteSpec]) -
     Ok(())
 }
 
-fn reject_conflicts(existing: &[ExistingRoute], desired: &[RouteSpec]) -> Result<(), NetworkErrorCode> {
+fn reject_conflicts(
+    existing: &[ExistingRoute],
+    desired: &[RouteSpec],
+    policy: &RouteConflictPolicy,
+) -> Result<(), NetworkErrorCode> {
     let desired = desired
         .iter()
         .map(|route| IpNetwork::parse(&route.destination))
@@ -335,8 +383,10 @@ fn reject_conflicts(existing: &[ExistingRoute], desired: &[RouteSpec]) -> Result
         if existing.prefix == 0 {
             continue;
         }
-        if desired.iter().any(|candidate| candidate.overlaps(existing)) {
-            return Err(NetworkErrorCode::RouteConflict);
+        for candidate in &desired {
+            if candidate.overlaps(existing) && !policy.permits_more_specific_route(route, existing, *candidate) {
+                return Err(NetworkErrorCode::RouteConflict);
+            }
         }
     }
     Ok(())
@@ -517,6 +567,91 @@ mod tests {
             Err(NetworkErrorCode::RouteConflict)
         );
         assert!(orchestrator.platform.added.is_empty());
+    }
+
+    #[test]
+    fn permits_only_explicit_mihomo_broad_routes_to_coexist() -> Result<(), NetworkErrorCode> {
+        let platform = FakePlatform {
+            existing: vec![
+                ExistingRoute {
+                    destination: "8.0.0.0/5".into(),
+                    interface: "utun.mihomo".into(),
+                    gateway: None,
+                },
+                ExistingRoute {
+                    destination: "fc00::/7".into(),
+                    interface: "utun.mihomo".into(),
+                    gateway: None,
+                },
+            ],
+            ..FakePlatform::default()
+        };
+        let policy = RouteConflictPolicy::with_mihomo_tun_interfaces(["utun.mihomo".into()])?;
+        let mut orchestrator = RouteOrchestrator::with_conflict_policy(platform, MemoryRouteJournal::default(), policy);
+        orchestrator.apply(
+            "tx.1".into(),
+            "profile.1".into(),
+            vec![route("10.64.0.0/16"), route("fd00:64::/48")],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_vpn_broad_route_still_conflicts() -> Result<(), NetworkErrorCode> {
+        let platform = FakePlatform {
+            existing: vec![ExistingRoute {
+                destination: "8.0.0.0/5".into(),
+                interface: "utun.other-vpn".into(),
+                gateway: None,
+            }],
+            ..FakePlatform::default()
+        };
+        let policy = RouteConflictPolicy::with_mihomo_tun_interfaces(["utun.mihomo".into()])?;
+        let mut orchestrator = RouteOrchestrator::with_conflict_policy(platform, MemoryRouteJournal::default(), policy);
+        assert_eq!(
+            orchestrator.apply("tx.1".into(), "profile.1".into(), vec![route("10.64.0.0/16")]),
+            Err(NetworkErrorCode::RouteConflict)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_or_more_specific_mihomo_route_still_conflicts() -> Result<(), NetworkErrorCode> {
+        for destination in ["10.64.0.0/16", "10.64.1.0/24"] {
+            let platform = FakePlatform {
+                existing: vec![ExistingRoute {
+                    destination: destination.into(),
+                    interface: "utun.mihomo".into(),
+                    gateway: None,
+                }],
+                ..FakePlatform::default()
+            };
+            let policy = RouteConflictPolicy::with_mihomo_tun_interfaces(["utun.mihomo".into()])?;
+            let mut orchestrator =
+                RouteOrchestrator::with_conflict_policy(platform, MemoryRouteJournal::default(), policy);
+            assert_eq!(
+                orchestrator.apply("tx.1".into(), "profile.1".into(), vec![route("10.64.0.0/16")]),
+                Err(NetworkErrorCode::RouteConflict)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn interface_name_shape_never_implies_mihomo_ownership() {
+        let platform = FakePlatform {
+            existing: vec![ExistingRoute {
+                destination: "8.0.0.0/5".into(),
+                interface: "utun1024".into(),
+                gateway: None,
+            }],
+            ..FakePlatform::default()
+        };
+        let mut orchestrator = RouteOrchestrator::new(platform, MemoryRouteJournal::default());
+        assert_eq!(
+            orchestrator.apply("tx.1".into(), "profile.1".into(), vec![route("10.64.0.0/16")]),
+            Err(NetworkErrorCode::RouteConflict)
+        );
     }
 
     #[test]
