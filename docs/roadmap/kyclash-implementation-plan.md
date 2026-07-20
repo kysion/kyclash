@@ -191,9 +191,10 @@ Exit criteria:
 
 Goal: validate the data plane in an isolated environment.
 
-Progress (2026-07-21): runtime-neutral control layer and deterministic fault
-simulation complete and the runtime implementation is locked; no tunnel,
-transport socket, or external endpoint is created.
+Progress (2026-07-21): complete for the isolated POC scope. Real WireGuard
+encryption runs through authenticated loopback QUIC and the KyClash custom Bind;
+no host tunnel, route, DNS mutation, credential store, or external endpoint is
+used.
 
 - Integrate the selected WireGuard adapter behind a stable trait.
 - Implement QUIC primary transport and measured health checks.
@@ -295,10 +296,10 @@ Completed in the current workspace:
 
 Remaining:
 
-- Implement the locked sidecar, frame codec, custom Bind, and loopback carriers,
-  then integrate WireGuard, QUIC, WSS, and TCP in an
-  isolated environment and record real packet-loss, jitter, suspend/resume,
-  and throughput measurements.
+- Release validation still requires controlled packet-loss/jitter/UDP-blocking,
+  sustained throughput, suspend/resume, and network-switch measurements on
+  disposable authorized macOS hosts and compatible isolated server endpoints.
+  This does not reopen the completed source-level isolated POC.
 
 Exit criteria:
 
