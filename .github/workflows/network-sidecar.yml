@@ -1,0 +1,73 @@
+name: Network sidecar
+
+on:
+  pull_request:
+    paths:
+      - 'network-sidecar/**'
+      - '.github/workflows/network-sidecar.yml'
+      - 'docs/architecture/kyclash-network-runtime-v1.md'
+      - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
+  push:
+    branches: [main]
+    paths:
+      - 'network-sidecar/**'
+      - '.github/workflows/network-sidecar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: network-sidecar
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: network-sidecar/go.sum
+
+      - name: Verify module and formatting
+        run: |
+          go mod download
+          go mod verify
+          test -z "$(gofmt -l .)"
+
+      - name: Test race safety
+        run: go test -race -count=5 -timeout=90s ./...
+
+      - name: Vet source
+        run: go vet ./...
+
+      - name: Verify reproducible build
+        run: |
+          mkdir -p build/first build/second
+          go build -trimpath -buildvcs=false -ldflags='-buildid=' -o build/first/kyclash-network-sidecar ./cmd/kyclash-network-sidecar
+          go build -trimpath -buildvcs=false -ldflags='-buildid=' -o build/second/kyclash-network-sidecar ./cmd/kyclash-network-sidecar
+          shasum -a 256 build/first/kyclash-network-sidecar > build/first.sha256
+          shasum -a 256 build/second/kyclash-network-sidecar > build/second.sha256
+          cmp build/first/kyclash-network-sidecar build/second/kyclash-network-sidecar
+          go version -m build/first/kyclash-network-sidecar > build/dependencies.txt
+
+      - name: Generate licensed CycloneDX SBOM
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
+          cyclonedx-gomod mod -json -licenses -test -output build/kyclash-network-sidecar.bom.json .
+
+      - name: Upload verification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-sidecar-verification-${{ runner.arch }}
+          path: |
+            network-sidecar/build/first/kyclash-network-sidecar
+            network-sidecar/build/first.sha256
+            network-sidecar/build/dependencies.txt
+            network-sidecar/build/kyclash-network-sidecar.bom.json
+          if-no-files-found: error
+          retention-days: 14

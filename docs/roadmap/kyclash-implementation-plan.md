@@ -267,6 +267,11 @@ Completed in the current workspace:
   command-line arguments, accepts one bounded and strict stdin message, validates
   protocol/instance/auth/private-key fields, emits only an HMAC authentication
   proof, redacts formatting and errors, and clears owned secret buffers.
+- Added a path-scoped macOS sidecar CI gate pinned to Go 1.26.5. It verifies
+  module hashes and formatting, runs race tests and vet, proves two builds are
+  byte-identical, records SHA-256 and embedded module metadata, generates a
+  license-aware CycloneDX SBOM with a pinned tool, and retains evidence without
+  publishing or bundling the sidecar.
 
 Remaining:
 
