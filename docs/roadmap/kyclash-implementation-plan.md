@@ -248,6 +248,9 @@ Completed in the current workspace:
 - Locked a conservative 1,024-byte QUIC fragment payload after verifying that
   the selected library exposes path-size changes only as send errors. KyClash
   fragments before sending and fails into normal fallback if the path shrinks.
+- Locked a 64-sequence QUIC replay window so valid datagram reordering is
+  accepted once while duplicates and stale sequences fail closed. Ordered
+  WSS/TCP carriers retain strict monotonic receive validation.
 
 Remaining:
 

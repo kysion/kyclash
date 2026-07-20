@@ -17,8 +17,10 @@ Read these files before changing scope or architecture:
    QUIC framing or reassembly
 5. `docs/roadmap/kyclash-runtime-datagram-size-review-20260721.md` when
    implementing QUIC datagram sends
-6. `docs/roadmap/kyclash-implementation-plan.md`
-7. `kyclash-handoff-20260721.md` only for historical context
+6. `docs/roadmap/kyclash-runtime-quic-order-review-20260721.md` when implementing
+   QUIC receive ordering or replay protection
+7. `docs/roadmap/kyclash-implementation-plan.md`
+8. `kyclash-handoff-20260721.md` only for historical context
 
 Treat the review record and architecture as locked. If they conflict with the
 handoff, follow the locked documents. Require a new review record before
