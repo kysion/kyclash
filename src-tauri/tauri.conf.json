@@ -29,13 +29,6 @@
   "productName": "KyClash",
   "identifier": "net.kysion.kyclash",
   "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyOEMyRjBCQkVGOUJEREYKUldUZnZmbStDeStNMHU5Mmo1N24xQXZwSVRYbXA2NUpzZE5oVzlqeS9Bc0t6RVV4MmtwVjBZaHgK",
-      "endpoints": [],
-      "windows": {
-        "installMode": "passive"
-      }
-    },
     "deep-link": {
       "desktop": {
         "schemes": ["clash", "clash-verge"]

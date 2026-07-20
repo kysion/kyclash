@@ -25,6 +25,9 @@ installation lifecycle tests remain release gates.
 Completed in the current workspace:
 
 - Application endpoints are empty and frontend/backend update gates are off.
+- Removed the inherited updater verification key together with the updater
+  configuration block; KyClash will add a new endpoint and public key only as
+  one reviewed release-ownership change.
 - Updater artifacts are not generated without a KyClash signing procedure.
 - Portable archives use KyClash branding while retaining `clash-verge.exe`.
 - Release, autobuild, download, and Telegram workflow links and visible release
