@@ -76,7 +76,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           target_commitish: ${{ github.sha }}
-          name: 'Clash Verge Rev ${{ github.ref_name }}'
+          name: 'KyClash ${{ github.ref_name }}'
           body: 'Draft release, will be updated later.'
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true
@@ -108,7 +108,7 @@ jobs:
           echo "TAG_NAME=$TAG_REF" >> $GITHUB_ENV
           VERSION=$(echo "$TAG_REF" | sed 's/^v//')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "DOWNLOAD_URL=https://github.com/clash-verge-rev/clash-verge-rev/releases/download/$TAG_REF" >> $GITHUB_ENV
+          echo "DOWNLOAD_URL=https://github.com/kysion/kyclash/releases/download/$TAG_REF" >> $GITHUB_ENV
         shell: bash
 
       - run: |
@@ -173,7 +173,7 @@ jobs:
           echo "Publishing release $release_id ($release_url) with $asset_count assets."
 
           gh api --method PATCH repos/{owner}/{repo}/releases/"$release_id" \
-            -f name="Clash Verge Rev $TAG_NAME" \
+            -f name="KyClash $TAG_NAME" \
             -F body=@release.txt \
             -F draft=false \
             -F prerelease="$PRERELEASE" \
@@ -671,7 +671,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install jq
           echo "VERSION=$(cat package.json | jq '.version' | tr -d '"')" >> $GITHUB_ENV
-          echo "DOWNLOAD_URL=https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v$(cat package.json | jq '.version' | tr -d '"')" >> $GITHUB_ENV
+          echo "DOWNLOAD_URL=https://github.com/kysion/kyclash/releases/download/v$(cat package.json | jq '.version' | tr -d '"')" >> $GITHUB_ENV
           echo "BUILDTIME=$(TZ=Asia/Shanghai date)" >> $GITHUB_ENV
 
       - name: Generate release.txt
