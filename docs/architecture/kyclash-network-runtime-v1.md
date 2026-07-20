@@ -8,6 +8,9 @@ Supersedes: no prior runtime implementation decision
 
 Protocol amendment: `../roadmap/kyclash-runtime-protocol-review-20260721.md`
 
+Datagram-size amendment:
+`../roadmap/kyclash-runtime-datagram-size-review-20260721.md`
+
 ## Decision scope
 
 This record selects concrete components for the data path already locked in
