@@ -44,17 +44,20 @@ impl NetworkDiagnosticSnapshot {
 pub struct NetworkingDevStatus {
     pub network_state: NetworkState,
     pub sidecar_state: SidecarLifecycleState,
+    pub site_id: String,
+    pub site_display_name: String,
+    pub private_routes: Vec<String>,
+    pub active_transport: Option<String>,
+    pub health: Option<NetworkingDevHealth>,
+    pub last_error: Option<NetworkErrorCode>,
 }
 
 #[cfg(feature = "networking-dev")]
-pub const fn networking_dev_status(
-    network_state: NetworkState,
-    sidecar_state: SidecarLifecycleState,
-) -> NetworkingDevStatus {
-    NetworkingDevStatus {
-        network_state,
-        sidecar_state,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NetworkingDevHealth {
+    pub latency_ms: u32,
+    pub jitter_ms: u32,
+    pub packet_loss_percent: u8,
 }
 
 #[cfg(test)]

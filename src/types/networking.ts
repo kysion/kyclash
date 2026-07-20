@@ -74,6 +74,16 @@ export interface NetworkStatus {
 export interface NetworkingDevStatus {
   network_state: NetworkState
   sidecar_state: 'stopped' | 'starting' | 'running' | 'backoff' | 'crash_loop'
+  site_id: string
+  site_display_name: string
+  private_routes: string[]
+  active_transport: TransportKind | null
+  health: {
+    latency_ms: number
+    jitter_ms: number
+    packet_loss_percent: number
+  } | null
+  last_error: NetworkErrorCode | null
 }
 
 export interface NetworkStateEvent {

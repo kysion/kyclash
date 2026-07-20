@@ -146,6 +146,10 @@ mod app_init {
             cmd::get_network_interfaces,
             #[cfg(feature = "networking-dev")]
             cmd::get_networking_dev_status,
+            #[cfg(feature = "networking-dev")]
+            cmd::connect_networking_dev,
+            #[cfg(feature = "networking-dev")]
+            cmd::disconnect_networking_dev,
             cmd::get_system_hostname,
             cmd::restart_app,
             cmd::start_core,

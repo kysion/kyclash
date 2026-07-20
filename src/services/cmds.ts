@@ -417,3 +417,15 @@ export const getNetworkingDevStatus = async () => {
     'get_networking_dev_status',
   )
 }
+
+export const connectNetworkingDev = async () => {
+  return invoke<import('@/types/networking').NetworkingDevStatus>(
+    'connect_networking_dev',
+  )
+}
+
+export const disconnectNetworkingDev = async () => {
+  return invoke<import('@/types/networking').NetworkingDevStatus>(
+    'disconnect_networking_dev',
+  )
+}

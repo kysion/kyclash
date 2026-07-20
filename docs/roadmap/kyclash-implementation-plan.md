@@ -214,10 +214,32 @@ Exit criteria:
 
 Goal: deliver one-site private access with user-facing recovery and diagnostics.
 
+Progress (2026-07-21): feature-gated mock operations UI in progress; production
+connection controls and credential access remain disabled.
+
 - Add site selection, connect/disconnect, health, routes, and diagnostics UI.
 - Integrate system credential storage.
 - Complete signing, notarization, updater ownership, and rollback procedures.
 - Execute fresh install, upgrade, uninstall, sleep, network switch, and crash tests.
+
+Completed in the current workspace:
+
+- Expanded the development-only networking page with one-site identity,
+  connect/disconnect controls, state, sidecar lifecycle, active transport,
+  planned private routes, health metrics, and last-error diagnostics.
+- Backed the controls with an in-process `MockNetworkSidecar` and embedded
+  validated fixture. The page and commands remain compile-time gated and do
+  not create a process, socket, tunnel, route, DNS mutation, credential lookup,
+  or external request.
+- Added a Rust lifecycle test for mock connect, status projection, route
+  display, transport display, and disconnect.
+
+Remaining:
+
+- Replace the mock command boundary only after the real sidecar, route lab,
+  and system credential adapters pass their isolated validation gates.
+- Complete signing, notarization, stapling, updater ownership, and macOS
+  installation lifecycle validation with authorized credentials and hosts.
 
 ## Later platform order
 
