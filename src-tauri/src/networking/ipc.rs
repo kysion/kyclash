@@ -95,7 +95,7 @@ mod tests {
     fn response_wire_format_round_trips() -> anyhow::Result<()> {
         let response = IpcResponse {
             protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
-            request_id: "request.test".into(),
+            request_id: "request.status".into(),
             result: Ok(IpcResponsePayload::Status(NetworkStatus {
                 state: NetworkState::Disconnected,
                 active_profile_id: None,
@@ -106,6 +106,9 @@ mod tests {
         let encoded = serde_json::to_string(&response)?;
         let decoded: IpcResponse = serde_json::from_str(&encoded)?;
         assert_eq!(response, decoded);
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v1.status.json"))?;
+        assert_eq!(serde_json::to_value(&response)?, fixture);
         Ok(())
     }
 }

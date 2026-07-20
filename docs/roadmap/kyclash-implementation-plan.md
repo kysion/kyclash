@@ -272,6 +272,13 @@ Completed in the current workspace:
   byte-identical, records SHA-256 and embedded module metadata, generates a
   license-aware CycloneDX SBOM with a pinned tool, and retains evidence without
   publishing or bundling the sidecar.
+- Kept the production sidecar alive after authentication with the exact Rust v1
+  request/response envelope. Status and disconnect work, malformed or unknown
+  requests fail closed, and profile/connect/cancel return a structured
+  `sidecar_unavailable` error until real networking gates are explicitly enabled.
+- Added a shared status-response fixture asserted by both Rust and Go tests so
+  changes to result tagging, state spelling, nullability, or field names cannot
+  silently break controller/sidecar compatibility.
 
 Remaining:
 

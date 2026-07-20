@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/kysion/kyclash/network-sidecar/internal/bootstrap"
+	"github.com/kysion/kyclash/network-sidecar/internal/ipc"
 )
 
 type handshake struct {
@@ -35,7 +36,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	if err := json.NewEncoder(stdout).Encode(response); err != nil {
 		return fmt.Errorf("write handshake: %w", err)
 	}
-	return nil
+	return ipc.Serve(reader, stdout)
 }
 
 func main() {

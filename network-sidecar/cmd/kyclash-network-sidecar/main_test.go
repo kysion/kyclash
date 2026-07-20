@@ -11,7 +11,8 @@ import (
 func TestRunAuthenticatesWithoutEchoingSecrets(t *testing.T) {
 	secret := bytes.Repeat([]byte{9}, 32)
 	encodedSecret := base64.StdEncoding.EncodeToString(secret)
-	input := `{"protocol_version":1,"instance_id":"instance-123","auth_token":"` + encodedSecret + `","private_key":"` + encodedSecret + `"}` + "\n"
+	input := `{"protocol_version":1,"instance_id":"instance-123","auth_token":"` + encodedSecret + `","private_key":"` + encodedSecret + `"}` + "\n" +
+		`{"protocol_version":1,"request_id":"request.stop","payload":{"type":"disconnect"}}` + "\n"
 	var output bytes.Buffer
 	if err := run(nil, strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
@@ -20,7 +21,11 @@ func TestRunAuthenticatesWithoutEchoingSecrets(t *testing.T) {
 		t.Fatal("handshake leaked secret")
 	}
 	var response handshake
-	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+	lines := bytes.Split(bytes.TrimSpace(output.Bytes()), []byte{'\n'})
+	if len(lines) != 2 {
+		t.Fatalf("expected handshake and stop response, got %q", output.String())
+	}
+	if err := json.Unmarshal(lines[0], &response); err != nil {
 		t.Fatal(err)
 	}
 	if response.ProtocolVersion != 1 || response.InstanceID != "instance-123" || len(response.AuthProof) != 64 {
