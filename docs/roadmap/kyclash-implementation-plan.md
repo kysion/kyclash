@@ -237,6 +237,10 @@ Completed in the current workspace:
   `wss://` and TLS 1.3, certificate/hostname verification, disabled compression,
   and refusal of URL credentials, queries, and fragments. Loopback tests use an
   ephemeral TLS WebSocket server and prove packet exchange and identity refusal.
+- Reviewed and corrected the QUIC datagram size assumption before implementation.
+  The locked amendment adds bounded, expiring, replay-resistant QUIC
+  fragmentation while retaining the common frame header and all existing
+  transport and fallback semantics.
 
 Remaining:
 

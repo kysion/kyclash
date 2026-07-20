@@ -13,8 +13,10 @@ Read these files before changing scope or architecture:
 2. `docs/architecture/kyclash-networking-v1.md`
 3. `docs/architecture/kyclash-network-runtime-v1.md` when implementing the real
    data plane or sidecar
-4. `docs/roadmap/kyclash-implementation-plan.md`
-5. `kyclash-handoff-20260721.md` only for historical context
+4. `docs/roadmap/kyclash-runtime-protocol-review-20260721.md` when implementing
+   QUIC framing or reassembly
+5. `docs/roadmap/kyclash-implementation-plan.md`
+6. `kyclash-handoff-20260721.md` only for historical context
 
 Treat the review record and architecture as locked. If they conflict with the
 handoff, follow the locked documents. Require a new review record before

@@ -6,6 +6,8 @@ Date: 2026-07-21
 
 Supersedes: no prior runtime implementation decision
 
+Protocol amendment: `../roadmap/kyclash-runtime-protocol-review-20260721.md`
+
 ## Decision scope
 
 This record selects concrete components for the data path already locked in
@@ -49,22 +51,23 @@ through an inherited private channel, and owns every route transaction.
 
 ## KyClash carrier protocol
 
-QUIC datagrams carry exactly one encrypted WireGuard packet. WSS and TCP carry
-the same packet envelope over an ordered byte stream:
+QUIC datagrams carry an encrypted WireGuard packet using the bounded
+fragmentation amendment when required by the negotiated datagram size. WSS and
+TCP carry the same base packet envelope over an ordered byte stream:
 
 ```text
 magic[4] = "KYNP"
 version[1] = 1
 kind[1] = 1 (wireguard_packet) | 2 (ping) | 3 (pong) | 4 (close)
-flags[2] = 0 in v1
+flags[2] = 0, or bit 0 for reviewed QUIC fragmentation
 payload_length[4] = unsigned network byte order
 sequence[8] = unsigned network byte order, monotonic per carrier connection
 payload[payload_length]
 ```
 
-The maximum payload is 65,535 bytes. Unknown versions, kinds, non-zero unknown
-flags, oversized payloads, truncated frames, replayed/non-monotonic stream
-sequences, and extra bytes after a complete datagram frame fail closed. QUIC
+The maximum payload is 65,535 bytes. Unknown versions, kinds, unknown flags,
+oversized payloads, truncated frames, replayed/non-monotonic sequences, invalid
+fragments, and extra bytes after a complete datagram frame fail closed. QUIC
 datagrams use the same envelope so packet validation and diagnostics remain
 transport-independent. Carrier TLS authenticates the KyClash endpoint; the
 inner WireGuard protocol continues to authenticate peers and encrypt packets.
