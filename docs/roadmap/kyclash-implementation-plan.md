@@ -221,6 +221,11 @@ Completed in the current workspace:
   `coder/websocket`, with one common bounded packet envelope for QUIC, WSS, and
   TCP. The review also locks the privilege split, secret channel, lifecycle,
   rejected alternatives, and isolated validation gates.
+- Added the standalone sidecar module and its transport-independent v1 frame
+  codec. Tests cover canonical round trips, control-frame constraints, unknown
+  fields, payload bounds, every truncation point, trailing datagram bytes,
+  monotonic sequence enforcement, and fuzz-safe decoding without network or
+  system effects.
 
 Remaining:
 

@@ -1,0 +1,149 @@
+// Package frame implements the transport-independent KyClash network packet
+// envelope. It performs no network, tunnel, route, DNS, or credential I/O.
+package frame
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+)
+
+const (
+	Version        = uint8(1)
+	HeaderSize     = 20
+	MaxPayloadSize = 65_535
+)
+
+var magic = [4]byte{'K', 'Y', 'N', 'P'}
+
+var (
+	ErrInvalidMagic       = errors.New("invalid frame magic")
+	ErrUnsupportedVersion = errors.New("unsupported frame version")
+	ErrInvalidKind        = errors.New("invalid frame kind")
+	ErrUnknownFlags       = errors.New("unknown frame flags")
+	ErrPayloadTooLarge    = errors.New("frame payload too large")
+	ErrTrailingData       = errors.New("trailing data after datagram frame")
+	ErrNonMonotonic       = errors.New("non-monotonic frame sequence")
+)
+
+type Kind uint8
+
+const (
+	KindWireGuardPacket Kind = 1
+	KindPing            Kind = 2
+	KindPong            Kind = 3
+	KindClose           Kind = 4
+)
+
+func (kind Kind) valid() bool {
+	return kind >= KindWireGuardPacket && kind <= KindClose
+}
+
+type Frame struct {
+	Kind     Kind
+	Sequence uint64
+	Payload  []byte
+}
+
+func (frame Frame) Validate() error {
+	if !frame.Kind.valid() {
+		return ErrInvalidKind
+	}
+	if len(frame.Payload) > MaxPayloadSize {
+		return ErrPayloadTooLarge
+	}
+	if frame.Kind != KindWireGuardPacket && len(frame.Payload) != 0 {
+		return fmt.Errorf("control frame payload: %w", ErrInvalidKind)
+	}
+	return nil
+}
+
+func Encode(frame Frame) ([]byte, error) {
+	if err := frame.Validate(); err != nil {
+		return nil, err
+	}
+	encoded := make([]byte, HeaderSize+len(frame.Payload))
+	copy(encoded[:4], magic[:])
+	encoded[4] = Version
+	encoded[5] = byte(frame.Kind)
+	binary.BigEndian.PutUint32(encoded[8:12], uint32(len(frame.Payload)))
+	binary.BigEndian.PutUint64(encoded[12:20], frame.Sequence)
+	copy(encoded[HeaderSize:], frame.Payload)
+	return encoded, nil
+}
+
+func Decode(reader io.Reader) (Frame, error) {
+	header := make([]byte, HeaderSize)
+	if _, err := io.ReadFull(reader, header); err != nil {
+		return Frame{}, fmt.Errorf("read frame header: %w", err)
+	}
+	if [4]byte(header[:4]) != magic {
+		return Frame{}, ErrInvalidMagic
+	}
+	if header[4] != Version {
+		return Frame{}, ErrUnsupportedVersion
+	}
+	kind := Kind(header[5])
+	if !kind.valid() {
+		return Frame{}, ErrInvalidKind
+	}
+	if binary.BigEndian.Uint16(header[6:8]) != 0 {
+		return Frame{}, ErrUnknownFlags
+	}
+	payloadLength := binary.BigEndian.Uint32(header[8:12])
+	if payloadLength > MaxPayloadSize {
+		return Frame{}, ErrPayloadTooLarge
+	}
+	decoded := Frame{
+		Kind:     kind,
+		Sequence: binary.BigEndian.Uint64(header[12:20]),
+		Payload:  make([]byte, int(payloadLength)),
+	}
+	if _, err := io.ReadFull(reader, decoded.Payload); err != nil {
+		return Frame{}, fmt.Errorf("read frame payload: %w", err)
+	}
+	if err := decoded.Validate(); err != nil {
+		return Frame{}, err
+	}
+	return decoded, nil
+}
+
+func DecodeDatagram(datagram []byte) (Frame, error) {
+	reader := &boundedReader{data: datagram}
+	decoded, err := Decode(reader)
+	if err != nil {
+		return Frame{}, err
+	}
+	if len(reader.data) != 0 {
+		return Frame{}, ErrTrailingData
+	}
+	return decoded, nil
+}
+
+type SequenceValidator struct {
+	seen bool
+	last uint64
+}
+
+func (validator *SequenceValidator) Accept(sequence uint64) error {
+	if validator.seen && sequence <= validator.last {
+		return ErrNonMonotonic
+	}
+	validator.seen = true
+	validator.last = sequence
+	return nil
+}
+
+type boundedReader struct {
+	data []byte
+}
+
+func (reader *boundedReader) Read(destination []byte) (int, error) {
+	if len(reader.data) == 0 {
+		return 0, io.EOF
+	}
+	count := copy(destination, reader.data)
+	reader.data = reader.data[count:]
+	return count, nil
+}
