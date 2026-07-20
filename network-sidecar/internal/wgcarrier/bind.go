@@ -84,6 +84,12 @@ func (bind *Bind) Close() error {
 		bind.mu.Unlock()
 		return nil
 	}
+	// wireguard-go closes the bind while applying initial UAPI configuration,
+	// before it has ever opened it. There is no carrier session to close yet.
+	if !bind.opened {
+		bind.mu.Unlock()
+		return nil
+	}
 	bind.closed = true
 	if bind.cancel != nil {
 		bind.cancel()

@@ -59,6 +59,9 @@ func TestBindReceivesAndSendsPackets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := bind.Close(); err != nil {
+		t.Fatal(err)
+	}
 	receivers, port, err := bind.Open(1234)
 	if err != nil {
 		t.Fatal(err)

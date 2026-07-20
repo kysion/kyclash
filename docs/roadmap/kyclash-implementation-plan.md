@@ -259,6 +259,10 @@ Completed in the current workspace:
   device. It maps one opaque peer endpoint onto the selected packet carrier,
   implements bounded receive/send and close cancellation, rejects wrong
   endpoints and undersized buffers, and passes in-memory conformance tests.
+- Added an isolated end-to-end WireGuard test using `wireguard-go`'s userspace
+  netstack on both ends. A TCP ping/pong crosses real WireGuard encryption and
+  the KyClash custom Bind entirely in memory, proving data-plane integration
+  without creating a host interface, route, DNS entry, or external connection.
 
 Remaining:
 
