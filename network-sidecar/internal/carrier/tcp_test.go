@@ -111,7 +111,7 @@ func TestTCPConfigFailsClosed(t *testing.T) {
 	}
 }
 
-func testCertificate(t *testing.T, serverName string) (tls.Certificate, *x509.CertPool) {
+func testCertificate(t testing.TB, serverName string) (tls.Certificate, *x509.CertPool) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

@@ -284,6 +284,10 @@ Completed in the current workspace:
   fragmentation, authenticated QUIC datagrams, reassembly, peer decryption, and
   the reverse path. All addresses and certificates are ephemeral loopback or
   userspace-netstack values.
+- Added a reproducible fragmented-QUIC loopback benchmark and measurement
+  record. Three Apple M5 runs measured a 401–407 microsecond 4 KiB round trip
+  and 10.07–10.20 MB/s reported payload rate; the record explicitly limits this
+  to local carrier evidence and lists all remaining impaired-link and host tests.
 
 Remaining:
 
