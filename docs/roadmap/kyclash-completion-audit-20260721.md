@@ -42,6 +42,10 @@ need separate explicit authorization.
   behind an explicit repository authorization variable and protected
   environment, and can create only a draft after all signing, notarization,
   stapling, Gatekeeper, checksum, and provenance checks succeed.
+- Maintained README and issue intake surfaces identify KyClash, link only to the
+  KyClash repository for releases and support, preserve explicit upstream
+  attribution, and no longer advertise upstream packages, AutoBuild channels,
+  funding, Telegram, or third-party promotions as KyClash resources.
 - The current arm64 development PKG evidence is recorded in
   `docs/testing/kyclash-macos-arm64-pkg-20260721.md`. It is unsigned and must not
   be represented as a release artifact.

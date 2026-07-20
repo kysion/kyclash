@@ -52,6 +52,11 @@ Completed in the current workspace:
 - Release, autobuild, download, and Telegram workflow links and visible release
   names target `kysion/kyclash` and display KyClash rather than publishing
   upstream Clash Verge Rev branding.
+- Removed inherited upstream download channels, AutoBuild instructions,
+  promotions, funding metadata, and support routing from the maintained Chinese
+  and English README and KyClash issue templates. Historical untranslated
+  upstream README copies were removed instead of presenting upstream packages
+  as KyClash releases.
 - Update-detail links and contributor documentation identify KyClash, while
   README documents the deliberately retained executable, service, crate, IPC,
   and legacy-registry cleanup identifiers required for compatibility.
