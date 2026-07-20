@@ -66,6 +66,10 @@ Completed in the current workspace:
 - Added strict Rust validation and matching TypeScript contracts.
 - Added an explicit state machine and stable structured error codes.
 - Added versioned IPC request, response, status, and ordered-event contracts.
+- Added a runtime-neutral operation tracker that validates operation IDs,
+  emits every state change with a per-operation monotonic sequence, and applies
+  deterministic, idempotent timeout and cancellation cleanup with structured
+  reasons. Cancellation for a different operation cannot mutate state.
 - Added in-memory mock control-plane and sidecar implementations with no
   process, route, DNS, tunnel, or external network effects.
 - Added coverage for round trips, unknown versions, invalid configuration,
