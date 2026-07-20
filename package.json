@@ -8,6 +8,7 @@
     "dev:diff": "cross-env RUST_BACKTRACE=full tauri dev -f verge-dev",
     "dev:trace": "cross-env RUST_BACKTRACE=full RUSTFLAGS=\"--cfg tokio_unstable\" tauri dev -f verge-dev tokio-trace",
     "dev:tauri": "cross-env RUST_BACKTRACE=full tauri dev -f tauri-dev",
+    "dev:networking": "cross-env VITE_NETWORKING_DEV=true RUST_BACKTRACE=full tauri dev -f verge-dev,networking-dev",
     "build": "cross-env NODE_OPTIONS='--max-old-space-size=4096' tauri build",
     "build:fast": "cross-env NODE_OPTIONS='--max-old-space-size=4096' tauri build -- --profile fast-release",
     "tauri": "tauri",

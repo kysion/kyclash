@@ -411,3 +411,9 @@ export const isPortInUse = async (port: number) => {
     return false
   }
 }
+
+export const getNetworkingDevStatus = async () => {
+  return invoke<import('@/types/networking').NetworkingDevStatus>(
+    'get_networking_dev_status',
+  )
+}

@@ -68,6 +68,11 @@ export interface NetworkStatus {
   last_error: NetworkErrorCode | null
 }
 
+export interface NetworkingDevStatus {
+  network_state: NetworkState
+  sidecar_state: 'stopped' | 'starting' | 'running' | 'backoff' | 'crash_loop'
+}
+
 export interface NetworkStateEvent {
   /** Monotonically increasing within one sidecar process lifetime. */
   sequence: number

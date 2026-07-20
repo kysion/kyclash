@@ -72,8 +72,7 @@ Exit criteria:
 
 Goal: prove process isolation and observability without WireGuard or routes.
 
-Progress (2026-07-21): macOS/Unix development process and IPC proof complete;
-the development status page remains pending.
+Progress (2026-07-21): complete for the locked macOS-first scope.
 
 - Start, authenticate, monitor, restart, and stop the mock sidecar.
 - Add bounded restart backoff and crash-loop protection.
@@ -101,8 +100,8 @@ Completed in the current workspace:
 
 Remaining before Iteration 2 can close:
 
-- Wire the feature-gated Tauri command into a read-only development status
-  page.
+- None for the macOS-first scope. Run `pnpm dev:networking` to expose the
+  read-only development status page and matching Tauri command.
 
 Windows named-pipe/process support is intentionally deferred to the Windows
 platform phase after the macOS MVP.

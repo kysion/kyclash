@@ -3,6 +3,7 @@ import ForkRightOutlinedIcon from '@mui/icons-material/ForkRightOutlined'
 import HomeOutlinedIcon from '@mui/icons-material/HomeOutlined'
 import LanguageOutlinedIcon from '@mui/icons-material/LanguageOutlined'
 import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined'
+import MonitorHeartOutlinedIcon from '@mui/icons-material/MonitorHeartOutlined'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import SubjectOutlinedIcon from '@mui/icons-material/SubjectOutlined'
 import WifiOutlinedIcon from '@mui/icons-material/WifiOutlined'
@@ -21,6 +22,7 @@ import { navigationItems } from './_navigation-meta'
 import ConnectionsPage from './connections'
 import HomePage from './home'
 import LogsPage from './logs'
+import NetworkingDevPage from './networking-dev'
 import ProfilePage from './profiles'
 import ProxyPage from './proxies'
 import RulesPage from './rules'
@@ -28,13 +30,15 @@ import SettingPage from './settings'
 import UnlockPage from './unlock'
 
 type NavigationItem = {
-  label: (typeof navigationItems)[keyof typeof navigationItems]['label']
+  label:
+    | (typeof navigationItems)[keyof typeof navigationItems]['label']
+    | 'KyClash Network (Dev)'
   path: string
   icon: ReactNode[]
   Component: ComponentType
 }
 
-export const navItems: NavigationItem[] = [
+const standardNavItems: NavigationItem[] = [
   {
     ...navigationItems.home,
     icon: [<HomeOutlinedIcon key="mui" />, <HomeSvg key="svg" />],
@@ -75,4 +79,21 @@ export const navItems: NavigationItem[] = [
     icon: [<SettingsOutlinedIcon key="mui" />, <SettingsSvg key="svg" />],
     Component: SettingPage,
   },
+]
+
+const networkingDevItems: NavigationItem[] =
+  import.meta.env.VITE_NETWORKING_DEV === 'true'
+    ? [
+        {
+          label: 'KyClash Network (Dev)',
+          path: '/networking-dev',
+          icon: [<MonitorHeartOutlinedIcon key="mui" />],
+          Component: NetworkingDevPage,
+        },
+      ]
+    : []
+
+export const navItems: NavigationItem[] = [
+  ...standardNavItems,
+  ...networkingDevItems,
 ]
