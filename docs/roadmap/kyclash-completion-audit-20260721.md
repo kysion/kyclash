@@ -53,8 +53,9 @@ need separate explicit authorization.
   localization and dead-code checks; 136 Rust library tests; two process-level
   sidecar tests; Clippy with all features and warnings denied; Go module
   verification, formatting, repeated race tests, and vet.
-- The latest four network-sidecar GitHub Actions runs through commit `f7cb07ad`
-  completed successfully.
+- The network-sidecar GitHub Actions run for security-hardening commit
+  `eaf37d8d` completed successfully, superseding the four earlier successful
+  runs through `f7cb07ad`.
 
 ## Authorization-dependent release gates
 
