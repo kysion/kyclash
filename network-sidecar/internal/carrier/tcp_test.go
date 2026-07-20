@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"math/big"
+	"net"
 	"testing"
 	"time"
 )
@@ -119,11 +120,15 @@ func testCertificate(t *testing.T, serverName string) (tls.Certificate, *x509.Ce
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: serverName},
-		DNSNames:     []string{serverName},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if address := net.ParseIP(serverName); address != nil {
+		template.IPAddresses = []net.IP{address}
+	} else {
+		template.DNSNames = []string{serverName}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
 	if err != nil {

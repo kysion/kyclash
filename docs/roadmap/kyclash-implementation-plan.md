@@ -233,6 +233,10 @@ Completed in the current workspace:
 - Added the TCP fallback dialer with mandatory TLS 1.3, bounded connection
   setup, standard certificate-chain and server-name verification, and loopback
   tests proving authenticated packet exchange and wrong-identity refusal.
+- Added the WSS fallback with a pinned WebSocket dependency, mandatory
+  `wss://` and TLS 1.3, certificate/hostname verification, disabled compression,
+  and refusal of URL credentials, queries, and fragments. Loopback tests use an
+  ephemeral TLS WebSocket server and prove packet exchange and identity refusal.
 
 Remaining:
 
