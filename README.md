@@ -40,21 +40,21 @@
 | -------------------------------- | --------------------------------- |
 | ![预览](./docs/preview_dark.png) | ![预览](./docs/preview_light.png) |
 
-## Install
+## Release status
 
-请到 KyClash 发布页面下载对应的安装包：[Release page](https://github.com/kysion/kyclash/releases)<br>
-Go to the [KyClash Release page](https://github.com/kysion/kyclash/releases) to download the corresponding installation package<br>
-Supports Windows (x64/x86), Linux (x64/arm64) and macOS 11+ (intel/apple).
+KyClash 尚未发布可供普通用户安装的正式版本。当前仓库能够构建 macOS arm64
+PKG，但本地产物未签名、未公证、未 stapling，只能作为开发验证，不能视为可信
+发行包。应用自动更新也保持禁用，不会使用 Clash Verge Rev 的更新源或密钥。
 
-#### 我应当怎样选择发行版
+首个公开版本必须通过 KyClash 自有签名、公证、安装生命周期、回滚和更新源审阅。
+发布后，安装包只会出现在
+[KyClash Releases](https://github.com/kysion/kyclash/releases)，并附带校验和与发布证据。
 
-| 版本        | 特征                                     | 链接                                                                                   |
-| :---------- | :--------------------------------------- | :------------------------------------------------------------------------------------- |
-| Stable      | 正式版，高可靠性，适合日常使用。         | [Release](https://github.com/kysion/kyclash/releases)                 |
-| Alpha(废弃) | 测试发布流程。                           | [Alpha](https://github.com/kysion/kyclash/releases/tag/alpha)         |
-| AutoBuild   | 滚动更新版，适合测试反馈，可能存在缺陷。 | [AutoBuild](https://github.com/kysion/kyclash/releases/tag/autobuild) |
+当前平台实施顺序为 macOS arm64、macOS x64、Windows x64、Windows arm64，
+再到 Linux；这表示开发计划，不表示这些平台已经发布。
 
-#### 安装说明和常见问题，请到 [文档页](https://clash-verge-rev.github.io/) 查看
+上游 Clash Verge Rev 的使用文档可作为现有代理功能的参考，但其下载包、发布频道、
+更新源和支持范围不代表 KyClash。
 
 ### TG 频道: [@clash_verge_rev](https://t.me/clash_verge_re)
 
