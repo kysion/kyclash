@@ -253,6 +253,11 @@ Completed in the current workspace:
   `net.kysion.kyclash.networking` service namespace. Automated tests validate
   construction and redaction only; they do not write, read, or delete host
   Keychain entries.
+- Hardened macOS release packaging so CI requires an Installer signing
+  identity plus an App Store Connect notary API key, submits the final PKG to
+  `notarytool`, staples the ticket, and validates it before upload. The private
+  key is materialized as a mode-0600 runner file and only its path is passed to
+  tools; credentials are never command arguments.
 
 Remaining:
 

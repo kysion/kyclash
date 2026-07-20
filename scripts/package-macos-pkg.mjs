@@ -57,9 +57,15 @@ const args = [
   packageJson.version,
 ]
 const installerIdentity = process.env.APPLE_INSTALLER_SIGNING_IDENTITY
-if (process.env.CI && !installerIdentity) {
+const notaryKeyPath = process.env.APPLE_NOTARY_KEY_PATH
+const notaryKeyId = process.env.APPLE_NOTARY_KEY_ID
+const notaryIssuer = process.env.APPLE_NOTARY_ISSUER
+const hasNotaryCredentials = Boolean(
+  notaryKeyPath && notaryKeyId && notaryIssuer,
+)
+if (process.env.CI && (!installerIdentity || !hasNotaryCredentials)) {
   throw new Error(
-    'APPLE_INSTALLER_SIGNING_IDENTITY is required for CI release packages',
+    'APPLE_INSTALLER_SIGNING_IDENTITY and Apple notary API key settings are required for CI release packages',
   )
 }
 if (installerIdentity) {
@@ -72,6 +78,34 @@ if (installerIdentity) {
   execFileSync('pkgutil', ['--check-signature', outputPath], {
     stdio: 'inherit',
   })
+  if (hasNotaryCredentials) {
+    execFileSync(
+      'xcrun',
+      [
+        'notarytool',
+        'submit',
+        outputPath,
+        '--key',
+        notaryKeyPath,
+        '--key-id',
+        notaryKeyId,
+        '--issuer',
+        notaryIssuer,
+        '--wait',
+      ],
+      { stdio: 'inherit' },
+    )
+    execFileSync('xcrun', ['stapler', 'staple', outputPath], {
+      stdio: 'inherit',
+    })
+    execFileSync('xcrun', ['stapler', 'validate', outputPath], {
+      stdio: 'inherit',
+    })
+  } else {
+    console.warn(
+      '[WARN] Apple notary API key settings are unset; signed PKG was not notarized or stapled',
+    )
+  }
 } else {
   execFileSync('pkgutil', ['--payload-files', outputPath], { stdio: 'ignore' })
   console.warn(
