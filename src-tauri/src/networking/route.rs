@@ -1,4 +1,11 @@
-use std::{collections::HashMap, net::IpAddr};
+use std::{
+    collections::HashMap,
+    fs::{self, OpenOptions},
+    io::Write as _,
+    net::IpAddr,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +41,8 @@ pub struct RouteJournalEntry {
     pub profile_id: String,
     pub desired_routes: Vec<RouteSpec>,
     pub applied_routes: Vec<RouteSpec>,
+    #[serde(default)]
+    pub pending_route: Option<RouteSpec>,
     pub previous_routes: Vec<ExistingRoute>,
     pub state: RouteTransactionState,
 }
@@ -47,6 +56,121 @@ pub trait RoutePlatform {
 pub trait RouteJournal {
     fn entries(&self) -> Result<Vec<RouteJournalEntry>, NetworkErrorCode>;
     fn save(&mut self, entry: &RouteJournalEntry) -> Result<(), NetworkErrorCode>;
+}
+
+const ROUTE_JOURNAL_VERSION: u8 = 1;
+static ROUTE_JOURNAL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteJournalDocument {
+    version: u8,
+    entries: Vec<RouteJournalEntry>,
+}
+
+pub struct FileRouteJournal {
+    path: PathBuf,
+}
+
+impl FileRouteJournal {
+    pub const fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn read_document(&self) -> Result<RouteJournalDocument, NetworkErrorCode> {
+        match fs::symlink_metadata(&self.path) {
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                return Err(NetworkErrorCode::RouteJournalUnavailable);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RouteJournalDocument {
+                    version: ROUTE_JOURNAL_VERSION,
+                    entries: Vec::new(),
+                });
+            }
+            Err(_) => return Err(NetworkErrorCode::RouteJournalUnavailable),
+        }
+        let bytes = fs::read(&self.path).map_err(|_| NetworkErrorCode::RouteJournalUnavailable)?;
+        let document: RouteJournalDocument =
+            serde_json::from_slice(&bytes).map_err(|_| NetworkErrorCode::RouteJournalCorrupted)?;
+        if document.version != ROUTE_JOURNAL_VERSION {
+            return Err(NetworkErrorCode::RouteJournalCorrupted);
+        }
+        Ok(document)
+    }
+
+    fn write_document(&self, document: &RouteJournalDocument) -> Result<(), NetworkErrorCode> {
+        let parent = self.path.parent().ok_or(NetworkErrorCode::RouteJournalUnavailable)?;
+        ensure_private_directory(parent)?;
+        if fs::symlink_metadata(&self.path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
+            return Err(NetworkErrorCode::RouteJournalUnavailable);
+        }
+
+        let temp_path = temporary_journal_path(&self.path);
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            let mut file = options
+                .open(&temp_path)
+                .map_err(|_| NetworkErrorCode::RouteJournalUnavailable)?;
+            let bytes = serde_json::to_vec_pretty(document).map_err(|_| NetworkErrorCode::RouteJournalUnavailable)?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|_| NetworkErrorCode::RouteJournalUnavailable)?;
+            fs::rename(&temp_path, &self.path).map_err(|_| NetworkErrorCode::RouteJournalUnavailable)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temp_path);
+        }
+        result
+    }
+}
+
+impl RouteJournal for FileRouteJournal {
+    fn entries(&self) -> Result<Vec<RouteJournalEntry>, NetworkErrorCode> {
+        Ok(self.read_document()?.entries)
+    }
+
+    fn save(&mut self, entry: &RouteJournalEntry) -> Result<(), NetworkErrorCode> {
+        let mut document = self.read_document()?;
+        if let Some(existing) = document
+            .entries
+            .iter_mut()
+            .find(|candidate| candidate.transaction_id == entry.transaction_id)
+        {
+            *existing = entry.clone();
+        } else {
+            document.entries.push(entry.clone());
+        }
+        document
+            .entries
+            .sort_by(|left, right| left.transaction_id.cmp(&right.transaction_id));
+        self.write_document(&document)
+    }
+}
+
+fn temporary_journal_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    let sequence = ROUTE_JOURNAL_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    name.push(format!(".tmp.{}.{sequence}", std::process::id()));
+    PathBuf::from(name)
+}
+
+fn ensure_private_directory(path: &Path) -> Result<(), NetworkErrorCode> {
+    fs::create_dir_all(path).map_err(|_| NetworkErrorCode::RouteJournalUnavailable)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|_| NetworkErrorCode::RouteJournalUnavailable)?;
+    }
+    Ok(())
 }
 
 pub struct RouteOrchestrator<P, J> {
@@ -89,16 +213,27 @@ impl<P: RoutePlatform, J: RouteJournal> RouteOrchestrator<P, J> {
             profile_id,
             desired_routes,
             applied_routes: Vec::new(),
+            pending_route: None,
             previous_routes,
             state: RouteTransactionState::Prepared,
         };
         self.journal.save(&entry)?;
 
         for route in entry.desired_routes.clone() {
+            entry.pending_route = Some(route.clone());
+            if self.journal.save(&entry).is_err() {
+                entry.pending_route = None;
+                return self.rollback_failed_apply(&mut entry, NetworkErrorCode::RouteJournalUnavailable);
+            }
             if let Err(error) = self.platform.add_route(&route) {
+                entry.pending_route = None;
+                if self.journal.save(&entry).is_err() {
+                    return self.rollback_failed_apply(&mut entry, NetworkErrorCode::RouteJournalUnavailable);
+                }
                 return self.rollback_failed_apply(&mut entry, error);
             }
             entry.applied_routes.push(route);
+            entry.pending_route = None;
             if self.journal.save(&entry).is_err() {
                 return self.rollback_failed_apply(&mut entry, NetworkErrorCode::RouteRollbackFailed);
             }
@@ -146,6 +281,14 @@ impl<P: RoutePlatform, J: RouteJournal> RouteOrchestrator<P, J> {
     }
 
     fn rollback_entry(&mut self, entry: &mut RouteJournalEntry) -> Result<(), NetworkErrorCode> {
+        if let Some(route) = entry.pending_route.take() {
+            self.platform
+                .remove_route(&route)
+                .map_err(|_| NetworkErrorCode::RouteRollbackFailed)?;
+            self.journal
+                .save(entry)
+                .map_err(|_| NetworkErrorCode::RouteRollbackFailed)?;
+        }
         while let Some(route) = entry.applied_routes.last().cloned() {
             self.platform
                 .remove_route(&route)
@@ -272,12 +415,45 @@ impl RouteJournal for MemoryRouteJournal {
 mod tests {
     use super::*;
 
+    fn journal_entry(transaction_id: &str, state: RouteTransactionState) -> RouteJournalEntry {
+        RouteJournalEntry {
+            transaction_id: transaction_id.into(),
+            profile_id: "profile.1".into(),
+            desired_routes: vec![route("10.64.0.0/16")],
+            applied_routes: Vec::new(),
+            pending_route: None,
+            previous_routes: Vec::new(),
+            state,
+        }
+    }
+
     #[derive(Default)]
     struct FakePlatform {
         existing: Vec<ExistingRoute>,
         added: Vec<RouteSpec>,
         fail_add_at: Option<usize>,
         fail_remove: bool,
+    }
+
+    struct FailingJournal {
+        inner: MemoryRouteJournal,
+        save_count: usize,
+        fail_once_at: usize,
+    }
+
+    impl RouteJournal for FailingJournal {
+        fn entries(&self) -> Result<Vec<RouteJournalEntry>, NetworkErrorCode> {
+            self.inner.entries()
+        }
+
+        fn save(&mut self, entry: &RouteJournalEntry) -> Result<(), NetworkErrorCode> {
+            let current = self.save_count;
+            self.save_count += 1;
+            if current == self.fail_once_at {
+                return Err(NetworkErrorCode::RouteJournalUnavailable);
+            }
+            self.inner.save(entry)
+        }
     }
 
     impl RoutePlatform for FakePlatform {
@@ -406,6 +582,25 @@ mod tests {
     }
 
     #[test]
+    fn journal_failure_before_next_mutation_rolls_back_prior_routes() {
+        let journal = FailingJournal {
+            inner: MemoryRouteJournal::default(),
+            save_count: 0,
+            fail_once_at: 3,
+        };
+        let mut orchestrator = RouteOrchestrator::new(FakePlatform::default(), journal);
+        assert_eq!(
+            orchestrator.apply(
+                "tx.1".into(),
+                "profile.1".into(),
+                vec![route("10.64.0.0/16"), route("10.127.0.0/16")],
+            ),
+            Err(NetworkErrorCode::RouteJournalUnavailable)
+        );
+        assert!(orchestrator.platform.added.is_empty());
+    }
+
+    #[test]
     fn recovers_applied_routes_after_restart() -> Result<(), NetworkErrorCode> {
         let mut platform = FakePlatform::default();
         let owned = route("fd00:64::/48");
@@ -416,6 +611,7 @@ mod tests {
             profile_id: "profile.1".into(),
             desired_routes: vec![owned.clone()],
             applied_routes: vec![owned],
+            pending_route: None,
             previous_routes: Vec::new(),
             state: RouteTransactionState::Applied,
         })?;
@@ -440,5 +636,98 @@ mod tests {
             orchestrator.apply("tx.2".into(), "profile.1".into(), vec![route("10.0.0.0/33")]),
             Err(NetworkErrorCode::InvalidConfiguration)
         );
+    }
+
+    #[test]
+    fn recovers_a_durable_pending_mutation_after_crash() -> Result<(), NetworkErrorCode> {
+        let pending = route("10.64.0.0/16");
+        let mut platform = FakePlatform::default();
+        platform.added.push(pending.clone());
+        let mut journal = MemoryRouteJournal::default();
+        journal.save(&RouteJournalEntry {
+            transaction_id: "tx.pending".into(),
+            profile_id: "profile.1".into(),
+            desired_routes: vec![pending.clone()],
+            applied_routes: Vec::new(),
+            pending_route: Some(pending),
+            previous_routes: Vec::new(),
+            state: RouteTransactionState::Prepared,
+        })?;
+        let mut orchestrator = RouteOrchestrator::new(platform, journal);
+        orchestrator.recover_stale()?;
+        assert!(orchestrator.platform.added.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn file_journal_persists_deterministically_and_reloads() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("route-journal.json");
+        let mut journal = FileRouteJournal::new(path.clone());
+        journal
+            .save(&journal_entry("tx.2", RouteTransactionState::Prepared))
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        journal
+            .save(&journal_entry("tx.1", RouteTransactionState::Applied))
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+
+        let reloaded = FileRouteJournal::new(path.clone())
+            .entries()
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(
+            reloaded
+                .iter()
+                .map(|entry| entry.transaction_id.as_str())
+                .collect::<Vec<_>>(),
+            ["tx.1", "tx.2"]
+        );
+        let encoded = fs::read_to_string(path)?;
+        assert!(encoded.contains("\"version\": 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn file_journal_fails_closed_on_corruption_and_unknown_version() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("route-journal.json");
+        fs::write(&path, b"not-json")?;
+        assert_eq!(
+            FileRouteJournal::new(path.clone()).entries(),
+            Err(NetworkErrorCode::RouteJournalCorrupted)
+        );
+        fs::write(&path, br#"{"version":2,"entries":[]}"#)?;
+        assert_eq!(
+            FileRouteJournal::new(path).entries(),
+            Err(NetworkErrorCode::RouteJournalCorrupted)
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_journal_is_private_and_refuses_symlink_target() -> anyhow::Result<()> {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let directory = tempfile::tempdir()?;
+        let state_directory = directory.path().join("state");
+        let path = state_directory.join("route-journal.json");
+        let mut journal = FileRouteJournal::new(path.clone());
+        journal
+            .save(&journal_entry("tx.1", RouteTransactionState::Prepared))
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(fs::metadata(state_directory)?.permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+
+        let protected = directory.path().join("protected.json");
+        fs::write(&protected, b"do-not-touch")?;
+        let link = directory.path().join("journal-link.json");
+        symlink(&protected, &link)?;
+        let mut journal = FileRouteJournal::new(link);
+        assert_eq!(
+            journal.save(&journal_entry("tx.2", RouteTransactionState::Prepared)),
+            Err(NetworkErrorCode::RouteJournalUnavailable)
+        );
+        assert_eq!(fs::read(protected)?, b"do-not-touch");
+        Ok(())
     }
 }

@@ -116,8 +116,8 @@ Exit criteria:
 
 Goal: safely apply and roll back private CIDRs in an isolated lab.
 
-Progress (2026-07-21): pure transaction foundation in progress; no platform
-route command is implemented or executed.
+Progress (2026-07-21): transaction persistence and macOS read-only discovery
+are complete; no platform route mutation command is implemented or executed.
 
 - Implement platform route discovery and conflict detection.
 - Add an ownership journal and idempotent transaction API.
@@ -134,6 +134,17 @@ Completed in the current workspace:
   recovery, and explicit rollback-failure propagation.
 - Added in-memory fault tests without route, DNS, interface, tunnel, or
   external network effects.
+- Added a versioned file journal with atomic replacement, private Unix
+  permissions, deterministic serialization, and fail-closed handling for
+  corruption, unknown versions, symlinks, and unavailable storage.
+- Persisted each pending mutation before invoking the platform adapter so a
+  forced termination can recover the route whose outcome was not confirmed.
+- Added strict parsers for macOS IPv4 and IPv6 `netstat` route tables,
+  including abbreviated split-default destinations used by TUN interfaces.
+- Added a macOS read-only discovery adapter and verified it against the local
+  route table. Its mutation methods always refuse with `PermissionDenied`.
+- Added fault coverage for journal failure before mutation, journal failure
+  after mutation, durable pending-route recovery, corruption, and restart.
 
 Exit criteria:
 
