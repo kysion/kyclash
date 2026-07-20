@@ -169,6 +169,38 @@ type SequenceValidator struct {
 	last uint64
 }
 
+type SequenceWindow struct {
+	seen    bool
+	highest uint64
+	bitmap  uint64
+}
+
+func (window *SequenceWindow) Accept(sequence uint64) error {
+	if !window.seen {
+		window.seen = true
+		window.highest = sequence
+		window.bitmap = 1
+		return nil
+	}
+	if sequence > window.highest {
+		shift := sequence - window.highest
+		if shift >= 64 {
+			window.bitmap = 0
+		} else {
+			window.bitmap <<= shift
+		}
+		window.bitmap |= 1
+		window.highest = sequence
+		return nil
+	}
+	distance := window.highest - sequence
+	if distance >= 64 || window.bitmap&(uint64(1)<<distance) != 0 {
+		return ErrNonMonotonic
+	}
+	window.bitmap |= uint64(1) << distance
+	return nil
+}
+
 func (validator *SequenceValidator) Accept(sequence uint64) error {
 	if validator.seen && sequence <= validator.last {
 		return ErrNonMonotonic

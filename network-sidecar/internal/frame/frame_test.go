@@ -95,6 +95,20 @@ func TestSequenceValidator(t *testing.T) {
 	}
 }
 
+func TestSequenceWindowAcceptsReorderingOnce(t *testing.T) {
+	var window SequenceWindow
+	for _, sequence := range []uint64{10, 12, 11, 75} {
+		if err := window.Accept(sequence); err != nil {
+			t.Fatalf("sequence %d: %v", sequence, err)
+		}
+	}
+	for _, sequence := range []uint64{75, 11, 10} {
+		if err := window.Accept(sequence); !errors.Is(err, ErrNonMonotonic) {
+			t.Fatalf("expected replay/stale refusal for %d, got %v", sequence, err)
+		}
+	}
+}
+
 func FuzzDecodeDatagram(fuzzer *testing.F) {
 	seed, err := Encode(Frame{Kind: KindWireGuardPacket, Sequence: 1, Payload: []byte("packet")})
 	if err != nil {

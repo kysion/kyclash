@@ -251,6 +251,10 @@ Completed in the current workspace:
 - Locked a 64-sequence QUIC replay window so valid datagram reordering is
   accepted once while duplicates and stale sequences fail closed. Ordered
   WSS/TCP carriers retain strict monotonic receive validation.
+- Implemented the authenticated QUIC datagram carrier with pre-send
+  fragmentation, bounded reassembly, a per-connection replay window, TLS 1.3
+  and ALPN identity, cancellation, and idempotent cleanup. Loopback tests prove
+  large-packet fragmentation/echo and wrong-certificate refusal.
 
 Remaining:
 
