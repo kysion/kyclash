@@ -18,6 +18,10 @@ need separate explicit authorization.
 - The Go sidecar implements authenticated bootstrap and IPC, WireGuard carrier
   adaptation, QUIC fragmentation/reassembly/replay protection, and authenticated
   WSS/TCP fallback boundaries.
+- Entrypoint tests prove that rejected arguments, inherited environment state,
+  malformed bootstrap input, and malformed IPC cannot enter process diagnostics;
+  failure output is constant and attacker-controlled error chains are not
+  formatted.
 - An isolated userspace test proves WireGuard through fragmented QUIC in both
   directions without creating interfaces, routes, DNS changes, or external
   connections.
@@ -29,6 +33,15 @@ need separate explicit authorization.
 - The release workflow requires separate Application and Installer identities,
   notarization, stapling, validation, SBOM/provenance evidence, and rollback
   controls. Updater permissions remain disabled.
+- The release pipeline cannot generate updater JSON or invoke updater publishing,
+  the manual inherited updater workflow is absent, fixed-WebView2 overrides do
+  not restore an inherited verification key, and a CI verifier locks these
+  conditions together with both runtime update gates.
+- Inherited scheduled/multi-platform publication and notification workflows are
+  absent. The remaining release workflow is macOS arm64 only, defaults closed
+  behind an explicit repository authorization variable and protected
+  environment, and can create only a draft after all signing, notarization,
+  stapling, Gatekeeper, checksum, and provenance checks succeed.
 - The current arm64 development PKG evidence is recorded in
   `docs/testing/kyclash-macos-arm64-pkg-20260721.md`. It is unsigned and must not
   be represented as a release artifact.

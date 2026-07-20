@@ -31,6 +31,23 @@ Completed in the current workspace:
   configuration block; KyClash will add a new endpoint and public key only as
   one reviewed release-ownership change.
 - Updater artifacts are not generated without a KyClash signing procedure.
+- Removed the independently triggerable inherited updater workflow and updater
+  jobs from the release workflow, disabled updater JSON generation and updater
+  signing inputs, and removed inherited updater keys from fixed-WebView2 Tauri
+  overrides.
+- Added a fail-closed release-ownership verifier to CI and the project Skill.
+  Standard updater-generation commands now refuse to run until the endpoint,
+  key, rollback metadata, gates, and workflow are enabled in one reviewed
+  change.
+- Removed inherited scheduled autobuild, deploy-test release, asset deletion,
+  and Telegram publishing workflows. They could mutate external releases or
+  notify upstream channels without satisfying the macOS-first release gates.
+- Replaced the inherited multi-platform tag workflow with a least-privilege,
+  macOS-arm64-only draft pipeline. It is inert unless the repository variable
+  `KYCLASH_MACOS_RELEASE_ENABLED` is explicitly set to `true`, requires the
+  protected `kyclash-production-release` environment, and verifies Application
+  and Installer signatures, notarization, stapling, Gatekeeper assessment,
+  checksum, and provenance before creating a draft.
 - Portable archives use KyClash branding while retaining `clash-verge.exe`.
 - Release, autobuild, download, and Telegram workflow links and visible release
   names target `kysion/kyclash` and display KyClash rather than publishing
@@ -272,6 +289,10 @@ Completed in the current workspace:
   command-line arguments, accepts one bounded and strict stdin message, validates
   protocol/instance/auth/private-key fields, emits only an HMAC authentication
   proof, redacts formatting and errors, and clears owned secret buffers.
+- Added entrypoint-level leak tests covering rejected secret-bearing arguments,
+  inherited secret-bearing environment state, malformed bootstrap input, and
+  malformed post-authentication IPC. Failure diagnostics stay constant and do
+  not format attacker-controlled errors or crash output.
 - Added a path-scoped macOS sidecar CI gate pinned to Go 1.26.5. It verifies
   module hashes and formatting, runs race tests and vet, proves two builds are
   byte-identical, records SHA-256 and embedded module metadata, generates a

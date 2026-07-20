@@ -85,6 +85,7 @@ corepack pnpm run web:build
 corepack pnpm run lint
 corepack pnpm run i18n:check
 corepack pnpm run knip:check
+corepack pnpm run release:ownership-check
 cargo fmt --all --check
 cargo test -p clash-verge --lib
 cargo test -p clash-verge --features networking-dev --test networking_sidecar

@@ -37,6 +37,9 @@ jobs:
               - 'eslint.config.ts'
               - 'tsconfig.json'
               - 'vite.config.*'
+              - 'scripts/assert-updater-disabled.mjs'
+              - '.github/workflows/release.yml'
+              - '.github/workflows/frontend-check.yml'
 
       - name: Skip if no frontend changes
         if: steps.check_frontend.outputs.frontend != 'true'
@@ -77,6 +80,10 @@ jobs:
       - name: Run TypeScript typecheck
         if: steps.check_frontend.outputs.frontend == 'true'
         run: pnpm typecheck
+
+      - name: Verify KyClash updater ownership boundary
+        if: steps.check_frontend.outputs.frontend == 'true'
+        run: pnpm release:ownership-check
 
       - name: Report unused frontend code and dependencies
         if: steps.check_frontend.outputs.frontend == 'true'

@@ -39,9 +39,17 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	return ipc.Serve(reader, stdout)
 }
 
-func main() {
-	if err := run(os.Args[1:], os.Stdin, os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "KyClash network sidecar bootstrap failed")
-		os.Exit(1)
+func execute(arguments []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if err := run(arguments, stdin, stdout); err != nil {
+		// Bootstrap and IPC errors are deliberately not formatted here: decoding
+		// errors can retain attacker-controlled input in their chains, and the
+		// process boundary must never turn that input into crash diagnostics.
+		fmt.Fprintln(stderr, "KyClash network sidecar bootstrap failed")
+		return 1
 	}
+	return 0
+}
+
+func main() {
+	os.Exit(execute(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
