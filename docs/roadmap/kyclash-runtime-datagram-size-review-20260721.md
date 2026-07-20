@@ -14,13 +14,14 @@ oversized send.
 
 ## Decision
 
-P1 uses a fixed maximum QUIC fragment payload of 1,000 bytes. With the 20-byte
+P1 uses a fixed maximum QUIC fragment payload of 1,024 bytes. With the 20-byte
 base header and 12-byte fragment header, each fragmented KyClash datagram is at
-most 1,032 bytes. This stays conservatively below QUIC's required 1,200-byte
+most 1,056 bytes. This stays conservatively below QUIC's required 1,200-byte
 minimum UDP payload while leaving room for QUIC packet protection and datagram
-framing.
+framing. It also permits the 64-fragment limit to carry the full 65,535-byte
+frame bound.
 
-An unfragmented KyClash frame may use at most the same 1,000-byte payload.
+An unfragmented KyClash frame may use at most the same 1,024-byte payload.
 Larger packets are fragmented before any send. If `quic-go` still returns
 `DatagramTooLargeError` because the available size changed, the send fails and
 the existing health/fallback policy handles it; KyClash does not retry partial

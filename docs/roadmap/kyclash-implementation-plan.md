@@ -245,7 +245,7 @@ Completed in the current workspace:
   Tests cover canonical encoding, out-of-order completion, invalid counts,
   duplicates, completed-message replay, inconsistent metadata, expiry,
   concurrent assembly limits, and reconstructed-size limits.
-- Locked a conservative 1,000-byte QUIC fragment payload after verifying that
+- Locked a conservative 1,024-byte QUIC fragment payload after verifying that
   the selected library exposes path-size changes only as send errors. KyClash
   fragments before sending and fails into normal fallback if the path shrinks.
 
