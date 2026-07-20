@@ -255,6 +255,10 @@ Completed in the current workspace:
   fragmentation, bounded reassembly, a per-connection replay window, TLS 1.3
   and ALPN identity, cancellation, and idempotent cleanup. Loopback tests prove
   large-packet fragmentation/echo and wrong-certificate refusal.
+- Added the KyClash `wireguard-go` custom Bind adapter without creating a TUN
+  device. It maps one opaque peer endpoint onto the selected packet carrier,
+  implements bounded receive/send and close cancellation, rejects wrong
+  endpoints and undersized buffers, and passes in-memory conformance tests.
 
 Remaining:
 
