@@ -246,6 +246,9 @@ Completed in the current workspace:
   or external request.
 - Added a Rust lifecycle test for mock connect, status projection, route
   display, transport display, and disconnect.
+- Added user-initiated JSON diagnostic export containing only the displayed
+  allowlist fields; it omits control-plane and transport endpoints, identity
+  references, peer keys, authentication material, and credential values.
 - Added a credential-store boundary with strict `keychain:` references,
   non-serializable secret material, fixed redacted debug output, memory clearing
   on drop, and an in-memory test adapter.
@@ -265,6 +268,9 @@ Remaining:
   and system credential adapters pass their isolated validation gates.
 - Complete signing, notarization, stapling, updater ownership, and macOS
   installation lifecycle validation with authorized credentials and hosts.
+- Re-enable updater capabilities only in the same reviewed change that adds
+  KyClash-owned endpoints, verification keys, rollback metadata, and tests;
+  current builds have no updater configuration or frontend updater permission.
 
 ## Later platform order
 

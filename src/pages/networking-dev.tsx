@@ -1,3 +1,4 @@
+import DownloadRounded from '@mui/icons-material/DownloadRounded'
 import LinkOffRounded from '@mui/icons-material/LinkOffRounded'
 import PowerSettingsNewRounded from '@mui/icons-material/PowerSettingsNewRounded'
 import RefreshRounded from '@mui/icons-material/RefreshRounded'
@@ -12,6 +13,8 @@ import {
   Stack,
   Typography,
 } from '@mui/material'
+import { save } from '@tauri-apps/plugin-dialog'
+import { writeTextFile } from '@tauri-apps/plugin-fs'
 import { useCallback, useEffect, useState } from 'react'
 
 import { BasePage } from '@/components/base'
@@ -53,6 +56,35 @@ const NetworkingDevPage = () => {
     },
     [],
   )
+
+  const exportDiagnostics = useCallback(async () => {
+    if (!status) return
+    setLoading(true)
+    setError(undefined)
+    try {
+      const path = await save({
+        defaultPath: 'kyclash-network-diagnostics.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      })
+      if (!path) return
+      const diagnostic = {
+        schema_version: 1,
+        network_state: status.network_state,
+        sidecar_state: status.sidecar_state,
+        site_id: status.site_id,
+        private_route_count: status.private_routes.length,
+        private_routes: status.private_routes,
+        active_transport: status.active_transport,
+        health: status.health,
+        last_error: status.last_error,
+      }
+      await writeTextFile(path, `${JSON.stringify(diagnostic, null, 2)}\n`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setLoading(false)
+    }
+  }, [status])
 
   useEffect(() => {
     void refresh()
@@ -168,6 +200,14 @@ const NetworkingDevPage = () => {
                   variant="outlined"
                 >
                   Disconnect mock
+                </Button>
+                <Button
+                  disabled={loading || !status}
+                  onClick={() => void exportDiagnostics()}
+                  startIcon={<DownloadRounded />}
+                  variant="text"
+                >
+                  Export diagnostics
                 </Button>
               </Stack>
             </Stack>

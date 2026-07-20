@@ -14,7 +14,7 @@
     "duplicates",
     "cycles"
   ],
-  "ignoreBinaries": ["rustc", "pkgbuild", "pkgutil"],
+  "ignoreBinaries": ["rustc", "pkgbuild", "pkgutil", "xcrun"],
   "ignoreDependencies": ["lint-staged"],
   "ignoreIssues": {
     "src/types/generated/**": ["exports", "types"],
