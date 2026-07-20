@@ -230,6 +230,9 @@ Completed in the current workspace:
   serialized writes, bounded packets, replay refusal, context cancellation,
   deadline cleanup, and idempotent close behavior, verified entirely over
   in-memory connections.
+- Added the TCP fallback dialer with mandatory TLS 1.3, bounded connection
+  setup, standard certificate-chain and server-name verification, and loopback
+  tests proving authenticated packet exchange and wrong-identity refusal.
 
 Remaining:
 

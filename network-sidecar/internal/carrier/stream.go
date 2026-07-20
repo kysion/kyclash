@@ -120,15 +120,12 @@ func withContext(ctx context.Context, setDeadline func(time.Time) error, operati
 	stop := context.AfterFunc(ctx, func() { _ = setDeadline(time.Now()) })
 	err := operation()
 	stoppedBeforeCancel := stop()
-	resetErr := setDeadline(time.Time{})
+	_ = setDeadline(time.Time{})
 	if !stoppedBeforeCancel && ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if err != nil {
 		return err
-	}
-	if resetErr != nil {
-		return fmt.Errorf("reset carrier deadline: %w", resetErr)
 	}
 	return nil
 }
