@@ -6,6 +6,8 @@ Review record: `docs/roadmap/kyclash-plan-review-20260721.md`
 
 Architecture baseline: `docs/architecture/kyclash-networking-v1.md`
 
+Runtime implementation: `docs/architecture/kyclash-network-runtime-v1.md`
+
 ## Iteration 0: Safe product baseline
 
 Goal: produce a reproducible KyClash build that cannot replace itself with an
@@ -186,8 +188,8 @@ Exit criteria:
 Goal: validate the data plane in an isolated environment.
 
 Progress (2026-07-21): runtime-neutral control layer and deterministic fault
-simulation in progress; no tunnel, transport socket, or external endpoint is
-created.
+simulation complete and the runtime implementation is locked; no tunnel,
+transport socket, or external endpoint is created.
 
 - Integrate the selected WireGuard adapter behind a stable trait.
 - Implement QUIC primary transport and measured health checks.
@@ -214,10 +216,16 @@ Completed in the current workspace:
   store. Unsigned profiles, unknown key IDs, unknown algorithms, malformed
   envelopes, tampered payloads, invalid signatures, and invalid decoded
   profiles all fail closed before a profile reaches the data plane.
+- Locked the real data-plane implementation as a dedicated Go sidecar embedding
+  upstream `wireguard-go`, a KyClash custom Bind, `quic-go`, and
+  `coder/websocket`, with one common bounded packet envelope for QUIC, WSS, and
+  TCP. The review also locks the privilege split, secret channel, lifecycle,
+  rejected alternatives, and isolated validation gates.
 
 Remaining:
 
-- Integrate selected WireGuard, QUIC, WSS, and TCP implementations in an
+- Implement the locked sidecar, frame codec, custom Bind, and loopback carriers,
+  then integrate WireGuard, QUIC, WSS, and TCP in an
   isolated environment and record real packet-loss, jitter, suspend/resume,
   and throughput measurements.
 

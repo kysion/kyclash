@@ -11,8 +11,10 @@ Read these files before changing scope or architecture:
 
 1. `docs/roadmap/kyclash-plan-review-20260721.md`
 2. `docs/architecture/kyclash-networking-v1.md`
-3. `docs/roadmap/kyclash-implementation-plan.md`
-4. `kyclash-handoff-20260721.md` only for historical context
+3. `docs/architecture/kyclash-network-runtime-v1.md` when implementing the real
+   data plane or sidecar
+4. `docs/roadmap/kyclash-implementation-plan.md`
+5. `kyclash-handoff-20260721.md` only for historical context
 
 Treat the review record and architecture as locked. If they conflict with the
 handoff, follow the locked documents. Require a new review record before
@@ -32,6 +34,10 @@ After the user authorizes execution through all stages:
 - Stop only for a genuine hard blocker, a required credential or external
   dependency, or an action outside the authorization boundary below.
 - Keep the working tree clean between completed milestones.
+- Treat requests such as “continue through all stages” as standing authority for
+  every safe action in this file. Do not wait for another “next step” between
+  batches; keep advancing until all safe gates are complete or a defined
+  authorization boundary is the only remaining work.
 
 ## Authorization boundary
 
