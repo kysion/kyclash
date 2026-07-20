@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/polyfills/*.js!"],
+  "entry": ["src/polyfills/*.js!", "src/types/networking-fixture.ts"],
   "project": ["src/**/*.{js,jsx,ts,tsx}!", "scripts/**/*.{js,mjs}!"],
   "include": [
     "files",
@@ -14,10 +14,13 @@
     "duplicates",
     "cycles"
   ],
-  "ignoreBinaries": ["rustc"],
+  "ignoreBinaries": ["rustc", "pkgbuild", "pkgutil"],
   "ignoreDependencies": ["lint-staged"],
   "ignoreIssues": {
-    "src/types/generated/**": ["exports", "types"]
+    "src/types/generated/**": ["exports", "types"],
+    "src/types/networking-fixture.ts": ["exports"],
+    "src/types/networking.ts": ["exports", "types"],
+    "src/types/proxy-view.ts": ["exports", "types"]
   },
   "cycles": {
     "dynamicImports": true

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "profile_id": "profile.test",
+  "control_plane": "https://control.example.test",
+  "identity_ref": "keychain:device.test",
+  "site": {
+    "id": "site.test",
+    "display_name": "Test Site",
+    "private_cidrs": ["10.64.0.0/16", "fd00:64::/48"]
+  },
+  "tunnel": {
+    "local_addresses": ["10.64.0.2/32", "fd00:64::2/128"],
+    "peer_public_key": "test-public-key-not-a-secret",
+    "keepalive_seconds": 25
+  },
+  "transports": {
+    "primary": "quic",
+    "fallbacks": ["wss", "tcp"],
+    "endpoints": [
+      { "transport": "quic", "url": "https://edge.example.test:443" },
+      { "transport": "wss", "url": "wss://edge.example.test/tunnel" },
+      { "transport": "tcp", "url": "tcp://edge.example.test:443" }
+    ]
+  },
+  "policy": {
+    "connect_timeout_seconds": 15,
+    "health_interval_seconds": 10,
+    "fallback_threshold": 3
+  }
+}

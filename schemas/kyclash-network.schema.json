@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kysion.net/kyclash/network/v1.json",
+  "title": "KyClash Network Profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "control_plane",
+    "identity_ref",
+    "site",
+    "tunnel",
+    "transports",
+    "policy"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "profile_id": { "$ref": "#/$defs/id" },
+    "control_plane": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "identity_ref": { "$ref": "#/$defs/id" },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "display_name", "private_cidrs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "display_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "private_cidrs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/cidr" }
+        }
+      }
+    },
+    "tunnel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["local_addresses", "peer_public_key", "keepalive_seconds"],
+      "properties": {
+        "local_addresses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/cidr" }
+        },
+        "peer_public_key": { "type": "string", "minLength": 1 },
+        "keepalive_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "transports": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "fallbacks", "endpoints"],
+      "properties": {
+        "primary": { "const": "quic" },
+        "fallbacks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["wss", "tcp"] }
+        },
+        "endpoints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["transport", "url"],
+            "properties": {
+              "transport": { "enum": ["quic", "wss", "tcp"] },
+              "url": { "type": "string", "format": "uri" }
+            }
+          }
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "connect_timeout_seconds",
+        "health_interval_seconds",
+        "fallback_threshold"
+      ],
+      "properties": {
+        "connect_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        },
+        "health_interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        },
+        "fallback_threshold": { "type": "integer", "minimum": 1, "maximum": 20 }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "cidr": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f:.]+/[0-9]{1,3}$"
+    }
+  }
+}

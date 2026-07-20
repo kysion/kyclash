@@ -77,7 +77,7 @@ jobs:
           - [64位](${{ env.DOWNLOAD_URL }}/Clash.Verge_${{ env.VERSION }}_x64_fixed_webview2-setup.exe) | [ARM64](${{ env.DOWNLOAD_URL }}/Clash.Verge_${{ env.VERSION }}_arm64_fixed_webview2-setup.exe)
 
           ### macOS
-          - [Apple M芯片](${{ env.DOWNLOAD_URL }}/Clash.Verge_${{ env.VERSION }}_aarch64.dmg) | [Intel芯片](${{ env.DOWNLOAD_URL }}/Clash.Verge_${{ env.VERSION }}_x64.dmg)
+          - [Apple M芯片](${{ env.DOWNLOAD_URL }}/KyClash_${{ env.VERSION }}_aarch64.pkg) | [Intel芯片](${{ env.DOWNLOAD_URL }}/KyClash_${{ env.VERSION }}_x64.pkg)
 
           ### Linux
           #### DEB包(Debian系) 使用 apt ./路径 安装

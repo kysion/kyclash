@@ -22,19 +22,19 @@ notifications:
     body: 訂閱已啟用。
   appQuit:
     title: 即將退出
-    body: Clash Verge 即將退出。
+    body: KyClash 即將退出。
   appHidden:
     title: 應用已隱藏
-    body: Clash Verge 正在背景執行。
+    body: KyClash 正在背景執行。
   updateReady:
-    title: Clash Verge Update
+    title: KyClash Update
     body: A new version (v{version}) has been downloaded and is ready to install.
     installNow: Install Now
     later: Later
 service:
-  adminInstallPrompt: 安裝 Clash Verge 服務需要管理員權限
-  adminUninstallPrompt: 卸载 Clash Verge 服務需要管理員權限
-  translocatedCorePath: Clash Verge is running from a temporary (App Translocation) path and can't locate the core. Please move Clash Verge into the Applications folder and reopen it.
+  adminInstallPrompt: 安裝 KyClash 服務需要管理員權限
+  adminUninstallPrompt: 卸载 KyClash 服務需要管理員權限
+  translocatedCorePath: KyClash is running from a temporary (App Translocation) path and can't locate the core. Please move KyClash into the Applications folder and reopen it.
 tray:
   dashboard: 儀表板
   ruleMode: 規則模式

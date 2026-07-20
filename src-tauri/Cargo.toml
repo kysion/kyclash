@@ -1,10 +1,10 @@
 [package]
 name = "clash-verge"
 version = "2.5.3"
-description = "clash verge"
+description = "KyClash"
 authors = ["zzzgydi", "Tunglies", "wonfen", "MystiPanda"]
 license = "GPL-3.0-only"
-repository = "https://github.com/clash-verge-rev/clash-verge-rev.git"
+repository = "https://github.com/kysion/kyclash.git"
 default-run = "clash-verge"
 build = "build.rs"
 edition = "2024"
@@ -22,9 +22,15 @@ tauri-dev = []
 tokio-trace = ["console-subscriber"]
 clippy = ["tauri/test"]
 tracing = []
+networking-dev = []
+
+[[bin]]
+name = "kyclash-network-mock"
+path = "src/bin/kyclash-network-mock.rs"
+required-features = ["networking-dev"]
 
 [package.metadata.bundle]
-identifier = "io.github.clash-verge-rev.clash-verge-rev"
+identifier = "net.kysion.kyclash"
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
@@ -149,6 +155,7 @@ tauri-plugin-updater = "2.10.1"
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

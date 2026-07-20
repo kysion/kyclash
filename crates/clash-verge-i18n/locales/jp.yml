@@ -22,19 +22,19 @@ notifications:
     body: プロファイルが再有効化されました。
   appQuit:
     title: 終了間近
-    body: Clash Verge はまもなく終了します。
+    body: KyClash はまもなく終了します。
   appHidden:
     title: アプリが非表示
-    body: Clash Verge はバックグラウンドで実行中です。
+    body: KyClash はバックグラウンドで実行中です。
   updateReady:
-    title: Clash Verge Update
+    title: KyClash Update
     body: A new version (v{version}) has been downloaded and is ready to install.
     installNow: Install Now
     later: Later
 service:
-  adminInstallPrompt: Clash Verge サービスのインストールには管理者権限が必要です。
-  adminUninstallPrompt: Clash Verge サービスのアンインストールには管理者権限が必要です。
-  translocatedCorePath: Clash Verge is running from a temporary (App Translocation) path and can't locate the core. Please move Clash Verge into the Applications folder and reopen it.
+  adminInstallPrompt: KyClash サービスのインストールには管理者権限が必要です。
+  adminUninstallPrompt: KyClash サービスのアンインストールには管理者権限が必要です。
+  translocatedCorePath: KyClash is running from a temporary (App Translocation) path and can't locate the core. Please move KyClash into the Applications folder and reopen it.
 tray:
   dashboard: ダッシュボード
   ruleMode: ルールモード

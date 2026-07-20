@@ -8,6 +8,7 @@ mod core;
 mod enhance;
 mod feat;
 mod module;
+pub mod networking;
 mod process;
 pub mod utils;
 
@@ -143,6 +144,8 @@ mod app_init {
             cmd::open_core_dir,
             cmd::get_portable_flag,
             cmd::get_network_interfaces,
+            #[cfg(feature = "networking-dev")]
+            cmd::get_networking_dev_status,
             cmd::get_system_hostname,
             cmd::restart_app,
             cmd::start_core,
@@ -320,7 +323,7 @@ pub fn run() {
 
             #[cfg(target_os = "macos")]
             if let Some(window) = _app_handle.get_webview_window("main") {
-                let _ = window.set_title("Clash Verge");
+                let _ = window.set_title("KyClash");
             }
         }
 

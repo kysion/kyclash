@@ -22,19 +22,19 @@ notifications:
     body: Profil reaktiviert.
   appQuit:
     title: Beenden steht bevor
-    body: Clash Verge wird gleich beendet.
+    body: KyClash wird gleich beendet.
   appHidden:
     title: Anwendung ausgeblendet
-    body: Clash Verge läuft im Hintergrund.
+    body: KyClash läuft im Hintergrund.
   updateReady:
-    title: Clash Verge Update
+    title: KyClash Update
     body: A new version (v{version}) has been downloaded and is ready to install.
     installNow: Install Now
     later: Later
 service:
   adminInstallPrompt: Für die Installation des Clash-Verge-Dienstes sind Administratorrechte erforderlich.
   adminUninstallPrompt: Für die Deinstallation des Clash-Verge-Dienstes sind Administratorrechte erforderlich.
-  translocatedCorePath: Clash Verge is running from a temporary (App Translocation) path and can't locate the core. Please move Clash Verge into the Applications folder and reopen it.
+  translocatedCorePath: KyClash is running from a temporary (App Translocation) path and can't locate the core. Please move KyClash into the Applications folder and reopen it.
 tray:
   dashboard: Übersicht
   ruleMode: Regelmodus

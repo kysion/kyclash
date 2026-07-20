@@ -22,19 +22,19 @@ notifications:
     body: پروفایل دوباره فعال شد.
   appQuit:
     title: در آستانه خروج
-    body: Clash Verge در آستانه خروج است.
+    body: KyClash در آستانه خروج است.
   appHidden:
     title: برنامه پنهان شد
-    body: Clash Verge در پس‌زمینه در حال اجراست.
+    body: KyClash در پس‌زمینه در حال اجراست.
   updateReady:
-    title: Clash Verge Update
+    title: KyClash Update
     body: A new version (v{version}) has been downloaded and is ready to install.
     installNow: Install Now
     later: Later
 service:
-  adminInstallPrompt: نصب سرویس Clash Verge به دسترسی مدیر نیاز دارد.
-  adminUninstallPrompt: حذف سرویس Clash Verge به دسترسی مدیر نیاز دارد.
-  translocatedCorePath: Clash Verge is running from a temporary (App Translocation) path and can't locate the core. Please move Clash Verge into the Applications folder and reopen it.
+  adminInstallPrompt: نصب سرویس KyClash به دسترسی مدیر نیاز دارد.
+  adminUninstallPrompt: حذف سرویس KyClash به دسترسی مدیر نیاز دارد.
+  translocatedCorePath: KyClash is running from a temporary (App Translocation) path and can't locate the core. Please move KyClash into the Applications folder and reopen it.
 tray:
   dashboard: داشبورد
   ruleMode: حالت قوانین

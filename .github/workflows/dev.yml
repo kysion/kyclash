@@ -48,7 +48,7 @@ jobs:
             input: run_windows
           - os: macos-latest
             target: aarch64-apple-darwin
-            bundle: dmg
+            bundle: app
             id: macos-aarch64
             input: run_macos_aarch64
           - os: windows-latest
@@ -151,12 +151,18 @@ jobs:
           tauriScript: pnpm
           args: --target ${{ matrix.target }} -b ${{ matrix.bundle }}
 
-      - name: Upload Artifacts (macOS)
+      - name: Package macOS PKG
+        if: matrix.os == 'macos-latest' && github.event.inputs[matrix.input] == 'true'
+        env:
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+        run: pnpm macos:pkg ${{ matrix.target }}
+
+      - name: Upload macOS PKG artifact
         if: matrix.os == 'macos-latest' && github.event.inputs[matrix.input] == 'true'
         uses: actions/upload-artifact@v7
         with:
           archive: false
-          path: target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          path: target/${{ matrix.target }}/release/bundle/pkg/*.pkg
           if-no-files-found: error
 
       - name: Upload Artifacts (Windows)

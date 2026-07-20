@@ -139,8 +139,13 @@ pub(super) async fn init_auto_backup() {
 }
 
 async fn init_silent_updater() {
-    use crate::core::SilentUpdater;
     use crate::core::handle::Handle;
+    use crate::core::{SilentUpdater, updater::APP_UPDATES_ENABLED};
+
+    if !APP_UPDATES_ENABLED {
+        logging!(info, Type::Setup, "Application updater disabled for KyClash");
+        return;
+    }
 
     logging!(info, Type::Setup, "Initializing silent updater...");
 

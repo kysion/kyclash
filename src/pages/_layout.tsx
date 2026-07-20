@@ -30,7 +30,6 @@ import { Outlet, useNavigate } from 'react-router'
 
 import iconDark from '@/assets/image/icon_dark.svg?react'
 import iconLight from '@/assets/image/icon_light.svg?react'
-import LogoSvg from '@/assets/image/logo.svg?react'
 import { BaseErrorBoundary } from '@/components/base'
 import { LayoutItem } from '@/components/layout/layout-item'
 import { LayoutTraffic } from '@/components/layout/layout-traffic'
@@ -330,7 +329,20 @@ const Layout = () => {
                   }}
                   inheritViewBox
                 />
-                <LogoSvg fill={isDark ? 'white' : 'black'} />
+                <Box
+                  component="span"
+                  sx={{
+                    alignSelf: 'center',
+                    color: isDark ? 'common.white' : 'common.black',
+                    fontSize: 20,
+                    fontWeight: 700,
+                    letterSpacing: '-0.02em',
+                    lineHeight: 1,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  KyClash
+                </Box>
               </div>
               <UpdateButton className="the-newbtn" />
             </div>

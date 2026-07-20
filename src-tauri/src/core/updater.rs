@@ -10,6 +10,11 @@ use std::{
 };
 use tauri_plugin_updater::{Update, UpdaterExt as _};
 
+/// Application updates stay disabled until KyClash owns the update endpoint,
+/// signing key, and rollback procedure. Keep this gate in addition to the
+/// empty endpoint list so previously cached upstream releases are not installed.
+pub const APP_UPDATES_ENABLED: bool = false;
+
 pub struct SilentUpdater {
     update_ready: AtomicBool,
     pending_bytes: RwLock<Option<Vec<u8>>>,
@@ -325,7 +330,7 @@ impl SilentUpdater {
         use tauri::{WebviewUrl, WebviewWindowBuilder};
 
         let window = match WebviewWindowBuilder::new(app_handle, "update-splash", WebviewUrl::App("index.html".into()))
-            .title("Clash Verge - Updating")
+            .title("KyClash - Updating")
             .inner_size(300.0, 180.0)
             .resizable(false)
             .maximizable(false)

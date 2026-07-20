@@ -10,6 +10,8 @@ pub mod clash;
 pub mod lightweight;
 pub mod media_unlock_checker;
 pub mod network;
+#[cfg(feature = "networking-dev")]
+pub mod networking;
 pub mod profile;
 pub mod proxy;
 pub mod runtime;
@@ -28,6 +30,8 @@ pub use clash::*;
 pub use lightweight::*;
 pub use media_unlock_checker::*;
 pub use network::*;
+#[cfg(feature = "networking-dev")]
+pub use networking::*;
 pub use profile::*;
 pub use proxy::*;
 pub use runtime::*;

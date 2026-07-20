@@ -1,13 +1,22 @@
 <h1 align="center">
-  <img src="./src-tauri/icons/icon.png" alt="Clash" width="128" />
+  <img src="./src-tauri/icons/icon.png" alt="KyClash" width="128" />
   <br>
-  Continuation of <a href="https://github.com/zzzgydi/clash-verge">Clash Verge</a>
+  KyClash
   <br>
 </h1>
 
 <h3 align="center">
-A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a>.
+基于 Clash Verge Rev 二次开发的跨平台代理与私有网络客户端。
 </h3>
+
+> [!IMPORTANT]
+> **上游与二次开发说明：** KyClash 由 Kysion 团队基于
+> [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)
+> 进行二次开发；Clash Verge Rev 又延续自
+> [Clash Verge](https://github.com/zzzgydi/clash-verge)。KyClash 并非上述上游项目的官方发行版。
+> 本项目继续遵循 GPL-3.0-only 许可证，并保留上游作者及依赖项目的署名。
+
+项目仓库：[kysion/kyclash](https://github.com/kysion/kyclash)
 
 <p align="center">
   Languages:
@@ -28,17 +37,17 @@ A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a
 
 ## Install
 
-请到发布页面下载对应的安装包：[Release page](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>
-Go to the [Release page](https://github.com/clash-verge-rev/clash-verge-rev/releases) to download the corresponding installation package<br>
+请到 KyClash 发布页面下载对应的安装包：[Release page](https://github.com/kysion/kyclash/releases)<br>
+Go to the [KyClash Release page](https://github.com/kysion/kyclash/releases) to download the corresponding installation package<br>
 Supports Windows (x64/x86), Linux (x64/arm64) and macOS 11+ (intel/apple).
 
 #### 我应当怎样选择发行版
 
 | 版本        | 特征                                     | 链接                                                                                   |
 | :---------- | :--------------------------------------- | :------------------------------------------------------------------------------------- |
-| Stable      | 正式版，高可靠性，适合日常使用。         | [Release](https://github.com/clash-verge-rev/clash-verge-rev/releases)                 |
-| Alpha(废弃) | 测试发布流程。                           | [Alpha](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/alpha)         |
-| AutoBuild   | 滚动更新版，适合测试反馈，可能存在缺陷。 | [AutoBuild](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/autobuild) |
+| Stable      | 正式版，高可靠性，适合日常使用。         | [Release](https://github.com/kysion/kyclash/releases)                 |
+| Alpha(废弃) | 测试发布流程。                           | [Alpha](https://github.com/kysion/kyclash/releases/tag/alpha)         |
+| AutoBuild   | 滚动更新版，适合测试反馈，可能存在缺陷。 | [AutoBuild](https://github.com/kysion/kyclash/releases/tag/autobuild) |
 
 #### 安装说明和常见问题，请到 [文档页](https://clash-verge-rev.github.io/) 查看
 
@@ -113,7 +122,10 @@ Issue and PR welcome!
 
 ## Acknowledgement
 
-Clash Verge rev was based on or inspired by these projects and so on:
+KyClash is directly derived from Clash Verge Rev and also retains the upstream
+project acknowledgements:
+
+- [clash-verge-rev/clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev): KyClash 的直接上游项目。
 
 - [zzzgydi/clash-verge](https://github.com/zzzgydi/clash-verge): A Clash GUI based on tauri. Supports Windows, macOS and Linux.
 - [tauri-apps/tauri](https://github.com/tauri-apps/tauri): Build smaller, faster, and more secure desktop applications with a web frontend.

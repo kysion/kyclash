@@ -6,6 +6,11 @@ import {
 
 import { version as appVersion } from '@root/package.json'
 
+// Enable only together with KyClash-owned endpoints, signing key, and backend
+// APP_UPDATES_ENABLED. Keeping the frontend gate prevents noisy empty-endpoint
+// checks while the backend gate also protects against cached upstream updates.
+export const APP_UPDATES_ENABLED = false
+
 type VersionParts = {
   main: number[]
   pre: (number | string)[]
@@ -125,6 +130,8 @@ const localVersionNormalized = normalizeVersion(appVersion)
 export const checkUpdateSafe = async (
   options?: CheckOptions,
 ): Promise<Update | null> => {
+  if (!APP_UPDATES_ENABLED) return null
+
   const result = await check({ ...(options ?? {}), allowDowngrades: false })
   if (!result) return null
 
