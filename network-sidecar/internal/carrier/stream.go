@@ -73,7 +73,7 @@ func (stream *Stream) Receive(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if decoded.Kind != frame.KindWireGuardPacket {
+	if decoded.Kind != frame.KindWireGuardPacket || decoded.Fragment != nil {
 		return nil, ErrUnexpectedFrame
 	}
 	if err := stream.incoming.Accept(decoded.Sequence); err != nil {

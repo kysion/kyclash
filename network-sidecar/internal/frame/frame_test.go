@@ -42,7 +42,7 @@ func TestDecodeFailsClosed(t *testing.T) {
 		{"magic", func(data []byte) []byte { data[0] = 0; return data }, ErrInvalidMagic},
 		{"version", func(data []byte) []byte { data[4]++; return data }, ErrUnsupportedVersion},
 		{"kind", func(data []byte) []byte { data[5] = 99; return data }, ErrInvalidKind},
-		{"flags", func(data []byte) []byte { data[7] = 1; return data }, ErrUnknownFlags},
+		{"flags", func(data []byte) []byte { data[7] = 2; return data }, ErrUnknownFlags},
 		{"oversize", func(data []byte) []byte { data[8], data[9], data[10], data[11] = 0, 1, 0, 0; return data }, ErrPayloadTooLarge},
 		{"trailing", func(data []byte) []byte { return append(data, 0) }, ErrTrailingData},
 	}

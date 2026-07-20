@@ -10,10 +10,14 @@ import (
 )
 
 const (
-	Version        = uint8(1)
-	HeaderSize     = 20
-	MaxPayloadSize = 65_535
+	Version            = uint8(1)
+	HeaderSize         = 20
+	FragmentHeaderSize = 12
+	MaxPayloadSize     = 65_535
+	MaxFragments       = 64
 )
+
+const flagFragmented = uint16(1)
 
 var magic = [4]byte{'K', 'Y', 'N', 'P'}
 
@@ -25,6 +29,10 @@ var (
 	ErrPayloadTooLarge    = errors.New("frame payload too large")
 	ErrTrailingData       = errors.New("trailing data after datagram frame")
 	ErrNonMonotonic       = errors.New("non-monotonic frame sequence")
+	ErrInvalidFragment    = errors.New("invalid frame fragment")
+	ErrDuplicateFragment  = errors.New("duplicate frame fragment")
+	ErrAssemblyLimit      = errors.New("fragment assembly limit exceeded")
+	ErrAssemblyExpired    = errors.New("fragment assembly expired")
 )
 
 type Kind uint8
@@ -43,7 +51,14 @@ func (kind Kind) valid() bool {
 type Frame struct {
 	Kind     Kind
 	Sequence uint64
+	Fragment *Fragment
 	Payload  []byte
+}
+
+type Fragment struct {
+	MessageID uint64
+	Index     uint16
+	Count     uint16
 }
 
 func (frame Frame) Validate() error {
@@ -52,6 +67,12 @@ func (frame Frame) Validate() error {
 	}
 	if len(frame.Payload) > MaxPayloadSize {
 		return ErrPayloadTooLarge
+	}
+	if frame.Fragment != nil {
+		if frame.Kind != KindWireGuardPacket || frame.Fragment.Count < 2 || frame.Fragment.Count > MaxFragments || frame.Fragment.Index >= frame.Fragment.Count || len(frame.Payload) == 0 {
+			return ErrInvalidFragment
+		}
+		return nil
 	}
 	if frame.Kind != KindWireGuardPacket && len(frame.Payload) != 0 {
 		return fmt.Errorf("control frame payload: %w", ErrInvalidKind)
@@ -63,13 +84,23 @@ func Encode(frame Frame) ([]byte, error) {
 	if err := frame.Validate(); err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, HeaderSize+len(frame.Payload))
+	extraHeader := 0
+	if frame.Fragment != nil {
+		extraHeader = FragmentHeaderSize
+	}
+	encoded := make([]byte, HeaderSize+extraHeader+len(frame.Payload))
 	copy(encoded[:4], magic[:])
 	encoded[4] = Version
 	encoded[5] = byte(frame.Kind)
+	if frame.Fragment != nil {
+		binary.BigEndian.PutUint16(encoded[6:8], flagFragmented)
+		binary.BigEndian.PutUint64(encoded[20:28], frame.Fragment.MessageID)
+		binary.BigEndian.PutUint16(encoded[28:30], frame.Fragment.Index)
+		binary.BigEndian.PutUint16(encoded[30:32], frame.Fragment.Count)
+	}
 	binary.BigEndian.PutUint32(encoded[8:12], uint32(len(frame.Payload)))
 	binary.BigEndian.PutUint64(encoded[12:20], frame.Sequence)
-	copy(encoded[HeaderSize:], frame.Payload)
+	copy(encoded[HeaderSize+extraHeader:], frame.Payload)
 	return encoded, nil
 }
 
@@ -88,7 +119,8 @@ func Decode(reader io.Reader) (Frame, error) {
 	if !kind.valid() {
 		return Frame{}, ErrInvalidKind
 	}
-	if binary.BigEndian.Uint16(header[6:8]) != 0 {
+	flags := binary.BigEndian.Uint16(header[6:8])
+	if flags & ^flagFragmented != 0 {
 		return Frame{}, ErrUnknownFlags
 	}
 	payloadLength := binary.BigEndian.Uint32(header[8:12])
@@ -99,6 +131,17 @@ func Decode(reader io.Reader) (Frame, error) {
 		Kind:     kind,
 		Sequence: binary.BigEndian.Uint64(header[12:20]),
 		Payload:  make([]byte, int(payloadLength)),
+	}
+	if flags&flagFragmented != 0 {
+		fragmentHeader := make([]byte, FragmentHeaderSize)
+		if _, err := io.ReadFull(reader, fragmentHeader); err != nil {
+			return Frame{}, fmt.Errorf("read fragment header: %w", err)
+		}
+		decoded.Fragment = &Fragment{
+			MessageID: binary.BigEndian.Uint64(fragmentHeader[:8]),
+			Index:     binary.BigEndian.Uint16(fragmentHeader[8:10]),
+			Count:     binary.BigEndian.Uint16(fragmentHeader[10:12]),
+		}
 	}
 	if _, err := io.ReadFull(reader, decoded.Payload); err != nil {
 		return Frame{}, fmt.Errorf("read frame payload: %w", err)

@@ -241,6 +241,10 @@ Completed in the current workspace:
   The locked amendment adds bounded, expiring, replay-resistant QUIC
   fragmentation while retaining the common frame header and all existing
   transport and fallback semantics.
+- Implemented the reviewed fragment header and bounded in-memory reassembler.
+  Tests cover canonical encoding, out-of-order completion, invalid counts,
+  duplicates, completed-message replay, inconsistent metadata, expiry,
+  concurrent assembly limits, and reconstructed-size limits.
 
 Remaining:
 
