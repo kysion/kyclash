@@ -311,8 +311,11 @@ Exit criteria:
 
 Goal: deliver one-site private access with user-facing recovery and diagnostics.
 
-Progress (2026-07-21): feature-gated mock operations UI in progress; production
-connection controls and credential access remain disabled.
+Progress (2026-07-21): all source-level and isolated work permitted by the
+continuous-delivery authorization boundary is complete. Production connection
+controls and real credential access remain disabled pending the authorized
+host, server, and release gates recorded in
+`kyclash-completion-audit-20260721.md`.
 
 - Add site selection, connect/disconnect, health, routes, and diagnostics UI.
 - Integrate system credential storage.
@@ -360,6 +363,9 @@ Remaining:
 - Re-enable updater capabilities only in the same reviewed change that adds
   KyClash-owned endpoints, verification keys, rollback metadata, and tests;
   current builds have no updater configuration or frontend updater permission.
+- Execute the authorization-dependent host, server, credential, signing, and
+  lifecycle gates enumerated in `kyclash-completion-audit-20260721.md`. No other
+  safe autonomous source-level milestone remains before those gates.
 
 ## Later platform order
 
