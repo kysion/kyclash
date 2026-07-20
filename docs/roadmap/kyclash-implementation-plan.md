@@ -42,6 +42,10 @@ Completed in the current workspace:
 - `KyClash_2.5.3_aarch64.pkg` is the macOS installation artifact, built from
   the Tauri application bundle with bundle identifier
   `net.kysion.kyclash`.
+- Rebuilt the unsigned arm64 PKG from commit `f7cb07ad` after the updater and
+  networking changes. The evidence record confirms KyClash display identity,
+  arm64 architecture, no installer signature, size, SHA-256, and that no
+  install/sign/notary/upload action occurred.
 
 Exit criteria:
 
