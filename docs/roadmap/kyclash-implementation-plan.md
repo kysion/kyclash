@@ -193,6 +193,10 @@ Completed in the current workspace:
 - Added deterministic simulations for primary failure, ordered fallback,
   health-threshold fallback, network-change recovery, total transport failure,
   and tunnel cleanup.
+- Integrated a private-route transaction boundary into the data-plane
+  lifecycle. Route-apply failure, total transport failure, failed health
+  fallback, and explicit disconnect all roll routes back before stopping the
+  WireGuard adapter, with best-effort cleanup covered by ordered event tests.
 
 Remaining:
 

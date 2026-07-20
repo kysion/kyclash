@@ -19,25 +19,32 @@ pub trait WireGuardAdapter {
     fn stop(&mut self) -> Result<(), NetworkErrorCode>;
 }
 
+pub trait PrivateRouteAdapter {
+    fn apply(&mut self, profile: &NetworkProfile) -> Result<(), NetworkErrorCode>;
+    fn rollback(&mut self) -> Result<(), NetworkErrorCode>;
+}
+
 pub trait TransportAdapter {
     fn connect(&mut self, endpoint: &TransportEndpoint) -> Result<(), NetworkErrorCode>;
     fn disconnect(&mut self, transport: TransportKind) -> Result<(), NetworkErrorCode>;
     fn health(&mut self, transport: TransportKind) -> Result<TransportHealth, NetworkErrorCode>;
 }
 
-pub struct DataPlaneController<W, T> {
+pub struct DataPlaneController<W, T, R> {
     wireguard: W,
     transport: T,
+    routes: R,
     state: NetworkState,
     active_transport: Option<TransportKind>,
     unhealthy_samples: u8,
 }
 
-impl<W: WireGuardAdapter, T: TransportAdapter> DataPlaneController<W, T> {
-    pub const fn new(wireguard: W, transport: T) -> Self {
+impl<W: WireGuardAdapter, T: TransportAdapter, R: PrivateRouteAdapter> DataPlaneController<W, T, R> {
+    pub const fn new(wireguard: W, transport: T, routes: R) -> Self {
         Self {
             wireguard,
             transport,
+            routes,
             state: NetworkState::Disconnected,
             active_transport: None,
             unhealthy_samples: 0,
@@ -63,6 +70,10 @@ impl<W: WireGuardAdapter, T: TransportAdapter> DataPlaneController<W, T> {
         }
         if let Err(error) = self.wireguard.start(&profile.tunnel) {
             self.fail_to_disconnected()?;
+            return Err(error);
+        }
+        if let Err(error) = self.routes.apply(profile) {
+            self.cleanup_after_failure()?;
             return Err(error);
         }
         self.state.transition_to(NetworkState::ConnectingPrimary)?;
@@ -111,11 +122,13 @@ impl<W: WireGuardAdapter, T: TransportAdapter> DataPlaneController<W, T> {
             return Ok(());
         }
         self.state.transition_to(NetworkState::Disconnecting)?;
-        if let Some(active) = self.active_transport {
-            self.disconnect_active(active)?;
-        }
-        self.wireguard.stop()?;
-        self.state.transition_to(NetworkState::Disconnected)
+        let transport_result = self
+            .active_transport
+            .map_or(Ok(()), |active| self.disconnect_active(active));
+        let route_result = self.routes.rollback();
+        let tunnel_result = self.wireguard.stop();
+        self.state.transition_to(NetworkState::Disconnected)?;
+        transport_result.and(route_result).and(tunnel_result)
     }
 
     fn switch_after_failure(
@@ -125,14 +138,20 @@ impl<W: WireGuardAdapter, T: TransportAdapter> DataPlaneController<W, T> {
     ) -> Result<(), NetworkErrorCode> {
         self.disconnect_active(failed)?;
         if failed == profile.transports.primary {
-            self.connect_first_fallback(profile)?;
+            if let Err(error) = self.connect_first_fallback(profile) {
+                self.cleanup_after_failure()?;
+                return Err(error);
+            }
             return self.state.transition_to(NetworkState::DegradedFallback);
         }
         self.state.transition_to(NetworkState::Reconnecting)?;
         if self.connect_kind(profile, profile.transports.primary).is_ok() {
             return self.state.transition_to(NetworkState::ConnectedPrimary);
         }
-        self.connect_first_fallback(profile)?;
+        if let Err(error) = self.connect_first_fallback(profile) {
+            self.cleanup_after_failure()?;
+            return Err(error);
+        }
         self.state.transition_to(NetworkState::DegradedFallback)
     }
 
@@ -165,9 +184,11 @@ impl<W: WireGuardAdapter, T: TransportAdapter> DataPlaneController<W, T> {
 
     fn cleanup_after_failure(&mut self) -> Result<(), NetworkErrorCode> {
         self.active_transport = None;
-        self.wireguard.stop()?;
+        let route_result = self.routes.rollback();
+        let tunnel_result = self.wireguard.stop();
         self.state.transition_to(NetworkState::Error)?;
-        self.state.transition_to(NetworkState::Disconnected)
+        self.state.transition_to(NetworkState::Disconnected)?;
+        route_result.and(tunnel_result)
     }
 
     fn fail_to_disconnected(&mut self) -> Result<(), NetworkErrorCode> {
@@ -213,6 +234,32 @@ mod tests {
         health: VecDeque<TransportHealth>,
     }
 
+    struct FakeRoutes {
+        events: Arc<Mutex<Vec<String>>>,
+        fail_apply: bool,
+        fail_rollback: bool,
+    }
+
+    impl PrivateRouteAdapter for FakeRoutes {
+        fn apply(&mut self, _: &NetworkProfile) -> Result<(), NetworkErrorCode> {
+            self.events.lock().push("routes:apply".into());
+            if self.fail_apply {
+                Err(NetworkErrorCode::RouteConflict)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn rollback(&mut self) -> Result<(), NetworkErrorCode> {
+            self.events.lock().push("routes:rollback".into());
+            if self.fail_rollback {
+                Err(NetworkErrorCode::RouteRollbackFailed)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     impl TransportAdapter for FakeTransport {
         fn connect(&mut self, endpoint: &TransportEndpoint) -> Result<(), NetworkErrorCode> {
             self.events.lock().push(format!("connect:{:?}", endpoint.transport));
@@ -233,13 +280,12 @@ mod tests {
         }
     }
 
+    type FakeController = DataPlaneController<FakeWireGuard, FakeTransport, FakeRoutes>;
+
     fn controller(
         fail_connect: Vec<TransportKind>,
         health: Vec<TransportHealth>,
-    ) -> (
-        DataPlaneController<FakeWireGuard, FakeTransport>,
-        Arc<Mutex<Vec<String>>>,
-    ) {
+    ) -> (FakeController, Arc<Mutex<Vec<String>>>) {
         let events = Arc::new(Mutex::new(Vec::new()));
         (
             DataPlaneController::new(
@@ -251,6 +297,11 @@ mod tests {
                     events: Arc::clone(&events),
                     fail_connect,
                     health: health.into(),
+                },
+                FakeRoutes {
+                    events: Arc::clone(&events),
+                    fail_apply: false,
+                    fail_rollback: false,
                 },
             ),
             events,
@@ -266,7 +317,13 @@ mod tests {
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         assert_eq!(controller.state(), NetworkState::DegradedFallback);
         controller.disconnect().map_err(|error| anyhow::anyhow!("{error:?}"))?;
-        assert_eq!(events.lock().last().map(String::as_str), Some("wireguard:stop"));
+        let events = events.lock();
+        assert_eq!(events.last().map(String::as_str), Some("wireguard:stop"));
+        assert!(
+            events.iter().position(|event| event == "routes:rollback")
+                < events.iter().position(|event| event == "wireguard:stop")
+        );
+        drop(events);
         Ok(())
     }
 
@@ -312,6 +369,47 @@ mod tests {
         let (mut controller, events) = controller(failures, Vec::new());
         assert_eq!(
             controller.connect(&profile),
+            Err(NetworkErrorCode::FallbackTransportUnavailable)
+        );
+        assert_eq!(controller.state(), NetworkState::Disconnected);
+        let events = events.lock();
+        assert_eq!(events.last().map(String::as_str), Some("wireguard:stop"));
+        assert!(events.iter().any(|event| event == "routes:rollback"));
+        drop(events);
+        Ok(())
+    }
+
+    #[test]
+    fn route_apply_failure_rolls_back_and_stops_wireguard() -> anyhow::Result<()> {
+        let profile: NetworkProfile = serde_json::from_str(VALID_PROFILE)?;
+        let (mut controller, events) = controller(Vec::new(), Vec::new());
+        controller.routes.fail_apply = true;
+        assert_eq!(controller.connect(&profile), Err(NetworkErrorCode::RouteConflict));
+        assert_eq!(controller.state(), NetworkState::Disconnected);
+        assert_eq!(
+            events.lock().as_slice(),
+            ["wireguard:start", "routes:apply", "routes:rollback", "wireguard:stop"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_fallback_after_health_loss_cleans_routes_and_tunnel() -> anyhow::Result<()> {
+        let mut profile: NetworkProfile = serde_json::from_str(VALID_PROFILE)?;
+        profile.policy.fallback_threshold = 1;
+        let unhealthy = TransportHealth {
+            reachable: false,
+            latency_ms: 0,
+            jitter_ms: 0,
+            packet_loss_percent: 100,
+        };
+        let (mut controller, events) = controller(Vec::new(), vec![unhealthy]);
+        controller
+            .connect(&profile)
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        controller.transport.fail_connect = profile.transports.fallbacks.clone();
+        assert_eq!(
+            controller.sample_health(&profile),
             Err(NetworkErrorCode::FallbackTransportUnavailable)
         );
         assert_eq!(controller.state(), NetworkState::Disconnected);
