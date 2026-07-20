@@ -226,6 +226,10 @@ Completed in the current workspace:
   fields, payload bounds, every truncation point, trailing datagram bytes,
   monotonic sequence enforcement, and fuzz-safe decoding without network or
   system effects.
+- Added a carrier-neutral reliable-stream adapter for WSS and TCP with
+  serialized writes, bounded packets, replay refusal, context cancellation,
+  deadline cleanup, and idempotent close behavior, verified entirely over
+  in-memory connections.
 
 Remaining:
 
