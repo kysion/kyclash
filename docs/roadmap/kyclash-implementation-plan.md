@@ -345,6 +345,11 @@ Completed in the current workspace:
   `notarytool`, staples the ticket, and validates it before upload. The private
   key is materialized as a mode-0600 runner file and only its path is passed to
   tools; credentials are never command arguments.
+- Locked the macOS release and rollback procedure. It separates Application and
+  Installer signatures, requires notarization/stapling and lifecycle evidence,
+  defines immutable rollback artifacts and stop triggers, and permits updater
+  re-enablement only as one reviewed KyClash-owned endpoint/key/manifest/test
+  transaction.
 
 Remaining:
 
