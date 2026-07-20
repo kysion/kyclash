@@ -79,6 +79,17 @@ func newQUIC(connection *quicgo.Conn) *QUIC {
 	}
 }
 
+// AcceptQUIC wraps a server connection after its listener has authenticated
+// TLS and ALPN. Both peers must have enabled RFC 9221 datagrams.
+func AcceptQUIC(connection *quicgo.Conn) (*QUIC, error) {
+	datagramSupport := connection.ConnectionState().SupportsDatagrams
+	if !datagramSupport.Local || !datagramSupport.Remote {
+		_ = connection.CloseWithError(0, "datagrams required")
+		return nil, ErrDatagramsUnavailable
+	}
+	return newQUIC(connection), nil
+}
+
 func (carrier *QUIC) Send(ctx context.Context, packet []byte) error {
 	carrier.writeMu.Lock()
 	defer carrier.writeMu.Unlock()

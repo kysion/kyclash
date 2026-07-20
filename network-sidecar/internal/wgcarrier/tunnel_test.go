@@ -1,16 +1,24 @@
 package wgcarrier
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/kysion/kyclash/network-sidecar/internal/carrier"
+	quicgo "github.com/quic-go/quic-go"
 	"golang.org/x/crypto/curve25519"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
@@ -65,6 +73,55 @@ func (carrier *pairedCarrier) Close() error {
 
 func TestWireGuardEncryptsThroughKyClashCarrier(t *testing.T) {
 	leftCarrier, rightCarrier := newCarrierPair()
+	proveWireGuardTunnel(t, leftCarrier, rightCarrier)
+}
+
+func TestWireGuardEncryptsThroughFragmentedQUICCarrier(t *testing.T) {
+	certificate, roots := tunnelCertificate(t)
+	listener, err := quicgo.ListenAddr("127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"kyclash-network/1"},
+	}, &quicgo.Config{EnableDatagrams: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	serverResult := make(chan *carrier.QUIC, 1)
+	serverError := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept(context.Background())
+		if acceptErr != nil {
+			serverError <- acceptErr
+			return
+		}
+		server, acceptErr := carrier.AcceptQUIC(connection)
+		if acceptErr != nil {
+			serverError <- acceptErr
+			return
+		}
+		serverResult <- server
+	}()
+	client, err := carrier.DialQUIC(context.Background(), carrier.QUICConfig{
+		Address:    listener.Addr().String(),
+		ServerName: "127.0.0.1",
+		RootCAs:    roots,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case server := <-serverResult:
+		proveWireGuardTunnel(t, client, server)
+	case err := <-serverError:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("QUIC server did not authenticate")
+	}
+}
+
+func proveWireGuardTunnel(t *testing.T, leftCarrier, rightCarrier carrier.Carrier) {
+	t.Helper()
 	leftBind, err := NewBind(leftCarrier, "right")
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +161,7 @@ func TestWireGuardEncryptsThroughKyClashCarrier(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	payload := bytes.Repeat([]byte("kyclash"), 715)
 	serverResult := make(chan error, 1)
 	go func() {
 		connection, acceptErr := listener.Accept()
@@ -112,12 +170,13 @@ func TestWireGuardEncryptsThroughKyClashCarrier(t *testing.T) {
 			return
 		}
 		defer connection.Close()
-		payload, readErr := io.ReadAll(io.LimitReader(connection, 4))
-		if readErr == nil && string(payload) != "ping" {
-			readErr = fmt.Errorf("unexpected tunneled payload: %q", payload)
+		received := make([]byte, len(payload))
+		_, readErr := io.ReadFull(connection, received)
+		if readErr == nil && !bytes.Equal(received, payload) {
+			readErr = fmt.Errorf("unexpected tunneled payload")
 		}
 		if readErr == nil {
-			_, readErr = connection.Write([]byte("pong"))
+			_, readErr = connection.Write(received)
 		}
 		serverResult <- readErr
 	}()
@@ -128,19 +187,47 @@ func TestWireGuardEncryptsThroughKyClashCarrier(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer connection.Close()
-	if _, err := connection.Write([]byte("ping")); err != nil {
+	if _, err := connection.Write(payload); err != nil {
 		t.Fatal(err)
 	}
-	response := make([]byte, 4)
+	response := make([]byte, len(payload))
 	if _, err := io.ReadFull(connection, response); err != nil {
 		t.Fatal(err)
 	}
-	if string(response) != "pong" {
-		t.Fatalf("unexpected response: %q", response)
+	if !bytes.Equal(response, payload) {
+		t.Fatal("unexpected tunneled response")
 	}
 	if err := <-serverResult; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func tunnelCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(parsed)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: privateKey}, roots
 }
 
 func testKeyPair(t *testing.T) (string, string) {

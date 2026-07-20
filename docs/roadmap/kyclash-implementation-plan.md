@@ -279,6 +279,11 @@ Completed in the current workspace:
 - Added a shared status-response fixture asserted by both Rust and Go tests so
   changes to result tagging, state spelling, nullability, or field names cannot
   silently break controller/sidecar compatibility.
+- Added the full isolated composition test: a multi-packet TCP payload traverses
+  userspace WireGuard encryption, the custom Bind, bounded KyClash
+  fragmentation, authenticated QUIC datagrams, reassembly, peer decryption, and
+  the reverse path. All addresses and certificates are ephemeral loopback or
+  userspace-netstack values.
 
 Remaining:
 
