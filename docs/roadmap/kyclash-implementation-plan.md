@@ -197,6 +197,10 @@ Completed in the current workspace:
   lifecycle. Route-apply failure, total transport failure, failed health
   fallback, and explicit disconnect all roll routes back before stopping the
   WireGuard adapter, with best-effort cleanup covered by ordered event tests.
+- Added a versioned Ed25519-signed remote-policy envelope and pinned trust
+  store. Unsigned profiles, unknown key IDs, unknown algorithms, malformed
+  envelopes, tampered payloads, invalid signatures, and invalid decoded
+  profiles all fail closed before a profile reaches the data plane.
 
 Remaining:
 

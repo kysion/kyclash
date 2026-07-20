@@ -23,6 +23,7 @@ pub enum NetworkErrorCode {
     InvalidConfiguration,
     AuthenticationFailed,
     PermissionDenied,
+    PolicySignatureInvalid,
     RouteDiscoveryFailed,
     RouteConflict,
     RouteJournalCorrupted,

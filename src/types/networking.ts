@@ -51,6 +51,7 @@ export type NetworkErrorCode =
   | 'invalid_configuration'
   | 'authentication_failed'
   | 'permission_denied'
+  | 'policy_signature_invalid'
   | 'route_discovery_failed'
   | 'route_conflict'
   | 'route_journal_corrupted'
