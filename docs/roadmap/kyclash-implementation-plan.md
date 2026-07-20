@@ -233,6 +233,13 @@ Completed in the current workspace:
   or external request.
 - Added a Rust lifecycle test for mock connect, status projection, route
   display, transport display, and disconnect.
+- Added a credential-store boundary with strict `keychain:` references,
+  non-serializable secret material, fixed redacted debug output, memory clearing
+  on drop, and an in-memory test adapter.
+- Added a macOS Keychain adapter scoped to the fixed
+  `net.kysion.kyclash.networking` service namespace. Automated tests validate
+  construction and redaction only; they do not write, read, or delete host
+  Keychain entries.
 
 Remaining:
 
