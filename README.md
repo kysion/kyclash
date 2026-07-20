@@ -14,6 +14,11 @@
 > [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)
 > 进行二次开发；Clash Verge Rev 又延续自
 > [Clash Verge](https://github.com/zzzgydi/clash-verge)。KyClash 并非上述上游项目的官方发行版。
+
+> **兼容标识说明：** 为避免破坏既有安装、提权服务、IPC 和卸载迁移，源码中暂时保留
+> `clash-verge.exe`、`clash-verge-service`、相关 Rust crate 名，以及 Windows 安装器清理旧
+> `Clash Verge Rev` 注册表键的逻辑。这些内部或迁移标识不代表 KyClash 使用上游发布渠道；
+> 用户可见产品名、安装包和发布链接均为 KyClash。
 > 本项目继续遵循 GPL-3.0-only 许可证，并保留上游作者及依赖项目的署名。
 
 项目仓库：[kysion/kyclash](https://github.com/kysion/kyclash)

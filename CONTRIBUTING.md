@@ -1,6 +1,6 @@
 # CONTRIBUTING
 
-Thank you for your interest in contributing to **Clash Verge Rev**! This guide provides instructions to help you set up your development environment and start contributing effectively.
+Thank you for your interest in contributing to **KyClash**! This guide provides instructions to help you set up your development environment and start contributing effectively. KyClash is a downstream project based on [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev); contributions here target KyClash unless explicitly marked as an upstream compatibility change.
 
 ## Internationalization (i18n)
 

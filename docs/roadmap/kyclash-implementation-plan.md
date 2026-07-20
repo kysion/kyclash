@@ -30,6 +30,9 @@ Completed in the current workspace:
 - Release, autobuild, download, and Telegram workflow links and visible release
   names target `kysion/kyclash` and display KyClash rather than publishing
   upstream Clash Verge Rev branding.
+- Update-detail links and contributor documentation identify KyClash, while
+  README documents the deliberately retained executable, service, crate, IPC,
+  and legacy-registry cleanup identifiers required for compatibility.
 - Typecheck, web build, ESLint, Rustfmt, unit tests, and Clippy pass.
 - `KyClash_2.5.3_aarch64.pkg` is the macOS installation artifact, built from
   the Tauri application bundle with bundle identifier
