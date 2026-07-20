@@ -1,4 +1,5 @@
 mod config;
+mod data_plane;
 mod diagnostics;
 mod ipc;
 mod macos_route;
@@ -13,5 +14,6 @@ mod state;
 #[cfg(feature = "networking-dev")]
 pub use self::process_runtime::*;
 pub use self::{
-    config::*, diagnostics::*, ipc::*, macos_route::*, mock::*, mock_control::*, route::*, sidecar::*, state::*,
+    config::*, data_plane::*, diagnostics::*, ipc::*, macos_route::*, mock::*, mock_control::*, route::*, sidecar::*,
+    state::*,
 };

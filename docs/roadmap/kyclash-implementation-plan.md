@@ -172,10 +172,33 @@ Exit criteria:
 
 Goal: validate the data plane in an isolated environment.
 
+Progress (2026-07-21): runtime-neutral control layer and deterministic fault
+simulation in progress; no tunnel, transport socket, or external endpoint is
+created.
+
 - Integrate the selected WireGuard adapter behind a stable trait.
 - Implement QUIC primary transport and measured health checks.
 - Implement WSS/TCP fallback with break-before-make behavior.
 - Test UDP blocking, packet loss, jitter, suspend/resume, and network changes.
+
+Completed in the current workspace:
+
+- Added stable WireGuard and transport adapter traits without selecting or
+  invoking a privileged implementation.
+- Added a data-plane controller that starts and stops the tunnel, selects QUIC
+  first, measures reachability/latency/jitter/loss, and applies a configurable
+  consecutive-failure threshold.
+- Enforced break-before-make by clearing the active transport only after its
+  disconnect succeeds and before attempting WSS/TCP or a QUIC recovery.
+- Added deterministic simulations for primary failure, ordered fallback,
+  health-threshold fallback, network-change recovery, total transport failure,
+  and tunnel cleanup.
+
+Remaining:
+
+- Integrate selected WireGuard, QUIC, WSS, and TCP implementations in an
+  isolated environment and record real packet-loss, jitter, suspend/resume,
+  and throughput measurements.
 
 Exit criteria:
 
