@@ -5,9 +5,10 @@ mod mock;
 mod mock_control;
 #[cfg(feature = "networking-dev")]
 mod process_runtime;
+mod route;
 mod sidecar;
 mod state;
 
 #[cfg(feature = "networking-dev")]
 pub use self::process_runtime::*;
-pub use self::{config::*, diagnostics::*, ipc::*, mock::*, mock_control::*, sidecar::*, state::*};
+pub use self::{config::*, diagnostics::*, ipc::*, mock::*, mock_control::*, route::*, sidecar::*, state::*};

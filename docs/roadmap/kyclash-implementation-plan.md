@@ -116,11 +116,24 @@ Exit criteria:
 
 Goal: safely apply and roll back private CIDRs in an isolated lab.
 
+Progress (2026-07-21): pure transaction foundation in progress; no platform
+route command is implemented or executed.
+
 - Implement platform route discovery and conflict detection.
 - Add an ownership journal and idempotent transaction API.
 - Exercise connect failure, forced termination, restart, and rollback.
 - Test coexistence with Mihomo TUN.
 - Keep DNS mutation out of scope.
+
+Completed in the current workspace:
+
+- Added runtime-neutral route discovery, mutation, and journal traits.
+- Added CIDR normalization and overlap conflict refusal while allowing default
+  underlay routes.
+- Added idempotent apply/rollback, per-route ownership recording, stale-state
+  recovery, and explicit rollback-failure propagation.
+- Added in-memory fault tests without route, DNS, interface, tunnel, or
+  external network effects.
 
 Exit criteria:
 
