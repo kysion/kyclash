@@ -86,3 +86,13 @@ authority for safe repository work. Future execution resumes automatically at
 the first authorized item above; it does not require repeated “next step”
 prompts. Credentials and real host or external-system mutations remain explicit
 authorization boundaries.
+
+## Authorization update — 2026-07-21
+
+The user authorized continuation after this audit. The repository now contains
+the feature-gated real route executor and fixed-scope lab harness documented in
+`../testing/kyclash-macos-route-lab.md`. Read-only preflight rejected the current
+development Mac as the mutation environment because it carries active split
+routes and multiple tunnels and has no non-interactive elevation. Item 1 remains
+open specifically for execution on a disposable macOS host; its source and
+runbook preparation are complete.

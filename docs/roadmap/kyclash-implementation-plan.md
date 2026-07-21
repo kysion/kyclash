@@ -196,6 +196,22 @@ Completed in the current workspace:
 - Added a shell-free macOS route-command planner for normalized IPv4/IPv6
   add/delete arguments, including option-injection and malformed-interface
   refusal. The planner returns data only and never starts `/sbin/route`.
+- After explicit route-lab authorization, added a `networking-route-lab`
+  compile-time adapter that executes only planner-produced `/sbin/route` argv,
+  with no shell, stdin, captured diagnostics, retry, or application command
+  wiring. Injected-executor tests prove exact add/delete ordering and fail-closed
+  error propagation without touching the host route table.
+- Added a fixed-scope lab executable for the authorized disposable-host gate.
+  It accepts only cycle, abort-after-apply, leave-for-recovery, and recover
+  modes; can mutate only RFC 5737 test route `192.0.2.0/24` through `lo0`;
+  requires an exact explicit confirmation environment value plus root;
+  serializes runs with a kernel-held lock that is released on process death;
+  and uses the durable route journal for normal and forced-exit recovery. Its
+  private `/var/tmp` directory must be a real root-owned directory.
+- Hardened the journal directory boundary before privileged lab use: the final
+  state directory must be a real directory rather than a symlink, preventing a
+  pre-created `/var/tmp` link from redirecting journal writes or permission
+  changes. A Unix regression test proves the linked target remains untouched.
 
 Remaining authorization-dependent validation:
 

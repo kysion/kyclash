@@ -3,6 +3,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(target_os = "macos")]
 use std::{path::PathBuf, process::Command};
 
+#[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+use std::process::Stdio;
+
 #[cfg(target_os = "macos")]
 use super::RoutePlatform;
 use super::{ExistingRoute, NetworkErrorCode, RouteSpec};
@@ -125,6 +128,79 @@ impl RoutePlatform for MacOsReadOnlyRoutePlatform {
 
     fn remove_route(&mut self, _: &RouteSpec) -> Result<(), NetworkErrorCode> {
         Err(NetworkErrorCode::PermissionDenied)
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+pub trait MacOsRouteCommandExecutor {
+    /// Execute one already-validated argv-only route command. Implementations
+    /// must not invoke a shell or expose command output to application logs.
+    fn execute(&mut self, command: &MacOsRouteCommand) -> Result<(), NetworkErrorCode>;
+}
+
+#[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+#[derive(Debug, Default)]
+pub struct SystemMacOsRouteCommandExecutor;
+
+#[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+impl MacOsRouteCommandExecutor for SystemMacOsRouteCommandExecutor {
+    fn execute(&mut self, command: &MacOsRouteCommand) -> Result<(), NetworkErrorCode> {
+        if command.program != "/sbin/route" {
+            return Err(NetworkErrorCode::InvalidConfiguration);
+        }
+        let status = Command::new(command.program)
+            .args(&command.arguments)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|_| NetworkErrorCode::PermissionDenied)?;
+        if !status.success() {
+            return Err(NetworkErrorCode::PermissionDenied);
+        }
+        Ok(())
+    }
+}
+
+/// Route platform used only by the explicitly enabled macOS route lab. The
+/// application has no command or runtime wiring that constructs this type.
+#[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+pub struct MacOsRouteLabPlatform<E = SystemMacOsRouteCommandExecutor> {
+    discovery: MacOsReadOnlyRoutePlatform,
+    executor: E,
+}
+
+#[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+impl Default for MacOsRouteLabPlatform<SystemMacOsRouteCommandExecutor> {
+    fn default() -> Self {
+        Self {
+            discovery: MacOsReadOnlyRoutePlatform::default(),
+            executor: SystemMacOsRouteCommandExecutor,
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+impl<E> MacOsRouteLabPlatform<E> {
+    pub const fn new(discovery: MacOsReadOnlyRoutePlatform, executor: E) -> Self {
+        Self { discovery, executor }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+impl<E: MacOsRouteCommandExecutor> RoutePlatform for MacOsRouteLabPlatform<E> {
+    fn list_routes(&mut self) -> Result<Vec<ExistingRoute>, NetworkErrorCode> {
+        self.discovery.list_routes()
+    }
+
+    fn add_route(&mut self, route: &RouteSpec) -> Result<(), NetworkErrorCode> {
+        self.executor
+            .execute(&plan_macos_route_command(MacOsRouteAction::Add, route)?)
+    }
+
+    fn remove_route(&mut self, route: &RouteSpec) -> Result<(), NetworkErrorCode> {
+        self.executor
+            .execute(&plan_macos_route_command(MacOsRouteAction::Delete, route)?)
     }
 }
 
@@ -343,6 +419,72 @@ fe80::1%lo0                             fe80::1%lo0                     UH      
                 Err(NetworkErrorCode::InvalidConfiguration)
             );
         }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+    #[test]
+    fn lab_platform_executes_only_planned_argv_without_a_shell() -> Result<(), NetworkErrorCode> {
+        #[derive(Default)]
+        struct RecordingExecutor {
+            commands: Vec<MacOsRouteCommand>,
+            fail_at: Option<usize>,
+        }
+
+        impl MacOsRouteCommandExecutor for RecordingExecutor {
+            fn execute(&mut self, command: &MacOsRouteCommand) -> Result<(), NetworkErrorCode> {
+                if self.fail_at == Some(self.commands.len()) {
+                    return Err(NetworkErrorCode::PermissionDenied);
+                }
+                self.commands.push(command.clone());
+                Ok(())
+            }
+        }
+
+        let discovery = MacOsReadOnlyRoutePlatform::default();
+        let mut platform = MacOsRouteLabPlatform::new(discovery, RecordingExecutor::default());
+        let route = RouteSpec {
+            destination: "192.0.2.0/24".into(),
+            interface: "lo0".into(),
+        };
+        platform.add_route(&route)?;
+        platform.remove_route(&route)?;
+        assert_eq!(platform.executor.commands.len(), 2);
+        assert_eq!(platform.executor.commands[0].program, "/sbin/route");
+        assert_eq!(platform.executor.commands[0].arguments[1], "add");
+        assert_eq!(platform.executor.commands[1].arguments[1], "delete");
+        assert!(
+            platform
+                .executor
+                .commands
+                .iter()
+                .all(|command| !command.arguments.iter().any(|argument| argument.contains(';')))
+        );
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "macos", feature = "networking-route-lab"))]
+    #[test]
+    fn lab_platform_propagates_executor_failure_without_retrying() {
+        #[derive(Default)]
+        struct FailingExecutor {
+            calls: usize,
+        }
+
+        impl MacOsRouteCommandExecutor for FailingExecutor {
+            fn execute(&mut self, _: &MacOsRouteCommand) -> Result<(), NetworkErrorCode> {
+                self.calls += 1;
+                Err(NetworkErrorCode::PermissionDenied)
+            }
+        }
+
+        let mut platform =
+            MacOsRouteLabPlatform::new(MacOsReadOnlyRoutePlatform::default(), FailingExecutor::default());
+        let route = RouteSpec {
+            destination: "192.0.2.0/24".into(),
+            interface: "lo0".into(),
+        };
+        assert_eq!(platform.add_route(&route), Err(NetworkErrorCode::PermissionDenied));
+        assert_eq!(platform.executor.calls, 1);
     }
 
     #[cfg(target_os = "macos")]

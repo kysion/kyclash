@@ -23,11 +23,20 @@ tokio-trace = ["console-subscriber"]
 clippy = ["tauri/test"]
 tracing = []
 networking-dev = []
+# Compiles the macOS `/sbin/route` executor for explicitly authorized,
+# disposable-host validation. No application command wires this feature into a
+# production build.
+networking-route-lab = []
 
 [[bin]]
 name = "kyclash-network-mock"
 path = "src/bin/kyclash-network-mock.rs"
 required-features = ["networking-dev"]
+
+[[bin]]
+name = "kyclash-route-lab"
+path = "src/bin/kyclash-route-lab.rs"
+required-features = ["networking-route-lab"]
 
 [package.metadata.bundle]
 identifier = "net.kysion.kyclash"

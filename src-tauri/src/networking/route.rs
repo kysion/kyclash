@@ -193,6 +193,10 @@ fn temporary_journal_path(path: &Path) -> PathBuf {
 
 fn ensure_private_directory(path: &Path) -> Result<(), NetworkErrorCode> {
     fs::create_dir_all(path).map_err(|_| NetworkErrorCode::RouteJournalUnavailable)?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| NetworkErrorCode::RouteJournalUnavailable)?;
+    if !metadata.file_type().is_dir() {
+        return Err(NetworkErrorCode::RouteJournalUnavailable);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -863,6 +867,26 @@ mod tests {
             Err(NetworkErrorCode::RouteJournalUnavailable)
         );
         assert_eq!(fs::read(protected)?, b"do-not-touch");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_journal_refuses_symlinked_state_directory() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let protected = directory.path().join("protected");
+        fs::create_dir(&protected)?;
+        let linked_state = directory.path().join("state");
+        symlink(&protected, &linked_state)?;
+        let path = linked_state.join("route-journal.json");
+        let mut journal = FileRouteJournal::new(path);
+        assert_eq!(
+            journal.save(&journal_entry("tx.1", RouteTransactionState::Prepared)),
+            Err(NetworkErrorCode::RouteJournalUnavailable)
+        );
+        assert!(fs::read_dir(protected)?.next().is_none());
         Ok(())
     }
 }
