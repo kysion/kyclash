@@ -158,11 +158,14 @@ private func routeHelperInterface() -> NSXPCInterface {
 }
 
 private final class RouteHelperService: NSObject, RouteHelperProtocol {
+    private let lock = NSLock()
     private var owner: LeaseOwner?
 
     func discover(reply: @escaping (HelperReply) -> Void) { reply(HelperReply(state: "idle")) }
 
     func begin(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
         guard owner.isValid(), self.owner == nil else {
             reply(HelperReply(state: "failed_closed", errorCode: "invalid_owner")); return
         }
@@ -171,25 +174,41 @@ private final class RouteHelperService: NSObject, RouteHelperProtocol {
     }
 
     func apply(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
         reply(valid(reference) ? HelperReply(state: "prepared", errorCode: "not_ready") : invalidReply())
     }
 
     func rollback(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
         guard valid(reference) else { reply(invalidReply()); return }
         owner = nil
         reply(HelperReply(state: "idle"))
     }
 
     func recover(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
         reply(HelperReply(state: "failed_closed", errorCode: owner.isValid() ? "not_ready" : "invalid_owner"))
     }
 
     func heartbeat(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
         reply(valid(reference) ? HelperReply(state: "prepared") : invalidReply())
     }
 
     func status(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
         reply(valid(reference) ? HelperReply(state: "prepared") : invalidReply())
+    }
+
+    func invalidateConnection() {
+        lock.lock()
+        owner = nil
+        lock.unlock()
     }
 
     private func valid(_ reference: LeaseReference) -> Bool {
@@ -206,8 +225,11 @@ private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
         guard connection.effectiveUserIdentifier != 0 else { return false }
         connection.setCodeSigningRequirement(appRequirement)
+        let service = RouteHelperService()
         connection.exportedInterface = routeHelperInterface()
-        connection.exportedObject = RouteHelperService()
+        connection.exportedObject = service
+        connection.invalidationHandler = { [weak service] in service?.invalidateConnection() }
+        connection.interruptionHandler = { [weak service] in service?.invalidateConnection() }
         connection.resume()
         return true
     }
