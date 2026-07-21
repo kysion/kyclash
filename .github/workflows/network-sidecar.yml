@@ -193,7 +193,7 @@ jobs:
           plist='macos/route-helper/net.kysion.kyclash.route-helper.plist'
           test "$(plutil -extract Label raw -o - "$plist")" = 'net.kysion.kyclash.route-helper'
           test "$(plutil -extract BundleProgram raw -o - "$plist")" = 'Contents/Resources/kyclash-route-helper'
-          test "$(plutil -extract MachServices.net.kysion.kyclash.route-helper raw -o - "$plist")" = 'true'
+          test "$(plutil -p "$plist" | grep -F '"net.kysion.kyclash.route-helper" => true' | wc -l | tr -d ' ')" = '1'
           ! plutil -extract ProgramArguments raw -o - "$plist" >/dev/null 2>&1
           ! plutil -extract EnvironmentVariables raw -o - "$plist" >/dev/null 2>&1
           test "$(grep -c 'interface.setClasses' macos/route-helper/main.swift)" -eq 13
