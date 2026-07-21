@@ -315,6 +315,11 @@ jobs:
           file "${RUNNER_TEMP}/kyclash-route-helper" | grep -F 'arm64'
 
       - name: Test actual child data plane
+        env:
+          # The networking-dev lib test compiles the desktop crate on a fresh
+          # macOS runner. Bound Cargo's compiler fan-out so a cold cache does
+          # not exhaust the runner while the actual-child gate is starting.
+          CARGO_BUILD_JOBS: '2'
         run: |
           set -o pipefail
           mkdir -p build/actual-child
@@ -345,13 +350,12 @@ jobs:
             echo '::error title=actual-child::run.log was not produced'
             exit 0
           fi
-          while IFS= read -r line; do
-            # Keep failure diagnostics useful without echoing long key/token
-            # shaped values into the Actions annotation stream.
-            safe="$(printf '%s' "$line" \
-              | sed -E 's/[[:xdigit:]]{32,}/[redacted-hex]/g; s/[A-Za-z0-9+\/]{40,}={0,2}/[redacted-value]/g; s/%/%25/g; s/\r/%0D/g')"
-            echo "::error title=actual-child::${safe}"
-          done < <(tail -n 60 "$log")
+          # Keep the final diagnostics visible in the anonymous Checks view
+          # without echoing long key/token-shaped values into annotations.
+          safe="$(tail -n 12 "$log" \
+            | sed -E 's/[[:xdigit:]]{32,}/[redacted-hex]/g; s/[A-Za-z0-9+\/]{40,}={0,2}/[redacted-value]/g; s/%/%25/g; s/\r/ /g' \
+            | tr '\n' '|')"
+          echo "::error title=actual-child::${safe}"
 
       - name: Upload actual-child evidence
         if: always()
