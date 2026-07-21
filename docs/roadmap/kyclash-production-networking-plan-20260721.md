@@ -118,6 +118,12 @@ traffic over loopback QUIC, WSS, and TLS/TCP servers. The remaining N1 gate is
 to bind those real carrier/device instances to the IPC session, then exercise
 cancellation, crash, reconnect, and repeated cycles through the actual child.
 
+N1A and N1B are complete: strict shared data-plane contracts and the real
+userspace backend now drive wireguard-go through an explicit single-carrier
+switchboard. N1C (repository-owned compatible loopback server) is the first
+incomplete merge unit; N1 remains open until N1C and the actual-child N1D
+matrix pass.
+
 Tasks:
 
 1. Implement strict profile, tunnel, named-transport, health, status, cancel,

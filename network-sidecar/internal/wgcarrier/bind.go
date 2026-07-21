@@ -43,11 +43,9 @@ func (bind *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if bind.opened && !bind.closed {
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
-	if bind.closed {
-		return nil, 0, net.ErrClosed
-	}
 	bind.ctx, bind.cancel = context.WithCancel(context.Background())
 	bind.opened = true
+	bind.closed = false
 	return []conn.ReceiveFunc{bind.receive}, 0, nil
 }
 
@@ -91,6 +89,7 @@ func (bind *Bind) Close() error {
 		return nil
 	}
 	bind.closed = true
+	bind.opened = false
 	if bind.cancel != nil {
 		bind.cancel()
 	}

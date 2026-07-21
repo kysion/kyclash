@@ -1,0 +1,150 @@
+package userspace
+
+import (
+	"context"
+	"errors"
+	"net"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/kysion/kyclash/network-sidecar/internal/carrier"
+	"github.com/kysion/kyclash/network-sidecar/internal/profile"
+)
+
+type memoryCarrier struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newMemoryCarrier() *memoryCarrier {
+	return &memoryCarrier{closed: make(chan struct{})}
+}
+
+func (*memoryCarrier) Send(context.Context, []byte) error { return nil }
+func (memory *memoryCarrier) Receive(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-memory.closed:
+		return nil, net.ErrClosed
+	}
+}
+func (memory *memoryCarrier) Close() error {
+	memory.once.Do(func() { close(memory.closed) })
+	return nil
+}
+
+func testProfile(t *testing.T) *profile.Profile {
+	t.Helper()
+	fixture, err := os.ReadFile("../../../schemas/fixtures/network-v1.valid.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := profile.Decode(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
+}
+
+func TestBackendPreparesConnectsAndReconnectsExplicitCarriers(t *testing.T) {
+	backend, err := New(make([]byte, 32), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected []profile.Transport
+	backend.dialer = func(_ context.Context, transport profile.Transport, _ profile.NormalizedEndpoint) (carrier.Carrier, error) {
+		selected = append(selected, transport)
+		return newMemoryCarrier(), nil
+	}
+	if err := backend.Prepare(context.Background(), testProfile(t)); err != nil {
+		t.Fatal(err)
+	}
+	if backend.privateKey != nil {
+		t.Fatal("private key remained owned after WireGuard configuration")
+	}
+	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
+		endpoint, endpointErr := testProfile(t).Endpoint(transport)
+		if endpointErr != nil {
+			t.Fatal(endpointErr)
+		}
+		if err := backend.Connect(context.Background(), transport, endpoint); err != nil {
+			t.Fatal(err)
+		}
+		health, err := backend.Health(context.Background())
+		if err != nil || !health.Reachable {
+			t.Fatalf("unexpected health: %#v %v", health, err)
+		}
+		if err := backend.Disconnect(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(selected) != 3 || selected[0] != profile.QUIC || selected[1] != profile.WSS || selected[2] != profile.TCP {
+		t.Fatalf("backend changed explicit carrier order: %v", selected)
+	}
+	if err := backend.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBackendDialFailureDoesNotAttachCarrier(t *testing.T) {
+	backend, err := New(make([]byte, 32), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.dialer = func(context.Context, profile.Transport, profile.NormalizedEndpoint) (carrier.Carrier, error) {
+		return nil, errors.New("injected dial failure")
+	}
+	networkProfile := testProfile(t)
+	if err := backend.Prepare(context.Background(), networkProfile); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := networkProfile.Endpoint(profile.QUIC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Connect(context.Background(), profile.QUIC, endpoint); err == nil || backend.active != "" {
+		t.Fatal("dial failure activated a carrier")
+	}
+	_ = backend.Close()
+}
+
+func TestBackendCancellationInterruptsDialWithoutActivatingCarrier(t *testing.T) {
+	backend, err := New(make([]byte, 32), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	backend.dialer = func(ctx context.Context, _ profile.Transport, _ profile.NormalizedEndpoint) (carrier.Carrier, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	networkProfile := testProfile(t)
+	if err := backend.Prepare(context.Background(), networkProfile); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := networkProfile.Endpoint(profile.QUIC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() { result <- backend.Connect(context.Background(), profile.QUIC, endpoint) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("dial did not start")
+	}
+	if err := backend.Cancel("operation.test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; !errors.Is(err, context.Canceled) || backend.active != "" {
+		t.Fatalf("cancel did not preserve disconnected carrier state: %v", err)
+	}
+	_ = backend.Close()
+}

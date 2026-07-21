@@ -52,8 +52,13 @@ type Error struct {
 }
 
 func Serve(reader *bufio.Reader, writer io.Writer) error {
+	return ServeWithBackend(reader, writer, contractBackend{})
+}
+
+func ServeWithBackend(reader *bufio.Reader, writer io.Writer, backend Backend) error {
 	encoder := json.NewEncoder(writer)
-	current := newSession()
+	current := newSessionWithBackend(backend)
+	defer func() { _ = backend.Close() }()
 	for {
 		request, err := decodeRequest(reader)
 		if errors.Is(err, io.EOF) {

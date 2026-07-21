@@ -14,7 +14,8 @@ import (
 )
 
 type faultBackend struct {
-	fail string
+	fail       string
+	closeCalls int
 }
 
 func (backend *faultBackend) Prepare(context.Context, *profile.Profile) error {
@@ -53,7 +54,10 @@ func (backend *faultBackend) Stop(context.Context) error {
 }
 
 func (backend *faultBackend) Cancel(string) error { return nil }
-func (backend *faultBackend) Close() error        { return nil }
+func (backend *faultBackend) Close() error {
+	backend.closeCalls++
+	return nil
+}
 
 func TestServeMatchesRustStatusAndDisconnectWireFormat(t *testing.T) {
 	input := strings.Join([]string{
@@ -211,5 +215,15 @@ func TestHealthMatchesSharedFixture(t *testing.T) {
 	var fixtureValue interface{}
 	if json.Unmarshal(encoded, &actualValue) != nil || json.Unmarshal(fixture, &fixtureValue) != nil || !deepEqualJSON(actualValue, fixtureValue) {
 		t.Fatalf("Go health response diverged from shared fixture: %s", encoded)
+	}
+}
+
+func TestEOFClosesBackend(t *testing.T) {
+	backend := &faultBackend{}
+	if err := ServeWithBackend(bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, backend); err != nil {
+		t.Fatal(err)
+	}
+	if backend.closeCalls != 1 {
+		t.Fatalf("expected one EOF cleanup, got %d", backend.closeCalls)
 	}
 }

@@ -88,6 +88,14 @@ Merge unit: `networking(n1a): lock data-plane session contracts`.
 
 ### N1B — bind WireGuard to explicit carriers
 
+Status (2026-07-21): complete. A reusable switchboard keeps one wireguard-go
+Bind stable while refusing make-before-break and never choosing fallback. The
+production child now builds a userspace-netstack WireGuard device from the
+bootstrap private key, clears its owned key after configuration, explicitly
+dials QUIC/WSS/TLS-TCP, supports down/reopen cycles, bounded carrier health and
+dial cancellation, and closes the backend on EOF or malformed IPC. Injected
+dial, cancellation, repeated-carrier, and cleanup tests use no host interface.
+
 Deliverables:
 
 - Add a switchable carrier boundary so the WireGuard device can be prepared

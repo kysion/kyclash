@@ -10,6 +10,7 @@ import (
 
 	"github.com/kysion/kyclash/network-sidecar/internal/bootstrap"
 	"github.com/kysion/kyclash/network-sidecar/internal/ipc"
+	"github.com/kysion/kyclash/network-sidecar/internal/userspace"
 )
 
 type handshake struct {
@@ -27,16 +28,21 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer config.Clear()
+	proof := bootstrap.AuthProof(config)
+	backend, err := userspace.New(config.PrivateKey, nil)
+	config.Clear()
+	if err != nil {
+		return err
+	}
 	response := handshake{
 		ProtocolVersion: bootstrap.ProtocolVersion,
 		InstanceID:      config.InstanceID,
-		AuthProof:       bootstrap.AuthProof(config),
+		AuthProof:       proof,
 	}
 	if err := json.NewEncoder(stdout).Encode(response); err != nil {
 		return fmt.Errorf("write handshake: %w", err)
 	}
-	return ipc.Serve(reader, stdout)
+	return ipc.ServeWithBackend(reader, stdout, backend)
 }
 
 func execute(arguments []string, stdin io.Reader, stdout, stderr io.Writer) int {
