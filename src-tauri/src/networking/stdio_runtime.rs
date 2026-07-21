@@ -319,6 +319,68 @@ mod unix {
         }
 
         #[test]
+        fn actual_child_enforces_profile_tunnel_and_break_before_make() -> Result<(), NetworkErrorCode> {
+            let Ok(executable) = std::env::var("KYCLASH_NETWORK_SIDECAR_BIN") else {
+                return Ok(());
+            };
+            let profile = serde_json::from_str(include_str!("../../../schemas/fixtures/network-v1.valid.json"))
+                .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            let context = SidecarLaunchContext::new("stateful_child_test".into(), vec![0x43; 32])
+                .with_private_key(vec![0x44; 32]);
+            let mut runtime = StdioSidecarRuntime::new(executable.into());
+            runtime.start(&context)?;
+
+            for (request_id, payload) in [
+                ("request.profile", IpcRequestPayload::ApplyProfile(Box::new(profile))),
+                ("request.prepare", IpcRequestPayload::PrepareTunnel),
+                (
+                    "request.quic",
+                    IpcRequestPayload::ConnectTransport {
+                        transport: crate::networking::TransportKind::Quic,
+                    },
+                ),
+            ] {
+                let response = runtime.request(&IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: request_id.into(),
+                    payload,
+                })?;
+                assert!(response.result.is_ok());
+            }
+            let make_before_break = runtime.request(&IpcRequest {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                request_id: "request.illegal_wss".into(),
+                payload: IpcRequestPayload::ConnectTransport {
+                    transport: crate::networking::TransportKind::Wss,
+                },
+            })?;
+            assert_eq!(
+                make_before_break.result.map_err(|error| error.code),
+                Err(NetworkErrorCode::InvalidStateTransition)
+            );
+            for (request_id, payload) in [
+                ("request.close_quic", IpcRequestPayload::DisconnectTransport),
+                (
+                    "request.wss",
+                    IpcRequestPayload::ConnectTransport {
+                        transport: crate::networking::TransportKind::Wss,
+                    },
+                ),
+                ("request.close_wss", IpcRequestPayload::DisconnectTransport),
+                ("request.stop_tunnel", IpcRequestPayload::StopTunnel),
+            ] {
+                let response = runtime.request(&IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: request_id.into(),
+                    payload,
+                })?;
+                assert!(response.result.is_ok());
+            }
+            runtime.stop()?;
+            Ok(())
+        }
+
+        #[test]
         fn actual_child_is_terminated_when_authentication_fails() {
             let Ok(executable) = std::env::var("KYCLASH_NETWORK_SIDECAR_BIN") else {
                 return;

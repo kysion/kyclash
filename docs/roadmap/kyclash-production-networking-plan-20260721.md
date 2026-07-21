@@ -103,6 +103,15 @@ Exit gate:
 
 Goal: turn the Go process from a protocol stub into a real userspace data plane.
 
+Progress (2026-07-21): the actual Go child now owns a strict, persistent IPC
+session that validates the shared profile, enforces profile -> tunnel -> one
+explicit Rust-selected carrier, refuses make-before-break, reports bounded
+redacted status, and cleans session state on disconnect. Independently, the
+real userspace WireGuard integration now carries bidirectional encrypted
+traffic over loopback QUIC, WSS, and TLS/TCP servers. The remaining N1 gate is
+to bind those real carrier/device instances to the IPC session, then exercise
+cancellation, crash, reconnect, and repeated cycles through the actual child.
+
 Tasks:
 
 1. Implement strict profile, tunnel, named-transport, health, status, cancel,

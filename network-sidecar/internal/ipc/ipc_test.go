@@ -63,27 +63,52 @@ func deepEqualJSON(left, right interface{}) bool {
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
-func TestDisabledNetworkingRequestsReturnStructuredErrors(t *testing.T) {
+func TestSessionEnforcesExplicitBreakBeforeMakeLifecycle(t *testing.T) {
+	profileData, err := os.ReadFile("../../../schemas/fixtures/network-v1.valid.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := newSession()
 	requests := []Request{
-		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "apply_profile", Data: json.RawMessage(`{}`)}},
-		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "connect"}},
-		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "prepare_tunnel"}},
-		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "stop_tunnel"}},
-		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}},
-		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "disconnect_transport"}},
-		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "sample_health"}},
-		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "cancel", Data: json.RawMessage(`{"operation_id":"operation.test"}`)}},
+		{ProtocolVersion: 1, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}},
+		{ProtocolVersion: 1, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}},
+		{ProtocolVersion: 1, RequestID: "request.quic", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}},
+		{ProtocolVersion: 1, RequestID: "request.health", Payload: Payload{Type: "sample_health"}},
+		{ProtocolVersion: 1, RequestID: "request.close_quic", Payload: Payload{Type: "disconnect_transport"}},
+		{ProtocolVersion: 1, RequestID: "request.wss", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"wss"}`)}},
+		{ProtocolVersion: 1, RequestID: "request.close_wss", Payload: Payload{Type: "disconnect_transport"}},
+		{ProtocolVersion: 1, RequestID: "request.stop", Payload: Payload{Type: "stop_tunnel"}},
 	}
 	for _, request := range requests {
-		response, stop := handle(request)
-		if stop {
-			t.Fatal("disabled request stopped sidecar")
-		}
-		failure := response.Result["Err"].(Error)
-		if failure.Code != "sidecar_unavailable" || !failure.Retryable {
-			t.Fatalf("unexpected failure: %#v", failure)
+		response, stop := current.handle(request)
+		if stop || response.Result["Err"] != nil {
+			t.Fatalf("request %s failed: %#v", request.Payload.Type, response)
 		}
 	}
+	if status := current.status(); status.State != "disconnected" || status.ActiveProfileID == nil || status.ActiveTransport != nil {
+		t.Fatalf("unexpected final status: %#v", status)
+	}
+}
+
+func TestSessionRejectsMakeBeforeBreakAndInvalidOrdering(t *testing.T) {
+	profileData, err := os.ReadFile("../../../schemas/fixtures/network-v1.valid.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := newSession()
+	assertInvalidState := func(request Request) {
+		t.Helper()
+		response, stop := current.handle(request)
+		failure, ok := response.Result["Err"].(Error)
+		if stop || !ok || failure.Code != "invalid_state_transition" {
+			t.Fatalf("expected invalid state, got %#v", response)
+		}
+	}
+	assertInvalidState(Request{ProtocolVersion: 1, RequestID: "request.early", Payload: Payload{Type: "prepare_tunnel"}})
+	current.handle(Request{ProtocolVersion: 1, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}})
+	current.handle(Request{ProtocolVersion: 1, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}})
+	current.handle(Request{ProtocolVersion: 1, RequestID: "request.quic", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}})
+	assertInvalidState(Request{ProtocolVersion: 1, RequestID: "request.wss", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"wss"}`)}})
 }
 
 func TestRequestValidationFailsClosed(t *testing.T) {

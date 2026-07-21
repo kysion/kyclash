@@ -50,6 +50,7 @@ type Error struct {
 
 func Serve(reader *bufio.Reader, writer io.Writer) error {
 	encoder := json.NewEncoder(writer)
+	current := newSession()
 	for {
 		request, err := decodeRequest(reader)
 		if errors.Is(err, io.EOF) {
@@ -58,7 +59,7 @@ func Serve(reader *bufio.Reader, writer io.Writer) error {
 		if err != nil {
 			return err
 		}
-		response, stop := handle(request)
+		response, stop := current.handle(request)
 		if err := encoder.Encode(response); err != nil {
 			return fmt.Errorf("write IPC response: %w", err)
 		}
@@ -97,21 +98,25 @@ func decodeRequest(reader *bufio.Reader) (Request, error) {
 }
 
 func handle(request Request) (Response, bool) {
+	return newSession().handle(request)
+}
+
+func (current *session) handle(request Request) (Response, bool) {
 	response := Response{ProtocolVersion: ProtocolVersion, RequestID: request.RequestID}
 	switch request.Payload.Type {
 	case "get_status":
 		if !emptyData(request.Payload.Data) {
 			return invalidData(response)
 		}
-		response.Result = success(map[string]interface{}{
-			"type": "status",
-			"data": Status{State: "disconnected"},
-		})
+		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
 		return response, false
 	case "disconnect":
 		if !emptyData(request.Payload.Data) {
 			return invalidData(response)
 		}
+		current.activeTransport = ""
+		current.tunnelPrepared = false
+		current.profile = nil
 		response.Result = success(map[string]interface{}{"type": "acknowledged"})
 		return response, true
 	case "connect_transport":
@@ -121,7 +126,11 @@ func handle(request Request) (Response, bool) {
 		if !decodeData(request.Payload.Data, &data) || (data.Transport != "quic" && data.Transport != "wss" && data.Transport != "tcp") {
 			return invalidData(response)
 		}
-		response.Result = failure("sidecar_unavailable", "real networking remains disabled", true)
+		if current.profile == nil || !current.tunnelPrepared || current.activeTransport != "" || !current.transportConfigured(data.Transport) {
+			return invalidState(response)
+		}
+		current.activeTransport = data.Transport
+		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
 		return response, false
 	case "cancel":
 		var data struct {
@@ -130,15 +139,59 @@ func handle(request Request) (Response, bool) {
 		if !decodeData(request.Payload.Data, &data) || !validID(data.OperationID) {
 			return invalidData(response)
 		}
-		response.Result = failure("sidecar_unavailable", "real networking remains disabled", true)
+		response.Result = success(map[string]interface{}{"type": "acknowledged"})
 		return response, false
 	case "apply_profile":
-		if emptyData(request.Payload.Data) {
+		decoded, ok := decodeProfile(request.Payload.Data)
+		if !ok {
 			return invalidData(response)
 		}
-		response.Result = failure("sidecar_unavailable", "real networking remains disabled", true)
+		if current.tunnelPrepared || current.activeTransport != "" {
+			return invalidState(response)
+		}
+		current.profile = decoded
+		response.Result = success(map[string]interface{}{"type": "acknowledged"})
 		return response, false
-	case "prepare_tunnel", "stop_tunnel", "disconnect_transport", "sample_health", "connect":
+	case "prepare_tunnel":
+		if !emptyData(request.Payload.Data) {
+			return invalidData(response)
+		}
+		if current.profile == nil || current.tunnelPrepared {
+			return invalidState(response)
+		}
+		current.tunnelPrepared = true
+		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
+		return response, false
+	case "disconnect_transport":
+		if !emptyData(request.Payload.Data) {
+			return invalidData(response)
+		}
+		if current.activeTransport == "" {
+			return invalidState(response)
+		}
+		current.activeTransport = ""
+		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
+		return response, false
+	case "stop_tunnel":
+		if !emptyData(request.Payload.Data) {
+			return invalidData(response)
+		}
+		if !current.tunnelPrepared || current.activeTransport != "" {
+			return invalidState(response)
+		}
+		current.tunnelPrepared = false
+		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
+		return response, false
+	case "sample_health":
+		if !emptyData(request.Payload.Data) {
+			return invalidData(response)
+		}
+		if current.activeTransport == "" {
+			return invalidState(response)
+		}
+		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
+		return response, false
+	case "connect":
 		if !emptyData(request.Payload.Data) {
 			return invalidData(response)
 		}
@@ -148,6 +201,21 @@ func handle(request Request) (Response, bool) {
 		response.Result = failure("invalid_configuration", "unknown request type", false)
 		return response, false
 	}
+}
+
+func (current *session) transportConfigured(transport string) bool {
+	if current.profile == nil {
+		return false
+	}
+	if transport == current.profile.Transports.Primary {
+		return true
+	}
+	for _, fallback := range current.profile.Transports.Fallbacks {
+		if transport == fallback {
+			return true
+		}
+	}
+	return false
 }
 
 func emptyData(data json.RawMessage) bool {
@@ -165,6 +233,11 @@ func decodeData(data json.RawMessage, target interface{}) bool {
 
 func invalidData(response Response) (Response, bool) {
 	response.Result = failure("invalid_configuration", "invalid request payload", false)
+	return response, false
+}
+
+func invalidState(response Response) (Response, bool) {
+	response.Result = failure("invalid_state_transition", "invalid sidecar state transition", false)
 	return response, false
 }
 

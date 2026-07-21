@@ -13,10 +13,14 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/kysion/kyclash/network-sidecar/internal/carrier"
 	quicgo "github.com/quic-go/quic-go"
 	"golang.org/x/crypto/curve25519"
@@ -117,6 +121,87 @@ func TestWireGuardEncryptsThroughFragmentedQUICCarrier(t *testing.T) {
 		t.Fatal(err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("QUIC server did not authenticate")
+	}
+}
+
+func TestWireGuardEncryptsThroughTLSStreamCarrier(t *testing.T) {
+	certificate, roots := tunnelCertificate(t)
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS13,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	serverResult := make(chan carrier.Carrier, 1)
+	serverError := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverError <- acceptErr
+			return
+		}
+		if tlsConnection, ok := connection.(*tls.Conn); ok {
+			if handshakeErr := tlsConnection.Handshake(); handshakeErr != nil {
+				serverError <- handshakeErr
+				return
+			}
+		}
+		serverResult <- carrier.NewStream(connection)
+	}()
+	client, err := carrier.DialTCP(context.Background(), carrier.TCPConfig{
+		Address:    listener.Addr().String(),
+		ServerName: "127.0.0.1",
+		RootCAs:    roots,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case server := <-serverResult:
+		proveWireGuardTunnel(t, client, server)
+	case err := <-serverError:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("TCP lab server did not authenticate")
+	}
+}
+
+func TestWireGuardEncryptsThroughWSSStreamCarrier(t *testing.T) {
+	certificate, roots := tunnelCertificate(t)
+	serverResult := make(chan carrier.Carrier, 1)
+	serverError := make(chan error, 1)
+	handlerDone := make(chan struct{})
+	defer close(handlerDone)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		connection, acceptErr := websocket.Accept(response, request, &websocket.AcceptOptions{
+			CompressionMode: websocket.CompressionDisabled,
+		})
+		if acceptErr != nil {
+			serverError <- acceptErr
+			return
+		}
+		serverResult <- carrier.NewStream(websocket.NetConn(context.Background(), connection, websocket.MessageBinary))
+		<-handlerDone
+	}))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS13}
+	server.StartTLS()
+	defer server.Close()
+	client, err := carrier.DialWSS(context.Background(), carrier.WSSConfig{
+		URL:     "wss" + strings.TrimPrefix(server.URL, "https"),
+		RootCAs: roots,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case peer := <-serverResult:
+		proveWireGuardTunnel(t, client, peer)
+	case err := <-serverError:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("WSS lab server did not authenticate")
 	}
 }
 

@@ -464,6 +464,13 @@ authenticated status/shutdown and proof-mismatch termination without socket,
 route, Keychain, utun, or external network I/O. N1 is now the first incomplete
 production-networking batch.
 
+N1 progress (2026-07-21): in progress. The real child now validates profiles
+and enforces the granular tunnel/carrier state order, including explicit
+break-before-make refusal. Real userspace WireGuard traffic passes separately
+over loopback QUIC, WSS, and TLS/TCP. N1 remains open until these carrier and
+device instances are driven by the actual child IPC session and its crash,
+cancellation, reconnect, and repetition matrix passes.
+
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and
 real macOS utun, privileged transactional routes plus Mihomo coexistence,
