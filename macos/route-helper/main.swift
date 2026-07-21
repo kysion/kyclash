@@ -262,6 +262,11 @@ private final class RouteCoordinator {
         self.timer = timer
     }
 
+    deinit {
+        timer?.setEventHandler {}
+        timer?.cancel()
+    }
+
     func discover() -> HelperReply {
         lock.withLock {
             if journalCorrupt { return HelperReply(state: "failed_closed", errorCode: "journal_corrupt") }
@@ -491,6 +496,157 @@ private func validInterface(_ value: String) -> Bool {
     return !suffix.isEmpty && suffix.allSatisfy(\.isNumber)
 }
 
+// This executor is used only by the explicit local/CI self-test below.  It
+// never invokes `/sbin/route`; all mutations stay in memory and can be
+// deterministically failed at a selected operation.  Keeping the fault
+// injection at the RouteExecuting boundary lets the coordinator exercise the
+// same journal/lease/rollback paths as production without touching host
+// routes or requiring privileges.
+private final class InjectedRouteExecutor: RouteExecuting {
+    var existing: Set<String> = []
+    var added: [String] = []
+    var failAddAt: Int?
+    var failDeleteAt: Int?
+    private(set) var addCalls = 0
+    private(set) var deleteCalls = 0
+
+    func canAdd(cidr: String, interfaceName: String) -> Bool {
+        validCIDR(cidr) && validInterface(interfaceName) && !existing.contains(cidr) && !added.contains(cidr)
+    }
+
+    func mutate(action: String, cidr: String, interfaceName: String) -> Bool {
+        guard validCIDR(cidr), validInterface(interfaceName) else { return false }
+        switch action {
+        case "add":
+            defer { addCalls += 1 }
+            guard failAddAt != addCalls, canAdd(cidr: cidr, interfaceName: interfaceName) else { return false }
+            added.append(cidr)
+            return true
+        case "delete":
+            defer { deleteCalls += 1 }
+            guard failDeleteAt != deleteCalls else { return false }
+            if let index = added.lastIndex(of: cidr) {
+                added.remove(at: index)
+                return true
+            }
+            return !existing.contains(cidr)
+        default:
+            return false
+        }
+    }
+}
+
+private enum RouteCoordinatorSelfTestError: Error {
+    case failed(String)
+}
+
+private func requireSelfTest(_ condition: @autoclosure () -> Bool, _ description: String) throws {
+    guard condition() else { throw RouteCoordinatorSelfTestError.failed(description) }
+}
+
+private func selfTestOwner(_ cidrs: [String]) -> LeaseOwner {
+    let reference = LeaseReference(version: protocolVersion, leaseID: "lease.selftest.v1", operationID: "operation.selftest.v1")
+    return LeaseOwner(
+        reference: reference,
+        sidecarInstanceID: "instance.selftest.v1",
+        interfaceName: "utun42",
+        tunnelOperationID: "operation.selftest.v1.prepare",
+        mtu: 1420,
+        profileRevision: 1,
+        privateCIDRs: cidrs
+    )
+}
+
+private func runRouteCoordinatorSelfTest() -> Bool {
+    do {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kyclash-route-helper-self-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
+                                                 attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let cidrs = ["10.64.0.0/16", "fd00:64::/48"]
+        let owner = selfTestOwner(cidrs)
+
+        // Normal IPv4+IPv6 cycle, duplicate messages, replay mismatch, and
+        // explicit connection invalidation all remain idempotent.
+        let normalExecutor = InjectedRouteExecutor()
+        let normal = RouteCoordinator(executor: normalExecutor, journalURL: root.appendingPathComponent("normal.plist"))
+        try requireSelfTest(normal.discover().state == "idle", "normal discover must start idle")
+        try requireSelfTest(normal.begin(owner).state == "prepared", "normal begin must prepare")
+        try requireSelfTest(normal.apply(owner.reference).state == "applied", "normal apply must apply both families")
+        try requireSelfTest(normal.apply(owner.reference).state == "applied", "duplicate apply must be idempotent")
+        let replay = LeaseReference(version: protocolVersion, leaseID: "lease.replayed.v1", operationID: owner.reference.operationID)
+        try requireSelfTest(normal.status(replay).errorCode == "ownership_mismatch", "replayed lease must be rejected")
+        normal.invalidate(owner.reference)
+        try requireSelfTest(normal.discover().state == "idle" && normalExecutor.added.isEmpty,
+                            "connection invalidation must remove owned routes")
+
+        // A pre-existing exact route is a conflict and must be rejected before
+        // a journal is written or any mutation is attempted.
+        let conflictExecutor = InjectedRouteExecutor()
+        conflictExecutor.existing = [cidrs[0]]
+        let conflict = RouteCoordinator(executor: conflictExecutor, journalURL: root.appendingPathComponent("conflict.plist"))
+        try requireSelfTest(conflict.begin(owner).errorCode == "route_conflict", "exact pre-existing route must conflict")
+        try requireSelfTest(conflictExecutor.added.isEmpty, "conflict must not mutate routes")
+
+        // Inject failure before each add.  The coordinator must journal the
+        // pending route and roll back every route it already added.
+        for failAt in 0...1 {
+            let executor = InjectedRouteExecutor()
+            executor.failAddAt = failAt
+            let coordinator = RouteCoordinator(executor: executor,
+                                                journalURL: root.appendingPathComponent("add-failure-\(failAt).plist"))
+            try requireSelfTest(coordinator.begin(owner).state == "prepared", "faulted begin must prepare")
+            try requireSelfTest(coordinator.apply(owner.reference).errorCode == "route_apply_failed",
+                                "add failure \(failAt) must fail closed")
+            try requireSelfTest(executor.added.isEmpty, "add failure \(failAt) leaked a route")
+        }
+
+        // Force rollback itself to fail once, verify the stronger error is
+        // surfaced, then retry after the injected fault is consumed.
+        let rollbackExecutor = InjectedRouteExecutor()
+        let rollback = RouteCoordinator(executor: rollbackExecutor, journalURL: root.appendingPathComponent("rollback-failure.plist"))
+        try requireSelfTest(rollback.begin(owner).state == "prepared", "rollback fault begin must prepare")
+        try requireSelfTest(rollback.apply(owner.reference).state == "applied", "rollback fault apply must apply")
+        rollbackExecutor.failDeleteAt = rollbackExecutor.deleteCalls
+        try requireSelfTest(rollback.rollback(owner.reference).errorCode == "rollback_failed",
+                            "rollback failure must be surfaced")
+        rollbackExecutor.failDeleteAt = nil
+        try requireSelfTest(rollback.rollback(owner.reference).state == "idle", "rollback retry must recover")
+        try requireSelfTest(rollbackExecutor.added.isEmpty, "rollback retry must remove all routes")
+
+        // Simulate helper restart with a durable applied journal and in-memory
+        // routes.  A new coordinator must reconcile them before accepting a
+        // discover request.
+        let restartPath = root.appendingPathComponent("restart.plist")
+        let restartExecutor = InjectedRouteExecutor()
+        do {
+            let first = RouteCoordinator(executor: restartExecutor, journalURL: restartPath)
+            try requireSelfTest(first.begin(owner).state == "prepared", "restart begin must prepare")
+            try requireSelfTest(first.apply(owner.reference).state == "applied", "restart apply must apply")
+        }
+        try requireSelfTest(!restartExecutor.added.isEmpty, "restart fixture must leave durable routes")
+        let restarted = RouteCoordinator(executor: restartExecutor, journalURL: restartPath)
+        try requireSelfTest(restarted.discover().state == "idle" && restartExecutor.added.isEmpty,
+                            "helper restart must recover routes before discover")
+
+        // Corrupt journals fail closed and never attempt route mutation.
+        let corruptPath = root.appendingPathComponent("corrupt.plist")
+        try Data("not-a-property-list".utf8).write(to: corruptPath, options: [.atomic])
+        let corruptExecutor = InjectedRouteExecutor()
+        let corrupt = RouteCoordinator(executor: corruptExecutor, journalURL: corruptPath)
+        try requireSelfTest(corrupt.discover().errorCode == "journal_corrupt", "corrupt journal must fail closed")
+        try requireSelfTest(corruptExecutor.added.isEmpty, "corrupt journal must not mutate routes")
+
+        print("route_coordinator_self_test_ok")
+        return true
+    } catch {
+        fputs("route_coordinator_self_test_failed: \(error)\n", stderr)
+        return false
+    }
+}
+
 @main
 private enum RouteHelperMain {
     static func main() {
@@ -503,6 +659,10 @@ private enum RouteHelperMain {
                 exit(1)
             }
             print("route_readonly_self_test_ok")
+            return
+        }
+        if CommandLine.arguments.contains("--route-coordinator-self-test") {
+            if !runRouteCoordinatorSelfTest() { exit(1) }
             return
         }
         let delegate = ListenerDelegate()

@@ -222,6 +222,7 @@ jobs:
             -framework Foundation -o "${RUNNER_TEMP}/kyclash-route-helper" \
             macos/route-helper/main.swift
           "${RUNNER_TEMP}/kyclash-route-helper" --route-readonly-self-test
+          "${RUNNER_TEMP}/kyclash-route-helper" --route-coordinator-self-test
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -mmacosx-version-min=13.0 -c macos/route-helper/client.m \
             -o "${RUNNER_TEMP}/kyclash-route-helper-client.o"

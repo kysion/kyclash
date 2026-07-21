@@ -117,3 +117,22 @@ Virtualization.framework guest described in
 This local guest cycle passed on 2026-07-21 on macOS 26.5.2 arm64. Normal
 apply/rollback, expected exit 134 after durable apply, journal recovery, and
 independent final route/journal absence all passed.
+
+## Injected coordinator matrix (no privileges)
+
+The signed helper source includes a separate deterministic self-test that does
+not invoke `/sbin/route` or alter host state:
+
+```bash
+xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
+  -framework Foundation -o /tmp/kyclash-route-helper \
+  macos/route-helper/main.swift
+/tmp/kyclash-route-helper --route-coordinator-self-test
+```
+
+It uses an in-memory executor and a temporary private journal to cover normal
+IPv4/IPv6 apply and cleanup, duplicate/replayed lease messages, exact route
+conflicts, injected add and rollback failures, connection invalidation, helper
+restart reconciliation, and corrupt-journal fail-closed behavior. The
+privileged VM's complete route/conflict/restart matrix and Mihomo coexistence
+remain separate gates.

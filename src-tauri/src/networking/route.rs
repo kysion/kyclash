@@ -287,7 +287,15 @@ impl<P: RoutePlatform, J: RouteJournal> RouteOrchestrator<P, J> {
             }
         }
         entry.state = RouteTransactionState::Applied;
-        self.journal.save(&entry)
+        // The final durable state transition is part of the transaction.  If
+        // it cannot be persisted, the routes must not be left installed with
+        // only a stale `Prepared` journal entry.  Roll back the exact routes
+        // recorded by this transaction and surface the original persistence
+        // error (or the stronger rollback error if cleanup also fails).
+        if let Err(error) = self.journal.save(&entry) {
+            return self.rollback_failed_apply(&mut entry, error);
+        }
+        Ok(())
     }
 
     pub fn rollback(&mut self, transaction_id: &str) -> Result<(), NetworkErrorCode> {
@@ -737,6 +745,57 @@ mod tests {
             Err(NetworkErrorCode::RouteJournalUnavailable)
         );
         assert!(orchestrator.platform.added.is_empty());
+    }
+
+    #[test]
+    fn injected_journal_failure_matrix_never_leaves_owned_routes_installed() {
+        // Two routes exercise every durable write boundary:
+        //   0 = prepared entry, 1/2 = pending/applied route 1,
+        //   3/4 = pending/applied route 2, 5 = final Applied state.
+        // A failure at any one of those boundaries must enter the same
+        // rollback path and leave no route that this transaction added.
+        for fail_once_at in 0..=5 {
+            let journal = FailingJournal {
+                inner: MemoryRouteJournal::default(),
+                save_count: 0,
+                fail_once_at,
+            };
+            let mut orchestrator = RouteOrchestrator::new(FakePlatform::default(), journal);
+            let result = orchestrator.apply(
+                format!("tx.journal-failure.{fail_once_at}"),
+                "profile.1".into(),
+                vec![route("10.64.0.0/16"), route("fd00:64::/48")],
+            );
+            assert!(
+                result.is_err(),
+                "failure injection at save {fail_once_at} was not observed"
+            );
+            assert!(
+                orchestrator.platform.added.is_empty(),
+                "save failure at {fail_once_at} left routes installed: {:?}",
+                orchestrator.platform.added
+            );
+        }
+    }
+
+    #[test]
+    fn injected_route_mutation_failure_matrix_rolls_back_ipv4_and_ipv6() {
+        for fail_add_at in 0..=1 {
+            let platform = FakePlatform {
+                fail_add_at: Some(fail_add_at),
+                ..FakePlatform::default()
+            };
+            let mut orchestrator = RouteOrchestrator::new(platform, MemoryRouteJournal::default());
+            assert_eq!(
+                orchestrator.apply(
+                    format!("tx.route-failure.{fail_add_at}"),
+                    "profile.1".into(),
+                    vec![route("10.64.0.0/16"), route("fd00:64::/48")],
+                ),
+                Err(NetworkErrorCode::PermissionDenied)
+            );
+            assert!(orchestrator.platform.added.is_empty());
+        }
     }
 
     #[test]

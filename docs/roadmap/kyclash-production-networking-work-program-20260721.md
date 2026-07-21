@@ -541,8 +541,19 @@ evidence is retained under the ignored VM evidence directory with SHA-256
 The signed VM client has now completed `begin/apply/status/rollback` on an
 owned `utun4`, and the exact private route was absent after rollback. A
 subsequent forced helper termination caused launchd to start a new instance
-for the next discover call. Injected helper-failure and the full route
-mutation/restart matrix remain open.
+for the next discover call.
+
+The injected failure gate is now covered in both Rust and the helper's
+macOS-only self-test. The Rust matrix fails each durable journal save (before
+and after each IPv4/IPv6 mutation) and each route mutation, asserting that no
+owned route remains. `kyclash-route-helper --route-coordinator-self-test`
+uses an in-memory executor and temporary private journal to cover dual-stack
+normal/duplicate/replay/invalidation, exact conflict refusal, add failure,
+rollback failure and retry, helper restart reconciliation, and corrupt-journal
+fail-closed behavior; it never invokes `/sbin/route`. The CI compile gate runs
+both the read-only route probe and this injected coordinator matrix. The
+privileged VM's complete IPv4/IPv6/conflict/journal-corruption/restart matrix
+and packaged Mihomo coexistence scenarios remain open for S1.13.
 
 Deliverables:
 
