@@ -6,9 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/kysion/kyclash/network-sidecar/internal/profile"
 )
@@ -16,6 +20,24 @@ import (
 type faultBackend struct {
 	fail       string
 	closeCalls int
+}
+
+type cancellableBackend struct {
+	faultBackend
+	started  chan struct{}
+	canceled chan struct{}
+	once     sync.Once
+}
+
+func (backend *cancellableBackend) Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error {
+	close(backend.started)
+	<-backend.canceled
+	return context.Canceled
+}
+
+func (backend *cancellableBackend) Cancel(string) error {
+	backend.once.Do(func() { close(backend.canceled) })
+	return nil
 }
 
 func (backend *faultBackend) Prepare(context.Context, *profile.Profile) error {
@@ -225,5 +247,49 @@ func TestEOFClosesBackend(t *testing.T) {
 	}
 	if backend.closeCalls != 1 {
 		t.Fatalf("expected one EOF cleanup, got %d", backend.closeCalls)
+	}
+}
+
+func TestServeReadsCancelWhileConnectIsInFlight(t *testing.T) {
+	profileData, err := os.ReadFile("../../../schemas/fixtures/network-v1.valid.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &cancellableBackend{started: make(chan struct{}), canceled: make(chan struct{})}
+	inputReader, inputWriter := io.Pipe()
+	var output bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- ServeWithBackend(bufio.NewReader(inputReader), &output, backend) }()
+	write := func(record string) {
+		t.Helper()
+		if _, err := io.WriteString(inputWriter, record+"\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(fmt.Sprintf(`{"protocol_version":1,"request_id":"request.profile","payload":{"type":"apply_profile","data":%s}}`, profileData))
+	write(`{"protocol_version":1,"request_id":"request.prepare","payload":{"type":"prepare_tunnel"}}`)
+	write(`{"protocol_version":1,"request_id":"request.connect","payload":{"type":"connect_transport","data":{"transport":"quic"}}}`)
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("connect did not start")
+	}
+	write(`{"protocol_version":1,"request_id":"request.cancel","payload":{"type":"cancel","data":{"operation_id":"operation.connect"}}}`)
+	select {
+	case <-backend.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("cancel was not dispatched during connect")
+	}
+	_ = inputWriter.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serve did not close after EOF")
+	}
+	if backend.closeCalls != 1 {
+		t.Fatalf("expected one backend close, got %d", backend.closeCalls)
 	}
 }

@@ -154,13 +154,16 @@ Review amendment: `kyclash-actual-child-lab-review-20260721.md` locks a
 injects ephemeral trust directly in memory. The production bootstrap and
 handshake remain unchanged and reject lab fields.
 
-Status (2026-07-21): in progress. The Rust stdio runtime now drives the real
-lab child through apply, prepare, QUIC/WSS/TCP connect, encrypted payload
-health, explicit disconnect, tunnel stop, and child shutdown. This exposed and
-fixed premature wireguard-go Up before carrier attachment and an asynchronously
-cleared peer-key buffer. CI wiring is present. The remaining N1D gate is the
-actual-child cancellation/failure/restart matrix and repeated-cycle cleanup;
-N1 is not complete yet.
+Status (2026-07-21): complete. The Rust stdio runtime drives the real lab child
+through apply, prepare, QUIC/WSS/TCP connect, encrypted payload health,
+break-before-make disconnect, concurrent cancel, tunnel stop, EOF/process
+shutdown, and a UDP-blackhole timeout. Cancellation responses are correlated
+by request ID even when they arrive before the canceled operation. The timeout
+path kills and reaps the child within its deadline, and deterministic
+controller tests cover restart/crash-loop backoff. CI repeats the complete lab
+child cycle three times. Combined lab-server abort and actual-child tests leave
+no host interface, route, DNS, Keychain, external connection, or live child.
+N1A through N1D now pass together.
 
 Deliverables:
 
@@ -178,7 +181,7 @@ Exit evidence:
 
 Merge unit: `test(networking): close actual-child userspace data-plane gate`.
 
-N1 is complete only after N1A–N1D pass together.
+N1 status: complete. N1A–N1D pass together.
 
 ## N2: production Rust controller and credential path
 

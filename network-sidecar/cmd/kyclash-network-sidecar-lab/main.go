@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 
@@ -25,6 +26,7 @@ type labHandshake struct {
 	InstanceID      string          `json:"instance_id"`
 	AuthProof       string          `json:"auth_proof"`
 	LabProfile      profile.Profile `json:"lab_profile"`
+	CancelEndpoint  string          `json:"cancel_endpoint"`
 }
 
 func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
@@ -49,6 +51,12 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	defer cluster.Close()
+	blackhole, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	defer blackhole.Close()
+	go discardPackets(ctx, blackhole)
 	networkProfile := makeProfile(cluster)
 	if err := networkProfile.Validate(); err != nil {
 		return err
@@ -58,12 +66,22 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	proof := bootstrap.AuthProof(config)
-	response := labHandshake{ProtocolVersion: bootstrap.ProtocolVersion, InstanceID: config.InstanceID, AuthProof: proof, LabProfile: networkProfile}
+	response := labHandshake{ProtocolVersion: bootstrap.ProtocolVersion, InstanceID: config.InstanceID, AuthProof: proof, LabProfile: networkProfile, CancelEndpoint: "https://" + blackhole.LocalAddr().String()}
 	config.Clear()
 	if err := json.NewEncoder(stdout).Encode(response); err != nil {
 		return fmt.Errorf("write handshake: %w", err)
 	}
 	return ipc.ServeWithBackend(reader, stdout, backend)
+}
+
+func discardPackets(ctx context.Context, connection net.PacketConn) {
+	go func() { <-ctx.Done(); _ = connection.Close() }()
+	buffer := make([]byte, 64*1_024)
+	for {
+		if _, _, err := connection.ReadFrom(buffer); err != nil {
+			return
+		}
+	}
 }
 
 func makeProfile(cluster *labserver.Cluster) profile.Profile {

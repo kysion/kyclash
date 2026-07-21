@@ -463,15 +463,14 @@ checks the canonical HMAC proof, correlates request IDs, terminates ambiguous
 or unauthenticated sessions, and performs graceful disconnect. A shared
 bootstrap fixture is decoded by both languages. Actual-child tests prove
 authenticated status/shutdown and proof-mismatch termination without socket,
-route, Keychain, utun, or external network I/O. N1 is now the first incomplete
-production-networking batch.
+route, Keychain, utun, or external network I/O.
 
-N1 progress (2026-07-21): in progress. The real child now validates profiles
-and enforces the granular tunnel/carrier state order, including explicit
-break-before-make refusal. Real userspace WireGuard traffic passes separately
-over loopback QUIC, WSS, and TLS/TCP. N1 remains open until these carrier and
-device instances are driven by the actual child IPC session and its crash,
-cancellation, reconnect, and repetition matrix passes.
+N1 progress (2026-07-21): complete. The real child validates profiles,
+enforces granular tunnel/carrier state order and explicit break-before-make,
+and carries encrypted payload traffic over QUIC, WSS, and TLS/TCP. The Rust
+stdio runtime proves concurrent cancellation with request correlation,
+UDP-blackhole fallback, bounded timeout/child cleanup, crash-loop backoff, and
+repeated cycles. N2A is now the first incomplete production-networking unit.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and

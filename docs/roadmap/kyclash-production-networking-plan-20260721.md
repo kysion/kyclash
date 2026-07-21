@@ -113,17 +113,16 @@ Progress (2026-07-21): the actual Go child now owns a strict, persistent IPC
 session that validates the shared profile, enforces profile -> tunnel -> one
 explicit Rust-selected carrier, refuses make-before-break, reports bounded
 redacted status, and cleans session state on disconnect. Independently, the
-real userspace WireGuard integration now carries bidirectional encrypted
-traffic over loopback QUIC, WSS, and TLS/TCP servers. The remaining N1 gate is
-to bind those real carrier/device instances to the IPC session, then exercise
-cancellation, crash, reconnect, and repeated cycles through the actual child.
+real userspace WireGuard integration carries bidirectional encrypted traffic
+over loopback QUIC, WSS, and TLS/TCP servers through the actual child IPC
+session.
 
-N1A through N1C are complete: strict shared data-plane contracts, the real
+N1A through N1D are complete: strict shared data-plane contracts, the real
 userspace backend driving wireguard-go through an explicit single-carrier
-switchboard, and the compatible loopback peer have passed their gates. N1D
-(the Rust stdio runtime driving the actual child through the complete carrier
-and failure matrix) is the first incomplete merge unit; N1 remains open until
-that matrix passes.
+switchboard, the compatible loopback peer, concurrent cancellation, fallback,
+timeout cleanup, crash/backoff, and repeated actual-child cycles have passed
+their gates. N2A (the default-off production Rust controller) is the first
+incomplete merge unit.
 
 Tasks:
 

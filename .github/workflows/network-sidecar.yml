@@ -94,6 +94,12 @@ jobs:
           KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
             cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
               networking::stdio_runtime::unix::tests::
+          for cycle in 1 2 3; do
+            KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
+              cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
+                networking::stdio_runtime::unix::tests::actual_lab_child_carries_health_traffic_across_all_carriers \
+                -- --exact
+          done
 
       - name: Verify reproducible build
         run: |

@@ -59,20 +59,73 @@ func ServeWithBackend(reader *bufio.Reader, writer io.Writer, backend Backend) e
 	encoder := json.NewEncoder(writer)
 	current := newSessionWithBackend(backend)
 	defer func() { _ = backend.Close() }()
+	type decodedRequest struct {
+		request Request
+		err     error
+	}
+	type operationResult struct {
+		response Response
+		stop     bool
+	}
+	requests := make(chan decodedRequest)
+	operations := make(chan operationResult, 1)
+	go func() {
+		defer close(requests)
+		for {
+			request, err := decodeRequest(reader)
+			requests <- decodedRequest{request: request, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	busy := false
 	for {
-		request, err := decodeRequest(reader)
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		response, stop := current.handle(request)
-		if err := encoder.Encode(response); err != nil {
-			return fmt.Errorf("write IPC response: %w", err)
-		}
-		if stop {
-			return nil
+		select {
+		case decoded, ok := <-requests:
+			if !ok {
+				return nil
+			}
+			if errors.Is(decoded.err, io.EOF) {
+				return nil
+			}
+			if decoded.err != nil {
+				return decoded.err
+			}
+			request := decoded.request
+			if busy {
+				var response Response
+				if request.Payload.Type == "cancel" {
+					response, _ = current.handle(request)
+				} else {
+					response = Response{ProtocolVersion: ProtocolVersion, RequestID: request.RequestID}
+					response, _ = invalidState(response)
+				}
+				if err := encoder.Encode(response); err != nil {
+					return fmt.Errorf("write IPC response: %w", err)
+				}
+				continue
+			}
+			if request.Payload.Type == "connect_transport" {
+				busy = true
+				go func() { response, stop := current.handle(request); operations <- operationResult{response, stop} }()
+				continue
+			}
+			response, stop := current.handle(request)
+			if err := encoder.Encode(response); err != nil {
+				return fmt.Errorf("write IPC response: %w", err)
+			}
+			if stop {
+				return nil
+			}
+		case result := <-operations:
+			busy = false
+			if err := encoder.Encode(result.response); err != nil {
+				return fmt.Errorf("write IPC response: %w", err)
+			}
+			if result.stop {
+				return nil
+			}
 		}
 	}
 }

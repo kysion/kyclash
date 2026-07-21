@@ -35,6 +35,7 @@ mod unix {
         pub instance_id: String,
         pub auth_proof: String,
         pub lab_profile: super::super::NetworkProfile,
+        pub cancel_endpoint: String,
     }
 
     pub struct StdioSidecarRuntime {
@@ -110,6 +111,45 @@ mod unix {
                 return Err(NetworkErrorCode::UnsupportedProtocolVersion);
             }
             Ok(handshake)
+        }
+
+        #[cfg(feature = "networking-dev")]
+        pub fn request_with_cancel(
+            &mut self,
+            operation: &IpcRequest,
+            cancel: &IpcRequest,
+        ) -> Result<(IpcResponse, IpcResponse), NetworkErrorCode> {
+            operation.validate_protocol()?;
+            cancel.validate_protocol()?;
+            let operation_record = serde_json::to_vec(operation).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            let cancel_record = serde_json::to_vec(cancel).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            if operation_record.len() >= MAX_RECORD_SIZE || cancel_record.len() >= MAX_RECORD_SIZE {
+                return Err(NetworkErrorCode::InvalidConfiguration);
+            }
+            let stdin = self.stdin.as_mut().ok_or(NetworkErrorCode::SidecarUnavailable)?;
+            for record in [&operation_record, &cancel_record] {
+                stdin
+                    .write_all(record)
+                    .and_then(|()| stdin.write_all(b"\n"))
+                    .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            }
+            stdin.flush().map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            let first: IpcResponse =
+                serde_json::from_slice(&self.receive_record()?).map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            let second: IpcResponse =
+                serde_json::from_slice(&self.receive_record()?).map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            let find = |request_id: &str| {
+                if first.request_id == request_id {
+                    Some(first.clone())
+                } else if second.request_id == request_id {
+                    Some(second.clone())
+                } else {
+                    None
+                }
+            };
+            let operation_response = find(&operation.request_id).ok_or(NetworkErrorCode::AuthenticationFailed)?;
+            let cancel_response = find(&cancel.request_id).ok_or(NetworkErrorCode::AuthenticationFailed)?;
+            Ok((operation_response, cancel_response))
         }
 
         fn start_record(&mut self, context: &SidecarLaunchContext) -> Result<Vec<u8>, NetworkErrorCode> {
@@ -399,12 +439,11 @@ mod unix {
             let context =
                 SidecarLaunchContext::new(instance_id.into(), auth_token.clone()).with_private_key(vec![0x52; 32]);
             let mut runtime =
-                StdioSidecarRuntime::new(executable.into()).with_response_timeout(Duration::from_secs(20));
+                StdioSidecarRuntime::new(executable.clone().into()).with_response_timeout(Duration::from_secs(20));
             let handshake = runtime.start_lab(&context)?;
             assert_eq!(handshake.instance_id, instance_id);
             assert_eq!(handshake.auth_proof, sidecar_auth_proof(&auth_token, instance_id));
             handshake.lab_profile.validate()?;
-
             {
                 let mut request_sequence = 0_u64;
                 let mut request = |payload| {
@@ -437,6 +476,157 @@ mod unix {
                 }
                 assert!(request(IpcRequestPayload::StopTunnel)?.result.is_ok());
             }
+            runtime.stop()?;
+
+            let cancel_token = vec![0x61; 32];
+            let cancel_instance = "actual_lab_cancel";
+            let cancel_context = SidecarLaunchContext::new(cancel_instance.into(), cancel_token.clone())
+                .with_private_key(vec![0x62; 32]);
+            let mut runtime =
+                StdioSidecarRuntime::new(executable.into()).with_response_timeout(Duration::from_secs(20));
+            let cancel_handshake = runtime.start_lab(&cancel_context)?;
+            assert_eq!(
+                cancel_handshake.auth_proof,
+                sidecar_auth_proof(&cancel_token, cancel_instance)
+            );
+            let mut cancel_profile = cancel_handshake.lab_profile;
+            let quic_endpoint = cancel_profile
+                .transports
+                .endpoints
+                .iter_mut()
+                .find(|endpoint| endpoint.transport == TransportKind::Quic)
+                .ok_or(NetworkErrorCode::InvalidConfiguration)?;
+            quic_endpoint.url = cancel_handshake.cancel_endpoint;
+            cancel_profile.validate()?;
+            let apply_cancel_profile = IpcRequest {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                request_id: "request.cancel.profile".into(),
+                payload: IpcRequestPayload::ApplyProfile(Box::new(cancel_profile)),
+            };
+            assert!(runtime.request(&apply_cancel_profile)?.result.is_ok());
+            assert!(
+                runtime
+                    .request(&IpcRequest {
+                        protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                        request_id: "request.cancel.prepare".into(),
+                        payload: IpcRequestPayload::PrepareTunnel,
+                    })?
+                    .result
+                    .is_ok()
+            );
+            let (operation_response, cancel_response) = runtime.request_with_cancel(
+                &IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: "request.cancel.connect".into(),
+                    payload: IpcRequestPayload::ConnectTransport {
+                        transport: TransportKind::Quic,
+                    },
+                },
+                &IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: "request.cancel.operation".into(),
+                    payload: IpcRequestPayload::Cancel {
+                        operation_id: "operation.connect".into(),
+                    },
+                },
+            )?;
+            assert!(
+                cancel_response.result.is_ok(),
+                "cancel failed: {:?}",
+                cancel_response.result
+            );
+            assert!(operation_response.result.is_err());
+            for (index, transport) in [TransportKind::Wss, TransportKind::Tcp].into_iter().enumerate() {
+                assert!(
+                    runtime
+                        .request(&IpcRequest {
+                            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                            request_id: format!("request.cancel.fallback.{index}"),
+                            payload: IpcRequestPayload::ConnectTransport { transport },
+                        })?
+                        .result
+                        .is_ok()
+                );
+                let health = runtime.request(&IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: format!("request.cancel.health.{index}"),
+                    payload: IpcRequestPayload::SampleHealth,
+                })?;
+                assert!(matches!(health.result, Ok(IpcResponsePayload::Health(ref value)) if value.reachable));
+                assert!(
+                    runtime
+                        .request(&IpcRequest {
+                            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                            request_id: format!("request.cancel.disconnect.{index}"),
+                            payload: IpcRequestPayload::DisconnectTransport,
+                        })?
+                        .result
+                        .is_ok()
+                );
+            }
+            assert!(
+                runtime
+                    .request(&IpcRequest {
+                        protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                        request_id: "request.cancel.stop".into(),
+                        payload: IpcRequestPayload::StopTunnel,
+                    })?
+                    .result
+                    .is_ok()
+            );
+            runtime.stop()?;
+            Ok(())
+        }
+
+        #[cfg(feature = "networking-dev")]
+        #[test]
+        fn actual_lab_child_timeout_forces_bounded_process_cleanup() -> Result<(), NetworkErrorCode> {
+            let Ok(executable) = std::env::var("KYCLASH_NETWORK_LAB_SIDECAR_BIN") else {
+                return Ok(());
+            };
+            let context =
+                SidecarLaunchContext::new("actual_lab_timeout".into(), vec![0x71; 32]).with_private_key(vec![0x72; 32]);
+            let mut runtime = StdioSidecarRuntime::new(executable.into()).with_response_timeout(Duration::from_secs(3));
+            let handshake = runtime.start_lab(&context)?;
+            let mut network_profile = handshake.lab_profile;
+            network_profile
+                .transports
+                .endpoints
+                .iter_mut()
+                .find(|endpoint| endpoint.transport == TransportKind::Quic)
+                .ok_or(NetworkErrorCode::InvalidConfiguration)?
+                .url = handshake.cancel_endpoint;
+            assert!(
+                runtime
+                    .request(&IpcRequest {
+                        protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                        request_id: "request.timeout.profile".into(),
+                        payload: IpcRequestPayload::ApplyProfile(Box::new(network_profile)),
+                    })?
+                    .result
+                    .is_ok()
+            );
+            assert!(
+                runtime
+                    .request(&IpcRequest {
+                        protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                        request_id: "request.timeout.prepare".into(),
+                        payload: IpcRequestPayload::PrepareTunnel,
+                    })?
+                    .result
+                    .is_ok()
+            );
+            assert_eq!(
+                runtime.request(&IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: "request.timeout.connect".into(),
+                    payload: IpcRequestPayload::ConnectTransport {
+                        transport: TransportKind::Quic
+                    },
+                }),
+                Err(NetworkErrorCode::OperationTimedOut)
+            );
+            assert_eq!(runtime.status(), Err(NetworkErrorCode::SidecarUnavailable));
             runtime.stop()?;
             Ok(())
         }

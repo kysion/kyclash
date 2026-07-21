@@ -37,6 +37,7 @@ type Backend struct {
 	closed          bool
 	dialer          func(context.Context, profile.Transport, profile.NormalizedEndpoint) (carrier.Carrier, error)
 	operationCancel context.CancelFunc
+	cancelRequested bool
 	probeAddress    netip.AddrPort
 }
 
@@ -118,6 +119,11 @@ func (backend *Backend) Connect(ctx context.Context, transport profile.Transport
 	if backend.closed || backend.wireGuard == nil || backend.switchboard == nil || backend.active != "" || backend.operationCancel != nil {
 		backend.mu.Unlock()
 		return ErrInvalidState
+	}
+	if backend.cancelRequested {
+		backend.cancelRequested = false
+		backend.mu.Unlock()
+		return context.Canceled
 	}
 	dialContext, cancel := context.WithCancel(ctx)
 	backend.operationCancel = cancel
@@ -229,6 +235,11 @@ func (backend *Backend) Stop(context.Context) error {
 func (backend *Backend) Cancel(string) error {
 	backend.mu.Lock()
 	cancel := backend.operationCancel
+	if cancel == nil && backend.active == "" && !backend.closed {
+		backend.cancelRequested = true
+		backend.mu.Unlock()
+		return nil
+	}
 	backend.mu.Unlock()
 	if cancel == nil {
 		return ErrInvalidState
@@ -260,6 +271,7 @@ func (backend *Backend) Close() error {
 	backend.network = nil
 	backend.switchboard = nil
 	backend.active = ""
+	backend.cancelRequested = false
 	return nil
 }
 
