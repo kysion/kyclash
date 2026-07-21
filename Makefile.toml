@@ -21,48 +21,48 @@ args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
 
 [tasks.typecheck]
 description = "Run type checks"
-command = "pnpm"
-args = ["typecheck"]
+command = "corepack"
+args = ["pnpm", "typecheck"]
 
 [tasks.typecheck.windows]
 command = "pnpm.cmd"
 
 [tasks.knip-report]
 description = "Report unused frontend code and dependencies"
-command = "pnpm"
-args = ["knip:report"]
+command = "corepack"
+args = ["pnpm", "knip:report"]
 
 [tasks.knip-report.windows]
 command = "pnpm.cmd"
 
 [tasks.knip-check]
 description = "Fail on unused frontend code and dependencies"
-command = "pnpm"
-args = ["knip:check"]
+command = "corepack"
+args = ["pnpm", "knip:check"]
 
 [tasks.knip-check.windows]
 command = "pnpm.cmd"
 
 [tasks.lint-staged]
 description = "Run lint-staged for staged files"
-command = "pnpm"
-args = ["exec", "lint-staged"]
+command = "corepack"
+args = ["pnpm", "exec", "lint-staged"]
 
 [tasks.lint-staged.windows]
 command = "pnpm.cmd"
 
 [tasks.i18n-format]
 description = "Format i18n keys"
-command = "pnpm"
-args = ["i18n:format"]
+command = "corepack"
+args = ["pnpm", "i18n:format"]
 
 [tasks.i18n-format.windows]
 command = "pnpm.cmd"
 
 [tasks.i18n-types]
 description = "Generate i18n key types"
-command = "pnpm"
-args = ["i18n:types"]
+command = "corepack"
+args = ["pnpm", "i18n:types"]
 
 [tasks.i18n-types.windows]
 command = "pnpm.cmd"
