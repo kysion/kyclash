@@ -22,8 +22,9 @@ For the planned direct GitHub distribution, the operator selected notarization
 and stapling so users do not need the Privacy & Security override. This choice
 does not create an App Store listing or enter App Review. Local notarization may
 use a validated `notarytool` Keychain profile through
-`APPLE_NOTARY_KEYCHAIN_PROFILE`; CI continues to use its protected App Store
-Connect API-key secrets. Exactly one credential mode is permitted. Apple ID
+`APPLE_NOTARY_KEYCHAIN_PROFILE`; CI may use protected notary API-key secrets
+only when notarization is explicitly enabled. Exactly one credential mode is
+permitted. Apple ID
 mode requires an app-specific password entered at `notarytool`'s secure prompt,
 never the ordinary Apple Account password and never a repository variable.
 
