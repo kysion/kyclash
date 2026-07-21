@@ -617,8 +617,11 @@ Status (2026-07-22): in progress. The release workflow now calls the shared
 `scripts/verify-macos-package.mjs` audit, which checks the exact app bundle,
 Developer ID signatures, Team ID, helper plist, sidecar trust hash, duplicate
 helper absence, PKG signature, and emits a byte hash. Performance baselines,
-fresh-install/upgrade/rollback/uninstall evidence, and current-byte VM package
-evidence remain open.
+rollback/uninstall evidence, and the remaining current-byte lifecycle matrix
+remain open. The resumed disposable VM installed the current signed arm64
+package over the existing KyClash installation and verified the receipt, deep
+signature, nested sidecar, and route helper. The tested PKG SHA-256 is
+`760cd22bb2fcaf1062417d88cb2fa4e0989176e6f873bece5bada01f008ad38e`.
 
 The sidecar verification workflow now retains a repeated QUIC fragmented-round-
 trip benchmark with CPU/runtime and allocation metadata. A local Apple M5 run
