@@ -149,6 +149,19 @@ Merge unit: `test(networking): add compatible loopback lab server`.
 
 ### N1D — actual-child end-to-end matrix
 
+Review amendment: `kyclash-actual-child-lab-review-20260721.md` locks a
+`networking-dev`-only lab executable that shares the production data plane but
+injects ephemeral trust directly in memory. The production bootstrap and
+handshake remain unchanged and reject lab fields.
+
+Status (2026-07-21): in progress. The Rust stdio runtime now drives the real
+lab child through apply, prepare, QUIC/WSS/TCP connect, encrypted payload
+health, explicit disconnect, tunnel stop, and child shutdown. This exposed and
+fixed premature wireguard-go Up before carrier attachment and an asynchronously
+cleared peer-key buffer. CI wiring is present. The remaining N1D gate is the
+actual-child cancellation/failure/restart matrix and repeated-cycle cleanup;
+N1 is not complete yet.
+
 Deliverables:
 
 - Drive the real Go executable from the Rust stdio runtime through apply,

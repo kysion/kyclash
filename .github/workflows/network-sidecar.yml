@@ -65,6 +65,14 @@ jobs:
           go-version: '1.26.5'
           cache-dependency-path: network-sidecar/go.sum
 
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
       - name: Verify module and formatting
         run: |
           go mod download
@@ -76,6 +84,16 @@ jobs:
 
       - name: Vet source
         run: go vet ./...
+
+      - name: Test actual child data plane
+        run: |
+          mkdir -p build/actual-child
+          go build -trimpath -o build/actual-child/kyclash-network-sidecar ./cmd/kyclash-network-sidecar
+          go build -trimpath -o build/actual-child/kyclash-network-sidecar-lab ./cmd/kyclash-network-sidecar-lab
+          KYCLASH_NETWORK_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar" \
+          KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
+            cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
+              networking::stdio_runtime::unix::tests::
 
       - name: Verify reproducible build
         run: |

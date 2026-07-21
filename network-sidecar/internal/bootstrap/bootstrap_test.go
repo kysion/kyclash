@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -15,7 +16,12 @@ func TestSharedBootstrapFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := DecodeLine(bufio.NewReader(strings.NewReader(string(fixture))))
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, fixture); err != nil {
+		t.Fatal(err)
+	}
+	compact.WriteByte('\n')
+	config, err := DecodeLine(bufio.NewReader(bytes.NewReader(compact.Bytes())))
 	if err != nil {
 		t.Fatal(err)
 	}

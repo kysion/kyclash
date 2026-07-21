@@ -118,11 +118,12 @@ traffic over loopback QUIC, WSS, and TLS/TCP servers. The remaining N1 gate is
 to bind those real carrier/device instances to the IPC session, then exercise
 cancellation, crash, reconnect, and repeated cycles through the actual child.
 
-N1A and N1B are complete: strict shared data-plane contracts and the real
-userspace backend now drive wireguard-go through an explicit single-carrier
-switchboard. N1C (repository-owned compatible loopback server) is the first
-incomplete merge unit; N1 remains open until N1C and the actual-child N1D
-matrix pass.
+N1A through N1C are complete: strict shared data-plane contracts, the real
+userspace backend driving wireguard-go through an explicit single-carrier
+switchboard, and the compatible loopback peer have passed their gates. N1D
+(the Rust stdio runtime driving the actual child through the complete carrier
+and failure matrix) is the first incomplete merge unit; N1 remains open until
+that matrix passes.
 
 Tasks:
 

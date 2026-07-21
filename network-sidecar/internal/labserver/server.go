@@ -46,10 +46,12 @@ type Impairment struct {
 }
 
 type Config struct {
-	Transport       profile.Transport
-	BindHost        string
-	ClientPublicKey []byte
-	Impairment      Impairment
+	Transport        profile.Transport
+	BindHost         string
+	ClientPublicKey  []byte
+	ServerPrivateKey []byte
+	AutoEcho         bool
+	Impairment       Impairment
 }
 
 type Server struct {
@@ -57,6 +59,7 @@ type Server struct {
 	endpoint  profile.Endpoint
 	roots     *x509.CertPool
 	peerKey   string
+	certDER   []byte
 	listener  net.Listener
 	quic      *quicgo.Listener
 	http      *http.Server
@@ -66,6 +69,8 @@ type Server struct {
 	done      chan error
 	ready     chan struct{}
 	once      sync.Once
+	echo      net.Listener
+	autoEcho  bool
 }
 
 func Start(parent context.Context, config Config) (*Server, error) {
@@ -82,29 +87,40 @@ func Start(parent context.Context, config Config) (*Server, error) {
 	if config.Transport == profile.QUIC && config.Impairment.RefuseUDP {
 		return nil, ErrUDPRefused
 	}
-	certificate, roots, err := ephemeralCertificate(config.BindHost)
+	certificate, roots, certDER, err := ephemeralCertificate(config.BindHost)
 	if err != nil {
 		return nil, err
 	}
-	private, public, err := keyPair()
+	private := append([]byte(nil), config.ServerPrivateKey...)
+	var public []byte
+	if len(private) == 0 {
+		private, public, err = keyPair()
+	} else if len(private) == 32 {
+		public, err = curve25519.X25519(private, curve25519.Basepoint)
+	} else {
+		err = ErrInvalid
+	}
 	if err != nil {
+		clear(private)
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	server := &Server{transport: config.Transport, roots: roots, peerKey: base64.StdEncoding.EncodeToString(public), cancel: cancel, done: make(chan error, 1), ready: make(chan struct{})}
+	server := &Server{transport: config.Transport, roots: roots, peerKey: base64.StdEncoding.EncodeToString(public), certDER: certDER, cancel: cancel, done: make(chan error, 1), ready: make(chan struct{}), autoEcho: config.AutoEcho}
 	accept, err := server.listen(config.BindHost, certificate)
 	if err != nil {
 		cancel()
 		clear(private)
 		return nil, err
 	}
-	go server.run(ctx, accept, private, config.ClientPublicKey, config.Impairment)
+	clientPublic := append([]byte(nil), config.ClientPublicKey...)
+	go server.run(ctx, accept, private, clientPublic, config.Impairment)
 	return server, nil
 }
 
 func (server *Server) Endpoint() profile.Endpoint { return server.endpoint }
 func (server *Server) Roots() *x509.CertPool      { return server.roots.Clone() }
 func (server *Server) PeerPublicKey() string      { return server.peerKey }
+func (server *Server) CertificateDER() []byte     { return append([]byte(nil), server.certDER...) }
 func (server *Server) Network() *netstack.Net     { return server.network }
 func (server *Server) Done() <-chan error         { return server.done }
 func (server *Server) WaitReady(ctx context.Context) error {
@@ -135,6 +151,9 @@ func (server *Server) Close() error {
 		}
 		if server.device != nil {
 			server.device.Close()
+		}
+		if server.echo != nil {
+			_ = server.echo.Close()
 		}
 	})
 	return nil
@@ -224,6 +243,7 @@ func (server *Server) listen(host string, certificate tls.Certificate) (acceptCa
 
 func (server *Server) run(ctx context.Context, accept acceptCarrier, private, clientPublic []byte, impairment Impairment) {
 	defer clear(private)
+	defer clear(clientPublic)
 	packetCarrier, err := accept(ctx)
 	if err != nil {
 		server.finish(ctx, err)
@@ -252,6 +272,15 @@ func (server *Server) run(ctx context.Context, accept acceptCarrier, private, cl
 		wireGuard.Close()
 		server.finish(ctx, err)
 		return
+	}
+	if server.autoEcho {
+		server.echo, err = network.ListenTCPAddrPort(netip.MustParseAddrPort(ProbeAddress))
+		if err != nil {
+			wireGuard.Close()
+			server.finish(ctx, err)
+			return
+		}
+		go echoLoop(ctx, server.echo)
 	}
 	close(server.ready)
 	<-ctx.Done()
@@ -316,10 +345,10 @@ func acceptContext(ctx context.Context, listener net.Listener) (net.Conn, error)
 	}
 }
 
-func ephemeralCertificate(host string) (tls.Certificate, *x509.CertPool, error) {
+func ephemeralCertificate(host string) (tls.Certificate, *x509.CertPool, []byte, error) {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, nil, err
+		return tls.Certificate{}, nil, nil, err
 	}
 	template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: host}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	if ip := net.ParseIP(host); ip != nil {
@@ -329,15 +358,15 @@ func ephemeralCertificate(host string) (tls.Certificate, *x509.CertPool, error) 
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
 	if err != nil {
-		return tls.Certificate{}, nil, err
+		return tls.Certificate{}, nil, nil, err
 	}
 	parsed, err := x509.ParseCertificate(der)
 	if err != nil {
-		return tls.Certificate{}, nil, err
+		return tls.Certificate{}, nil, nil, err
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(parsed)
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: private}, roots, nil
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: private}, roots, append([]byte(nil), der...), nil
 }
 
 func keyPair() ([]byte, []byte, error) {

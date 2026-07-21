@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/netip"
 	"strings"
 	"sync"
@@ -28,12 +30,14 @@ type Backend struct {
 	privateKey      []byte
 	roots           *x509.CertPool
 	wireGuard       *device.Device
+	network         *netstack.Net
 	switchboard     *wgcarrier.Switchboard
 	active          profile.Transport
 	connectDelay    time.Duration
 	closed          bool
 	dialer          func(context.Context, profile.Transport, profile.NormalizedEndpoint) (carrier.Carrier, error)
 	operationCancel context.CancelFunc
+	probeAddress    netip.AddrPort
 }
 
 func New(privateKey []byte, labRoots *x509.CertPool) (*Backend, error) {
@@ -42,6 +46,17 @@ func New(privateKey []byte, labRoots *x509.CertPool) (*Backend, error) {
 	}
 	backend := &Backend{privateKey: append([]byte(nil), privateKey...), roots: labRoots}
 	backend.dialer = backend.dialCarrier
+	return backend, nil
+}
+
+// NewLab enables a bounded payload probe over the userspace WireGuard
+// netstack. It is used only by the networking-dev lab executable.
+func NewLab(privateKey []byte, labRoots *x509.CertPool, probeAddress netip.AddrPort) (*Backend, error) {
+	backend, err := New(privateKey, labRoots)
+	if err != nil || !probeAddress.IsValid() {
+		return nil, ErrInvalidState
+	}
+	backend.probeAddress = probeAddress
 	return backend, nil
 }
 
@@ -59,7 +74,7 @@ func (backend *Backend) Prepare(_ context.Context, networkProfile *profile.Profi
 		}
 		addresses = append(addresses, prefix.Addr())
 	}
-	tunnel, _, err := netstack.CreateNetTUN(addresses, nil, profile.TunnelMTU)
+	tunnel, network, err := netstack.CreateNetTUN(addresses, nil, profile.TunnelMTU)
 	if err != nil {
 		return fmt.Errorf("create userspace tunnel: %w", err)
 	}
@@ -70,15 +85,30 @@ func (backend *Backend) Prepare(_ context.Context, networkProfile *profile.Profi
 		return err
 	}
 	wireGuard := device.NewDevice(tunnel, bind, device.NewLogger(device.LogLevelSilent, ""))
+	// netstack reports its TUN as immediately up. Quiesce the empty device
+	// before installing a peer so no handshake timer starts without a carrier.
+	if err := wireGuard.Down(); err != nil {
+		wireGuard.Close()
+		_ = board.Shutdown()
+		return fmt.Errorf("quiesce empty userspace WireGuard: %w", err)
+	}
 	if err := configure(wireGuard, backend.privateKey, networkProfile); err != nil {
 		wireGuard.Close()
 		_ = board.Shutdown()
 		return err
 	}
+	// netstack TUN starts wireguard-go during configuration. Keep the prepared
+	// device down until Rust explicitly selects and attaches one carrier.
+	if err := wireGuard.Down(); err != nil {
+		wireGuard.Close()
+		_ = board.Shutdown()
+		return fmt.Errorf("quiesce prepared userspace WireGuard: %w", err)
+	}
 	clear(backend.privateKey)
 	backend.privateKey = nil
 	backend.switchboard = board
 	backend.wireGuard = wireGuard
+	backend.network = network
 	return nil
 }
 
@@ -119,12 +149,42 @@ func (backend *Backend) Connect(ctx context.Context, transport profile.Transport
 	return nil
 }
 
-func (backend *Backend) Health(context.Context) (ipc.Health, error) {
+func (backend *Backend) Health(ctx context.Context) (ipc.Health, error) {
 	backend.mu.Lock()
-	defer backend.mu.Unlock()
 	if backend.closed || backend.active == "" || backend.wireGuard == nil {
+		backend.mu.Unlock()
 		return ipc.Health{}, ErrInvalidState
 	}
+	network, probe := backend.network, backend.probeAddress
+	backend.mu.Unlock()
+	if probe.IsValid() {
+		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		defer cancel()
+		var connection net.Conn
+		var err error
+		for connection == nil {
+			connection, err = network.DialContextTCPAddrPort(ctx, probe)
+			if err == nil {
+				break
+			}
+			select {
+			case <-time.After(10 * time.Millisecond):
+			case <-ctx.Done():
+				return ipc.Health{}, err
+			}
+		}
+		defer connection.Close()
+		payload := []byte("kyclash-health-v1")
+		if _, err = connection.Write(payload); err != nil {
+			return ipc.Health{}, err
+		}
+		response := make([]byte, len(payload))
+		if _, err = io.ReadFull(connection, response); err != nil || string(response) != string(payload) {
+			return ipc.Health{}, ErrInvalidState
+		}
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
 	latency := backend.connectDelay.Milliseconds()
 	if latency < 0 {
 		latency = 0
@@ -161,6 +221,7 @@ func (backend *Backend) Stop(context.Context) error {
 		_ = backend.switchboard.Shutdown()
 	}
 	backend.wireGuard = nil
+	backend.network = nil
 	backend.switchboard = nil
 	return nil
 }
@@ -196,6 +257,7 @@ func (backend *Backend) Close() error {
 	clear(backend.privateKey)
 	backend.privateKey = nil
 	backend.wireGuard = nil
+	backend.network = nil
 	backend.switchboard = nil
 	backend.active = ""
 	return nil

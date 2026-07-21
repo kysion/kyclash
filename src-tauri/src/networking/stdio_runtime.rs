@@ -8,6 +8,8 @@ mod unix {
 
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
     use ring::hmac;
+    #[cfg(feature = "networking-dev")]
+    use serde::Deserialize;
     use serde::Serialize;
 
     use super::super::{
@@ -23,6 +25,16 @@ mod unix {
         instance_id: &'a str,
         auth_token: String,
         private_key: String,
+    }
+
+    #[cfg(feature = "networking-dev")]
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct LabSidecarHandshake {
+        pub protocol_version: u8,
+        pub instance_id: String,
+        pub auth_proof: String,
+        pub lab_profile: super::super::NetworkProfile,
     }
 
     pub struct StdioSidecarRuntime {
@@ -86,6 +98,69 @@ mod unix {
             Ok(response)
         }
 
+        #[cfg(feature = "networking-dev")]
+        pub fn start_lab(&mut self, context: &SidecarLaunchContext) -> Result<LabSidecarHandshake, NetworkErrorCode> {
+            let record = self.start_record(context)?;
+            let handshake: LabSidecarHandshake = serde_json::from_slice(&record).map_err(|_| {
+                let _ = self.terminate_child();
+                NetworkErrorCode::AuthenticationFailed
+            })?;
+            if handshake.protocol_version != NETWORK_IPC_PROTOCOL_VERSION {
+                let _ = self.terminate_child();
+                return Err(NetworkErrorCode::UnsupportedProtocolVersion);
+            }
+            Ok(handshake)
+        }
+
+        fn start_record(&mut self, context: &SidecarLaunchContext) -> Result<Vec<u8>, NetworkErrorCode> {
+            if self.child.is_some() || context.private_key().len() != 32 {
+                return Err(NetworkErrorCode::InvalidConfiguration);
+            }
+            let mut child = Command::new(&self.executable)
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            let mut stdin = child.stdin.take().ok_or(NetworkErrorCode::SidecarUnavailable)?;
+            let stdout = child.stdout.take().ok_or(NetworkErrorCode::SidecarUnavailable)?;
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || read_records(stdout, sender));
+            let bootstrap = BootstrapRecord {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                instance_id: &context.instance_id,
+                auth_token: BASE64.encode(context.auth_token()),
+                private_key: BASE64.encode(context.private_key()),
+            };
+            let encoded = serde_json::to_vec(&bootstrap).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            if encoded.len() >= MAX_RECORD_SIZE {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(NetworkErrorCode::InvalidConfiguration);
+            }
+            if stdin
+                .write_all(&encoded)
+                .and_then(|()| stdin.write_all(b"\n"))
+                .and_then(|()| stdin.flush())
+                .is_err()
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(NetworkErrorCode::SidecarUnavailable);
+            }
+            self.child = Some(child);
+            self.stdin = Some(stdin);
+            self.records = Some(receiver);
+            match self.receive_record() {
+                Ok(record) => Ok(record),
+                Err(error) => {
+                    let _ = self.terminate_child();
+                    Err(error)
+                }
+            }
+        }
+
         fn receive_record(&self) -> Result<Vec<u8>, NetworkErrorCode> {
             self.records
                 .as_ref()
@@ -117,48 +192,8 @@ mod unix {
 
     impl SidecarRuntime for StdioSidecarRuntime {
         fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
-            if self.child.is_some() || context.private_key().len() != 32 {
-                return Err(NetworkErrorCode::InvalidConfiguration);
-            }
-            let mut child = Command::new(&self.executable)
-                .env_clear()
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
-            let mut stdin = child.stdin.take().ok_or(NetworkErrorCode::SidecarUnavailable)?;
-            let stdout = child.stdout.take().ok_or(NetworkErrorCode::SidecarUnavailable)?;
-            let (sender, receiver) = mpsc::channel();
-            std::thread::spawn(move || read_records(stdout, sender));
-
-            let bootstrap = BootstrapRecord {
-                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
-                instance_id: &context.instance_id,
-                auth_token: BASE64.encode(context.auth_token()),
-                private_key: BASE64.encode(context.private_key()),
-            };
-            let encoded = serde_json::to_vec(&bootstrap).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
-            if encoded.len() >= MAX_RECORD_SIZE {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(NetworkErrorCode::InvalidConfiguration);
-            }
-            if stdin
-                .write_all(&encoded)
-                .and_then(|()| stdin.write_all(b"\n"))
-                .and_then(|()| stdin.flush())
-                .is_err()
-            {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(NetworkErrorCode::SidecarUnavailable);
-            }
-            self.child = Some(child);
-            self.stdin = Some(stdin);
-            self.records = Some(receiver);
             let result = self
-                .receive_record()
+                .start_record(context)
                 .and_then(|record| serde_json::from_slice(&record).map_err(|_| NetworkErrorCode::AuthenticationFailed));
             if result.is_err() {
                 let _ = self.terminate_child();
@@ -267,6 +302,8 @@ mod unix {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[cfg(feature = "networking-dev")]
+        use crate::networking::TransportKind;
         use crate::networking::{
             IpcResponsePayload, NetworkState, NetworkStatus, RestartPolicy, SidecarController, SidecarLifecycleState,
         };
@@ -351,6 +388,59 @@ mod unix {
             Ok(())
         }
 
+        #[cfg(feature = "networking-dev")]
+        #[test]
+        fn actual_lab_child_carries_health_traffic_across_all_carriers() -> Result<(), NetworkErrorCode> {
+            let Ok(executable) = std::env::var("KYCLASH_NETWORK_LAB_SIDECAR_BIN") else {
+                return Ok(());
+            };
+            let auth_token = vec![0x51; 32];
+            let instance_id = "actual_lab_child";
+            let context =
+                SidecarLaunchContext::new(instance_id.into(), auth_token.clone()).with_private_key(vec![0x52; 32]);
+            let mut runtime =
+                StdioSidecarRuntime::new(executable.into()).with_response_timeout(Duration::from_secs(20));
+            let handshake = runtime.start_lab(&context)?;
+            assert_eq!(handshake.instance_id, instance_id);
+            assert_eq!(handshake.auth_proof, sidecar_auth_proof(&auth_token, instance_id));
+            handshake.lab_profile.validate()?;
+
+            {
+                let mut request_sequence = 0_u64;
+                let mut request = |payload| {
+                    request_sequence += 1;
+                    runtime.request(&IpcRequest {
+                        protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                        request_id: format!("request.lab.{request_sequence}"),
+                        payload,
+                    })
+                };
+                assert!(
+                    request(IpcRequestPayload::ApplyProfile(Box::new(handshake.lab_profile)))?
+                        .result
+                        .is_ok()
+                );
+                assert!(request(IpcRequestPayload::PrepareTunnel)?.result.is_ok());
+                for transport in [TransportKind::Quic, TransportKind::Wss, TransportKind::Tcp] {
+                    assert!(
+                        request(IpcRequestPayload::ConnectTransport { transport })?
+                            .result
+                            .is_ok()
+                    );
+                    let health = request(IpcRequestPayload::SampleHealth)?;
+                    assert!(
+                        matches!(health.result, Ok(IpcResponsePayload::Health(ref value)) if value.reachable),
+                        "health probe failed: {:?}",
+                        health.result
+                    );
+                    assert!(request(IpcRequestPayload::DisconnectTransport)?.result.is_ok());
+                }
+                assert!(request(IpcRequestPayload::StopTunnel)?.result.is_ok());
+            }
+            runtime.stop()?;
+            Ok(())
+        }
+
         #[test]
         fn actual_child_is_terminated_when_authentication_fails() {
             let Ok(executable) = std::env::var("KYCLASH_NETWORK_SIDECAR_BIN") else {
@@ -367,5 +457,7 @@ mod unix {
     }
 }
 
+#[cfg(all(unix, feature = "networking-dev"))]
+pub use unix::LabSidecarHandshake;
 #[cfg(unix)]
 pub use unix::{StdioSidecarRuntime, sidecar_auth_proof};
