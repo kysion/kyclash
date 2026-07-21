@@ -419,6 +419,10 @@ Completed in the current workspace:
   Both background download and cached-install refresh reject non-KyClash URLs,
   unknown/extra fields, sample or invalid source metadata, mismatched
   version/URL/signature, invalid artifact facts, and non-older rollback targets.
+- Added install-time re-verification for the silent updater's on-disk cache.
+  Cached bytes are checked again with the pinned Tauri public key and freshly
+  fetched owned signature; missing key or altered bytes delete the cache and
+  refuse installation.
 
 Remaining:
 

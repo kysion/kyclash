@@ -74,6 +74,12 @@ version/URL/signature, invalid commit or SHA-256 shapes, zero sizes, additional
 platforms, and rollback versions that are not older than the candidate. Error
 logging is constant and does not echo rejected metadata.
 
+Because the existing silent updater caches verified bytes for installation on a
+later launch, the cached artifact is verified a second time immediately before
+installation using the pinned config public key and the freshly fetched owned
+metadata signature. A missing key, malformed base64, altered cache, or signature
+mismatch deletes the cache and fails closed.
+
 ## CI configuration names
 
 Repository/environment variables (not secrets):

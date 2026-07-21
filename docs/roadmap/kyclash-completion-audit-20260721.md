@@ -62,8 +62,11 @@ public-distribution enhancement rather than a current development blocker.
 - Dormant runtime update paths now validate the owned GitHub URL and strict
   KyClash metadata policy before download and cached-install refresh. Rejected
   metadata fails closed without being echoed into logs.
+- Cached updater bytes are cryptographically verified again immediately before
+  installation. Missing public-key configuration, malformed encoding, altered
+  cache bytes, or signature mismatch deletes the cache and refuses installation.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
-  localization and dead-code checks; 141 Rust all-feature library tests; two
+  localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module
   verification, formatting, repeated race tests, and vet.
 - The network-sidecar GitHub Actions run for security-hardening commit

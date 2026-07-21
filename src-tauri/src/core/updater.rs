@@ -1,7 +1,9 @@
 use crate::{config::Config, singleton, utils::dirs};
 use anyhow::{Result, ensure};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::Utc;
 use clash_verge_logging::{Type, logging};
+use minisign_verify::{PublicKey, Signature};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -114,6 +116,27 @@ fn validate_owned_update(update: &Update) -> Result<()> {
         update.download_url.as_str(),
         &update.signature,
     )
+}
+
+fn verify_cached_update_signature(bytes: &[u8], encoded_signature: &str, encoded_public_key: &str) -> Result<()> {
+    let public_key = BASE64_STANDARD.decode(encoded_public_key)?;
+    let public_key = std::str::from_utf8(&public_key)?;
+    let public_key = PublicKey::decode(public_key)?;
+    let signature = BASE64_STANDARD.decode(encoded_signature)?;
+    let signature = std::str::from_utf8(&signature)?;
+    let signature = Signature::decode(signature)?;
+    public_key.verify(bytes, &signature, true)?;
+    Ok(())
+}
+
+fn configured_updater_public_key(app_handle: &tauri::AppHandle) -> Option<&str> {
+    app_handle.config().plugins.0.get("updater")?.get("pubkey")?.as_str()
+}
+
+fn verify_cached_update_for_install(app_handle: &tauri::AppHandle, update: &Update, bytes: &[u8]) -> Result<()> {
+    let public_key =
+        configured_updater_public_key(app_handle).ok_or_else(|| anyhow::anyhow!("updater public key unavailable"))?;
+    verify_cached_update_signature(bytes, &update.signature, public_key)
 }
 
 pub struct SilentUpdater {
@@ -339,6 +362,12 @@ impl SilentUpdater {
                 update.version,
                 cached_version
             );
+            Self::delete_cache();
+            return false;
+        }
+
+        if verify_cached_update_for_install(app_handle, &update, &bytes).is_err() {
+            logging!(warn, Type::System, "Rejected invalid cached update signature");
             Self::delete_cache();
             return false;
         }
@@ -625,6 +654,23 @@ mod tests {
     use super::*;
 
     type MetadataMutation = Box<dyn Fn(&mut serde_json::Value)>;
+
+    const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key\n\
+RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3\n";
+    const TEST_SIGNATURE: &str = "untrusted comment: signature from minisign secret key\n\
+RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n\
+trusted comment: timestamp:1633700835\tfile:test\tprehashed\n\
+wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJAgAooBQ==\n";
+
+    #[test]
+    fn cached_update_signature_is_verified_again_before_install() {
+        let public_key = BASE64_STANDARD.encode(TEST_PUBLIC_KEY);
+        let signature = BASE64_STANDARD.encode(TEST_SIGNATURE);
+        assert!(verify_cached_update_signature(b"test", &signature, &public_key).is_ok());
+        assert!(verify_cached_update_signature(b"tampered", &signature, &public_key).is_err());
+        assert!(verify_cached_update_signature(b"test", "not-base64", &public_key).is_err());
+        assert!(verify_cached_update_signature(b"test", &signature, "not-base64").is_err());
+    }
 
     fn owned_metadata() -> serde_json::Value {
         serde_json::json!({
