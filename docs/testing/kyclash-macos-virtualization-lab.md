@@ -154,6 +154,31 @@ with SHA-256
 The non-secret capture record is
 `target/macos-vm-lab/evidence/app-launch-20260722/kyclash-live-vm-home2-20260722.txt`.
 
+## Installed PKG trust-resource and launch evidence — 2026-07-22
+
+Installing the first rebuilt internal PKG exposed a package-permission defect:
+the public sidecar trust manifest was `root:wheel 0600`, so the non-admin app
+user could not read that sealed resource and `codesign --verify --deep
+--strict` returned `Permission denied`. The build now explicitly changes the
+manifest to `0644` after every write, and the shared package verifier rejects
+any other mode.
+
+The replacement Developer ID-signed, intentionally unnotarized internal PKG
+has SHA-256
+`b06d0c64bce8b50459875bf905ade2a244d17537f8a22e34ca270b008ed434f1`.
+It completed an upgrade installation in the disposable guest. The normal test
+user then verified the `net.kysion.kyclash` 2.5.3 receipt, `0644` readable
+manifest, deep strict app signature, Team ID `RQUQ8Y3S9H`, and equality between
+the nested sidecar SHA-256 and the trust manifest. LaunchServices started
+`/Applications/KyClash.app`; its bundled Mihomo child and
+`127.0.0.1:33331` listener were live, and the previous user-directory app copy
+was absent. The redacted record is
+`target/macos-vm-lab/evidence/app-launch-20260722/pkg-readable-trust-upgrade-20260722.txt`.
+The installed-app screenshot is
+`target/macos-vm-lab/evidence/app-launch-20260722/kyclash-installed-pkg-live-20260722.png`
+with SHA-256
+`5630fa3513fbddf96af38c3a78eedf43bd3f327eb42ed2971fc5edf3c83cdea9`.
+
 ## GUI termination and session lifecycle evidence — 2026-07-22
 
 A second pass exercised the signed bundle's process and user-session boundary

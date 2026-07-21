@@ -68,3 +68,25 @@ back to the guest, and accepted there by Gatekeeper. Reinstalling the stapled
 package over the internal build succeeded. No certificate, private key,
 Apple-account password, or app-specific password was exported or stored in the
 repository. No App Store record or GitHub Release was created.
+
+## Current internal candidate after installed-resource permission fix
+
+The historical notarized/stapled bytes above remain immutable evidence. A new
+Developer ID-signed internal candidate was rebuilt from the source containing
+commit `8bd179d1`; it was intentionally not submitted for notarization. Its
+SHA-256 is
+`b06d0c64bce8b50459875bf905ade2a244d17537f8a22e34ca270b008ed434f1`.
+
+The first upgrade attempt exposed that the public sidecar trust manifest was
+packaged as `root:wheel 0600`, which prevented a non-admin user from reading a
+sealed application resource. The producer now enforces `0644` after writing
+the manifest, including when an existing file previously had a restrictive
+mode, and `scripts/verify-macos-package.mjs` rejects any package candidate that
+does not contain exactly that mode.
+
+The corrected candidate passed host package verification, upgrade installation
+in the disposable Virtualization.framework guest, non-admin deep strict app
+signature verification, exact trust-manifest/sidecar hash matching, nested
+Team ID verification, and installed-app LaunchServices smoke from
+`/Applications/KyClash.app`. No App Store record, GitHub Release, updater
+activation, or production-network mutation occurred.

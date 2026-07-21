@@ -251,3 +251,15 @@ was stapled and validated, and the final PKG hash became
 Host and guest Gatekeeper now accept the PKG and installed app as `Notarized
 Developer ID`; guest upgrade installation passed. This was notarization only:
 no App Store record, GitHub Release, or updater activation was created.
+
+A later current-source internal rebuild found and fixed an installed-resource
+permission defect: the public sidecar trust manifest had been packaged as
+`root:wheel 0600`. Commit `8bd179d1` enforces `0644` and makes the package audit
+reject any other mode. The corrected, intentionally unnotarized signed PKG has
+SHA-256
+`b06d0c64bce8b50459875bf905ade2a244d17537f8a22e34ca270b008ed434f1`.
+It upgraded successfully in the disposable guest; the non-admin test user
+passed deep strict signature verification, read the manifest, matched its hash
+to the nested sidecar, and launched `/Applications/KyClash.app` with its Mihomo
+child and singleton listener. The earlier notarized bytes remain historical
+evidence and are not claimed for this current candidate.

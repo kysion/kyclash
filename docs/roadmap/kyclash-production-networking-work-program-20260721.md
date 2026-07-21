@@ -688,12 +688,24 @@ Merge unit: `test(networking): add deterministic reliability matrix`.
 Status (2026-07-22): in progress. The release workflow now calls the shared
 `scripts/verify-macos-package.mjs` audit, which checks the exact app bundle,
 Developer ID signatures, Team ID, helper plist, sidecar trust hash, duplicate
-helper absence, PKG signature, and emits a byte hash. Performance baselines,
-rollback/uninstall evidence, and the remaining current-byte lifecycle matrix
-remain open. The resumed disposable VM installed the current signed arm64
-package over the existing KyClash installation and verified the receipt, deep
-signature, nested sidecar, and route helper. The tested PKG SHA-256 is
-`760cd22bb2fcaf1062417d88cb2fa4e0989176e6f873bece5bada01f008ad38e`.
+helper absence, PKG signature, installed-app-readable trust-manifest mode, and
+emits a byte hash. A disposable-VM upgrade exposed that the public sidecar
+trust manifest had inherited source mode `0600`; after `pkgbuild` changed its
+owner to `root:wheel`, the normal app user could not read the sealed resource
+or complete deep signature verification. Commit `8bd179d1` fixes the producer
+to enforce `0644` after every write and makes package verification fail on any
+other mode. The rebuilt Developer ID-signed internal candidate has SHA-256
+`b06d0c64bce8b50459875bf905ade2a244d17537f8a22e34ca270b008ed434f1`.
+It upgraded successfully in the disposable guest; as the non-admin test user,
+the receipt, `0644` manifest, exact sidecar hash match, nested Team ID, and
+deep strict app signature all passed. LaunchServices then ran the installed
+`/Applications/KyClash.app`, its Mihomo child, and singleton listener while
+the previous lab-copy process was absent. Redacted evidence and the visible
+installed-app capture are retained under
+`target/macos-vm-lab/evidence/app-launch-20260722/`. Performance baselines,
+fresh-install/rollback/uninstall/reboot evidence, and the remaining exact-byte
+lifecycle matrix remain open. Notarization was intentionally not required for
+this internal candidate.
 
 The sidecar verification workflow now retains a repeated QUIC fragmented-round-
 trip benchmark with CPU/runtime and allocation metadata. A local Apple M5 run
