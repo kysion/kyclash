@@ -187,6 +187,17 @@ N1 status: complete. N1A–N1D pass together.
 
 ### N2A — default-off production controller
 
+Status (2026-07-21): complete. `networking-production` is default-off and
+separate from `networking-dev`. A single bounded Tokio actor exclusively owns
+its runtime, authenticates the child, correlates response IDs, enforces request
+deadlines, exposes cancellation tokens only for the matching in-flight
+operation, performs typed health polling, applies bounded restart/crash-loop
+state, and stops the child when the final handle drops. Its 128-entry monotonic
+diagnostic ring contains only operation IDs, structured states, and error codes.
+Tests cover cancellation/timeout races, stale responses, runtime failure,
+health request typing, repeated crashes, bounded diagnostics, and actor drop.
+No production Tauri command is exposed before N2C.
+
 Deliverables:
 
 - Add `networking-production`, absent from default and release feature sets

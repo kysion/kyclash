@@ -23,6 +23,9 @@ tokio-trace = ["console-subscriber"]
 clippy = ["tauri/test"]
 tracing = []
 networking-dev = []
+# Default-off production networking controller. Normal/release builds must not
+# enable this feature until the N4 route-helper gate closes.
+networking-production = []
 # Compiles the macOS `/sbin/route` executor for explicitly authorized,
 # disposable-host validation. No application command wires this feature into a
 # production build.
