@@ -385,6 +385,12 @@ Completed in the current workspace:
   `net.kysion.kyclash.networking` service namespace. Automated tests validate
   construction and redaction only; they do not write, read, or delete host
   Keychain entries.
+- After explicit credential-lab authorization, added a feature-gated Keychain
+  lifecycle executable with a fixed KyClash service and synthetic account. It
+  generates a random value internally, refuses to overwrite a pre-existing
+  item, verifies the exact read, clears memory, deletes the item,
+  verifies absence, and provides fixed-scope interrupted-run cleanup. It has no
+  application command wiring and remains unexecuted on the daily-use account.
 - Hardened macOS release packaging so CI requires an Installer signing
   identity plus an App Store Connect notary API key, submits the final PKG to
   `notarytool`, staples the ticket, and validates it before upload. The private

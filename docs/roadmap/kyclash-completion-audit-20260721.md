@@ -96,3 +96,9 @@ development Mac as the mutation environment because it carries active split
 routes and multiple tunnels and has no non-interactive elevation. Item 1 remains
 open specifically for execution on a disposable macOS host; its source and
 runbook preparation are complete.
+
+The authorized credential-lab source preparation is also complete. The
+feature-gated fixed-service lifecycle harness and disposable-account procedure
+are documented in `../testing/kyclash-macos-keychain-lab.md`. Item 4 remains
+open for actual execution because the available account is the daily-use
+development account rather than a disposable account.
