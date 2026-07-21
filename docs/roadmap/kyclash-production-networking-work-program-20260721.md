@@ -218,6 +218,21 @@ Merge unit: `feat(networking): add gated production controller`.
 
 ### N2B — signed policy v2 and Keychain boundary
 
+Status (2026-07-21): complete. Envelope v2 signs the domain separator, key ID,
+algorithm, and strict payload containing `issued_at`, `expires_at`, monotonic
+revision, and the validated profile. A pinned synthetic Ed25519 test root and
+clock/revision tests reject v1, unsigned/malformed, future, expired, replayed,
+unknown-key, and tampered policies. The fail-closed revision store persists
+only schema version plus the latest revision using a private atomic file and
+refuses corruption/symlinks; injected persistence failure prevents acceptance.
+Credential resolution accepts only `keychain:` references. The production
+macOS store has the fixed `net.kysion.kyclash.networking` service, while the
+test service is available only to tests/keychain-lab. Missing 32-byte
+WireGuard material is generated locally, persisted once, copied only into the
+zeroizing stdin bootstrap context, and redacted from Debug. Destructive
+create/update/delete remains an ignored manual test scoped to
+`net.kysion.kyclash.test` and a disposable account.
+
 Deliverables:
 
 - Define signed envelope v2 with signed `issued_at`, `expires_at`, unique

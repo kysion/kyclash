@@ -1,6 +1,8 @@
 use std::{collections::HashMap, fmt};
 
-use super::NetworkErrorCode;
+use ring::rand::{SecureRandom as _, SystemRandom};
+
+use super::{NetworkErrorCode, SidecarLaunchContext};
 
 const KEYCHAIN_REFERENCE_PREFIX: &str = "keychain:";
 
@@ -76,15 +78,67 @@ pub struct MacOsKeychainCredentialStore {
 }
 
 #[cfg(target_os = "macos")]
-impl MacOsKeychainCredentialStore {
-    pub fn new(service: &str) -> Result<Self, NetworkErrorCode> {
-        if service != "net.kysion.kyclash.networking" && service != "net.kysion.kyclash.test" {
-            return Err(NetworkErrorCode::InvalidConfiguration);
-        }
-        Ok(Self {
-            service: service.to_owned(),
-        })
+impl Default for MacOsKeychainCredentialStore {
+    fn default() -> Self {
+        Self::new()
     }
+}
+
+#[cfg(target_os = "macos")]
+impl MacOsKeychainCredentialStore {
+    pub fn new() -> Self {
+        Self {
+            service: "net.kysion.kyclash.networking".to_owned(),
+        }
+    }
+
+    #[cfg(any(test, feature = "networking-keychain-lab"))]
+    pub fn new_test() -> Self {
+        Self {
+            service: "net.kysion.kyclash.test".to_owned(),
+        }
+    }
+}
+
+pub fn resolve_or_generate_wireguard_material(
+    store: &mut dyn CredentialStore,
+    reference: &CredentialReference,
+) -> Result<CredentialMaterial, NetworkErrorCode> {
+    resolve_or_generate_with(store, reference, |bytes| {
+        SystemRandom::new()
+            .fill(bytes)
+            .map_err(|_| NetworkErrorCode::AuthenticationFailed)
+    })
+}
+
+pub fn prepare_sidecar_launch_context(
+    instance_id: String,
+    auth_token: Vec<u8>,
+    identity_ref: &str,
+    store: &mut dyn CredentialStore,
+) -> Result<SidecarLaunchContext, NetworkErrorCode> {
+    let reference = CredentialReference::parse(identity_ref)?;
+    let material = resolve_or_generate_wireguard_material(store, &reference)?;
+    let context = SidecarLaunchContext::new(instance_id, auth_token).with_private_key(material.expose().to_vec());
+    Ok(context)
+}
+
+fn resolve_or_generate_with(
+    store: &mut dyn CredentialStore,
+    reference: &CredentialReference,
+    generate: impl FnOnce(&mut [u8]) -> Result<(), NetworkErrorCode>,
+) -> Result<CredentialMaterial, NetworkErrorCode> {
+    match store.get(reference) {
+        Ok(material) if material.expose().len() == 32 => return Ok(material),
+        Ok(_) => return Err(NetworkErrorCode::AuthenticationFailed),
+        Err(NetworkErrorCode::AuthenticationFailed) => {}
+        Err(error) => return Err(error),
+    }
+    let mut bytes = vec![0_u8; 32];
+    generate(&mut bytes)?;
+    let persisted = CredentialMaterial::new(bytes.clone())?;
+    store.put(reference, persisted)?;
+    CredentialMaterial::new(bytes)
 }
 
 #[cfg(target_os = "macos")]
@@ -185,11 +239,64 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_store_accepts_only_the_kyclash_service_namespace() {
-        assert!(MacOsKeychainCredentialStore::new("net.kysion.kyclash.networking").is_ok());
-        assert!(MacOsKeychainCredentialStore::new("net.kysion.kyclash.test").is_ok());
-        assert!(matches!(
-            MacOsKeychainCredentialStore::new("untrusted.service"),
+        assert_eq!(
+            MacOsKeychainCredentialStore::new().service,
+            "net.kysion.kyclash.networking"
+        );
+        assert_eq!(
+            MacOsKeychainCredentialStore::new_test().service,
+            "net.kysion.kyclash.test"
+        );
+    }
+
+    #[test]
+    fn generated_wireguard_material_is_persisted_once_and_redacted() -> Result<(), NetworkErrorCode> {
+        let reference = CredentialReference::parse("keychain:device.generated")?;
+        let mut store = MemoryCredentialStore::default();
+        let first = resolve_or_generate_with(&mut store, &reference, |bytes| {
+            bytes.fill(0x5a);
+            Ok(())
+        })?;
+        let second = resolve_or_generate_with(&mut store, &reference, |_| {
+            Err(NetworkErrorCode::InvalidStateTransition)
+        })?;
+        assert_eq!(first.expose(), &[0x5a; 32]);
+        assert_eq!(second.expose(), first.expose());
+        assert!(!format!("{first:?}{second:?}").contains("5a"));
+        Ok(())
+    }
+
+    #[test]
+    fn launch_context_resolves_only_keychain_reference_and_remains_redacted() -> Result<(), NetworkErrorCode> {
+        let reference = CredentialReference::parse("keychain:device.launch")?;
+        let mut store = MemoryCredentialStore::default();
+        store.put(&reference, CredentialMaterial::new(vec![0x66; 32])?)?;
+        let context = prepare_sidecar_launch_context(
+            "instance.launch".into(),
+            vec![0x77; 32],
+            "keychain:device.launch",
+            &mut store,
+        )?;
+        assert_eq!(context.private_key(), &[0x66; 32]);
+        assert!(!format!("{context:?}").contains("102"));
+        assert_eq!(
+            prepare_sidecar_launch_context("instance.bad".into(), vec![1; 32], "file:bad", &mut store),
             Err(NetworkErrorCode::InvalidConfiguration)
-        ));
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "manual destructive lifecycle; run only in a disposable macOS account"]
+    fn disposable_account_keychain_lifecycle_uses_test_namespace() -> Result<(), NetworkErrorCode> {
+        let reference = CredentialReference::parse("keychain:kyclash.manual.lifecycle")?;
+        let mut store = MacOsKeychainCredentialStore::new_test();
+        let _ = store.delete(&reference);
+        store.put(&reference, CredentialMaterial::new(vec![0x33; 32])?)?;
+        assert_eq!(store.get(&reference)?.expose(), &[0x33; 32]);
+        store.put(&reference, CredentialMaterial::new(vec![0x44; 32])?)?;
+        assert_eq!(store.get(&reference)?.expose(), &[0x44; 32]);
+        store.delete(&reference)
     }
 }
