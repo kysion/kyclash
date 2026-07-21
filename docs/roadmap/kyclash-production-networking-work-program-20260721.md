@@ -572,6 +572,12 @@ QUIC/WSS/TCP fallback already have focused coverage. The consolidated short CI
 matrix, stable reason-code assertions for every impairment, extended soak, and
 network-change recovery evidence remain open.
 
+The Linux isolated-network workflow now runs the netem matrix on every change,
+retains environment and command logs as artifacts, and the macOS verification
+workflow runs repeated race-enabled sidecar tests. These are CI evidence paths;
+they do not replace the remaining scheduled soak and physical network-change
+observations.
+
 Matrix:
 
 - Loss, duplication, reordering, jitter, latency, rate limit, UDP refusal,
