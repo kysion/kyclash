@@ -155,3 +155,13 @@ This closes the reproducible isolated Linux server/network subset without
 requiring a local Fusion VM. Linux execution cannot close the macOS utun,
 route, lifecycle, sleep/wake, or network-switch gates, and a separately reviewed
 compatible server remains necessary before production-endpoint claims.
+
+## GitHub-hosted macOS system gate preparation — 2026-07-21
+
+The fixed-scope Keychain lifecycle and TEST-NET route transaction now have a
+dedicated `macos-15` workflow. It runs only on GitHub-hosted disposable VMs,
+requires passwordless elevation, captures redacted fixed-scope evidence, and
+uses an exit trap to recover the route journal, delete the synthetic Keychain
+item, and remove only the dedicated lab files. Execution is pending the first
+workflow run. PKG lifecycle, Mihomo coexistence, utun, sleep/wake, and physical
+network switching remain outside this initial gate.

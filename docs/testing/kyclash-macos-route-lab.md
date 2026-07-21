@@ -1,6 +1,6 @@
 # KyClash macOS route lab
 
-Status: ready for an explicitly authorized disposable macOS host
+Status: GitHub-hosted disposable runner gate prepared; execution pending
 
 This runbook validates the real `/sbin/route` boundary added behind the
 `networking-route-lab` feature. It must not be run on a daily-use workstation,
@@ -89,3 +89,13 @@ sudo, so it is not accepted as the disposable-host mutation environment.
 This runbook closes the executable preparation gate only. Iteration 3 remains
 release-open until normal, forced-exit, and Mihomo-coexistence evidence is
 captured on an authorized disposable host.
+
+## GitHub-hosted runner gate
+
+`scripts/macos-system-lab.sh` runs the normal cycle and forced-abort recovery on
+an ephemeral `macos-15` GitHub-hosted runner. It refuses non-GitHub or
+non-disposable environments, captures only the fixed TEST-NET route and journal,
+and installs an exit trap that recovers the transaction and removes only the
+fixed lab files. This gate can close route mutation and crash-recovery evidence;
+Mihomo coexistence remains separate because the production integration is not
+enabled.

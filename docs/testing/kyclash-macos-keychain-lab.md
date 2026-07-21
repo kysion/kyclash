@@ -1,6 +1,6 @@
 # KyClash macOS Keychain lab
 
-Status: ready for an explicitly authorized disposable macOS account
+Status: GitHub-hosted disposable account gate prepared; execution pending
 
 The `networking-keychain-lab` executable validates the real Security Framework
 adapter without accepting a credential, service, account, or value from the
@@ -54,3 +54,10 @@ or unrelated item names.
 This harness closes source preparation only. The credential lifecycle release
 gate remains open until its cycle and cleanup behavior pass in the disposable
 account.
+
+## GitHub-hosted runner gate
+
+`scripts/macos-system-lab.sh` runs cleanup, the fixed create/read/compare/delete
+cycle, and an independent absence check in the ephemeral `macos-15` runner
+account. No secret or item contents are captured; retained evidence records only
+the OS/toolchain versions and pass/fail outcome.
