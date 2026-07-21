@@ -576,6 +576,15 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let cidrs = ["10.64.0.0/16", "fd00:64::/48"]
         let owner = selfTestOwner(cidrs)
 
+        // Default-route takeover is never a valid KyClash private route. Keep
+        // the refusal explicit in the in-memory helper gate so a future CIDR
+        // parser change cannot silently widen the mutation scope.
+        let defaultRouteExecutor = InjectedRouteExecutor()
+        try requireSelfTest(!defaultRouteExecutor.canAdd(cidr: "0.0.0.0/0", interfaceName: "utun42"),
+                            "IPv4 default route must be refused")
+        try requireSelfTest(!defaultRouteExecutor.canAdd(cidr: "::/0", interfaceName: "utun42"),
+                            "IPv6 default route must be refused")
+
         // Normal IPv4+IPv6 cycle, duplicate messages, replay mismatch, and
         // explicit connection invalidation all remain idempotent.
         let normalExecutor = InjectedRouteExecutor()
