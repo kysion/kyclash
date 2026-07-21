@@ -55,12 +55,15 @@ stopping points.
 | --- | --- | --- |
 | S1.01–S1.04 | contracts, carriers, lab server, actual child | complete |
 | S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
-| S1.08 | reproducible signed nested sidecar and launch trust | in progress; run 29837451828 proved the protected environment lacks `APPLE_CERTIFICATE`, signed evidence pending |
-| S1.09–S1.10 | owned real utun and disposable-VM termination matrix | S1.09 source in progress; signed disposable-VM evidence pending |
-| S1.11–S1.13 | signed helper, route lease/recovery, Mihomo coexistence | pending |
-| S1.14–S1.16 | impairment, performance/package lifecycle, physical/staging gates | pending |
+| S1.08 | reproducible signed nested sidecar and launch trust | complete; local authorized Developer ID evidence; notarization remains optional hardening |
+| S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
+| S1.10 | disposable-VM termination matrix | in progress; distinct killed app/controller and GUI login/logout observations remain |
+| S1.11–S1.12 | signed helper, typed XPC, route lease/recovery | in progress; source and static gates complete, VM launchd/XPC evidence remains |
+| S1.13 | Mihomo coexistence VM matrix | pending; depends on real helper/XPC route execution |
+| S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
+| S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
-First incomplete criterion: S1.08. Overall S1 status: in progress.
+First incomplete criterion: S1.10. Overall S1 status: in progress.
 
 ### Work-package dependency chain
 
