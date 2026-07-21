@@ -68,6 +68,10 @@ public-distribution enhancement rather than a current development blocker.
 - The frontend manual-check wrapper independently rejects and closes metadata
   that violates the same KyClash GitHub/platform/source/rollback contract,
   preventing a future JavaScript capability from bypassing the Rust policy.
+- A newly rebuilt Developer ID arm64 bundle now launches visibly in the
+  disposable macOS VM. The GUI smoke proved a live KyClash window, bundled
+  Mihomo child, and singleton listener; evidence and the updater-plugin startup
+  fix are recorded in `docs/testing/kyclash-macos-virtualization-lab.md`.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
   localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module
@@ -110,7 +114,7 @@ The following work is intentionally not executed under the current authority:
 | Keychain destructive lifecycle | Complete on disposable GitHub macOS runner; scoped to `net.kysion.kyclash.test` | No | None |
 | Real route mutation and crash recovery | Fixed TEST-NET transaction and crash recovery passed; Mihomo coexistence pending | Yes, for production route adapter | Isolated Mihomo coexistence evidence |
 | Impaired-network and sustained transport validation | Isolated POC complete; external matrix pending | Yes, for production data plane | Compatible isolated server and disposable client host |
-| Install/upgrade/rollback/uninstall cleanup | Procedure prepared; execution pending | Yes, for general distribution | Disposable macOS lifecycle host and retained candidate/rollback artifacts |
+| Install/upgrade/rollback/uninstall cleanup | Procedure prepared; signed GUI smoke passed; full installed-byte matrix pending | Yes, for general distribution | Disposable macOS lifecycle host and retained candidate/rollback artifacts |
 | macOS x64 and later platforms | Deferred by locked platform order | Yes, for those platforms only | macOS arm64 MVP gates closed |
 
 ## Resume rule

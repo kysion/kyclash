@@ -47,7 +47,6 @@ mod app_init {
         let mut builder = builder
             .plugin(tauri_plugin_clash_verge_sysinfo::init())
             .plugin(tauri_plugin_notification::init())
-            .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_clipboard_manager::init())
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -71,6 +70,14 @@ mod app_init {
                     )
                     .build(),
             );
+
+        // Keep the updater plugin itself absent while KyClash's updater is
+        // disabled. Registering it without the separately reviewed updater
+        // configuration makes Tauri deserialize a null plugin config during
+        // application startup and fail before the first window is created.
+        if crate::core::updater::APP_UPDATES_ENABLED {
+            builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        }
 
         // Devtools plugin only in debug mode with feature tauri-dev
         // to avoid duplicated registering of logger since the devtools plugin also registers a logger
@@ -247,7 +254,8 @@ mod app_init {
 }
 
 pub fn run() {
-    if app_init::init_singleton_check().is_err() {
+    if let Err(error) = app_init::init_singleton_check() {
+        eprintln!("[KyClash] startup stopped by singleton check: {error}");
         return;
     }
 
@@ -435,12 +443,14 @@ pub fn run() {
     let context = tauri::test::mock_context(tauri::test::noop_assets());
     #[cfg(any(feature = "clippy", feature = "networking-system-lab"))]
     let app = builder.build(context).unwrap_or_else(|e| {
+        eprintln!("[KyClash] failed to build Tauri application: {e}");
         logging!(error, Type::Setup, "Failed to build Tauri application: {}", e);
         std::process::exit(1);
     });
 
     #[cfg(not(any(feature = "clippy", feature = "networking-system-lab")))]
     let app = builder.build(tauri::generate_context!()).unwrap_or_else(|e| {
+        eprintln!("[KyClash] failed to build Tauri application: {e}");
         logging!(error, Type::Setup, "Failed to build Tauri application: {}", e);
         std::process::exit(1);
     });

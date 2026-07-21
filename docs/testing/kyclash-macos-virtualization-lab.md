@@ -1,6 +1,7 @@
 # KyClash local macOS Virtualization.framework lab
 
-Status: local fixed-scope system lab passed; PKG lifecycle in progress
+Status: local fixed-scope system lab passed; signed GUI launch validated; PKG
+lifecycle in progress
 
 This lab supplies a disposable, full macOS guest for package installation,
 Gatekeeper behavior, fixed-scope Keychain lifecycle, and TEST-NET route recovery.
@@ -101,6 +102,37 @@ accepted by Gatekeeper on both host and guest as `Notarized Developer ID`.
 Upgrading the installed unnotarized test build with the stapled package passed.
 GUI process-lifetime validation remains separate; global Gatekeeper disabling
 was neither needed nor permitted.
+
+## GUI launch evidence — 2026-07-22
+
+The newly rebuilt Developer ID arm64 bundle was copied to the guest's private
+writeable test directory and launched through LaunchServices:
+
+```text
+~/kyclash-lab/app-run-20260722-2/KyClash.app
+```
+
+The launch stayed alive beyond the smoke interval and rendered the main window
+with the KyClash title, logo, navigation, and home page. Independent guest
+checks recorded:
+
+- KyClash process remained alive (PID 1971 at capture time).
+- Bundled `verge-mihomo` child remained alive for the normal local proxy
+  lifecycle.
+- The singleton listener held `127.0.0.1:33331` while the app was running.
+- Clean screenshot evidence is retained at
+  `target/macos-vm-lab/evidence/app-launch-20260722/kyclash-window.png` with
+  SHA-256
+  `4ce6fd1b9058ffa84f09243416475cb592aa797289db432405f319888250d0f3`.
+
+The immediate exit was caused by unconditional registration of the Tauri
+updater plugin while the locked base configuration intentionally has no
+`plugins.updater` object. Tauri deserialized that missing value as `null` and
+returned a builder error before creating a window. The runtime now registers
+the updater plugin only when `APP_UPDATES_ENABLED` is true, preserving the
+GitHub-updater/no-store gate and keeping current application updates disabled.
+The bundle used for this GUI smoke was an isolated user-directory copy; the
+installed `/Applications` package lifecycle remains a separate S1.15 gate.
 
 ## Disposable test cycle
 

@@ -57,7 +57,7 @@ stopping points.
 | S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
 | S1.08 | reproducible signed nested sidecar and launch trust | complete; local authorized Developer ID evidence; notarization remains optional hardening |
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
-| S1.10 | disposable-VM termination matrix | in progress; distinct killed app/controller and GUI login/logout observations remain |
+| S1.10 | disposable-VM termination matrix | in progress; signed GUI launch now passes; distinct killed app/controller and GUI login/logout observations remain |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
 | S1.12 | route lease/recovery | in progress; signed VM begin/apply/status/rollback and helper restart pass, injected failure/full matrix remains |
 | S1.13 | Mihomo coexistence VM matrix | pending; depends on real helper/XPC route execution |
@@ -437,7 +437,11 @@ process, and interface checks again proved final absence. The encrypted-traffic
 case now also closes its authenticated QUIC peer after health before tearing
 down the owned device. A distinct killed-app/controller process and actual GUI
 login/logout remain open; their source-equivalent EOF and process-kill paths
-are covered but do not replace those two VM observations.
+are covered but do not replace those two VM observations. A freshly rebuilt
+signed arm64 KyClash bundle has since launched through LaunchServices in the
+same disposable guest and kept its GUI process, Mihomo child, and singleton
+listener alive; the redacted window evidence is recorded in
+`docs/testing/kyclash-macos-virtualization-lab.md`.
 
 Scenarios:
 

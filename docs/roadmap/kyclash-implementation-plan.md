@@ -78,6 +78,12 @@ Completed in the current workspace:
   `KYCLASH_NOTARIZATION_ENABLED=false`: Developer ID Application and Installer
   signatures remained mandatory and valid, while the expected unnotarized
   Gatekeeper warning did not stop internal package production.
+- Rebuilt and visibly launched the signed arm64 KyClash bundle in the
+  disposable Apple Virtualization.framework guest. The startup blocker was an
+  unconditional Tauri updater-plugin registration against the intentionally
+  absent base updater configuration; registration is now gated by the existing
+  `APP_UPDATES_ENABLED` flag, while updater endpoints, keys, permissions, and
+  release activation remain disabled.
 
 Exit criteria:
 

@@ -4,11 +4,5 @@
 <dict>
     <key>com.apple.security.app-sandbox</key>
     <false/>
-    <key>com.apple.security.application-groups</key>
-    <array>
-        <string>net.kysion.kyclash</string>
-    </array>
-    <key>com.apple.security.inherit</key>
-    <true/>
 </dict>
 </plist>
