@@ -646,9 +646,11 @@ with freshly built temporary Go binaries, covering IPC health traffic,
 explicit QUIC/WSS/TCP sequencing, and cancellation. Evidence is recorded in
 `docs/testing/kyclash-network-reliability-20260722.md`.
 
-The consolidated short CI matrix, stable reason-code assertions for every
-impairment, extended Linux VM soak, and network-change recovery evidence remain
-open. No fallback is introduced implicitly inside Go.
+The consolidated short CI matrix is now configured in the macOS sidecar
+workflow (its first post-change hosted result is pending); stable reason-code
+assertions for the exercised impairments are covered locally and in the longer
+race matrix. Extended Linux VM soak and network-change recovery evidence
+remain open. No fallback is introduced implicitly inside Go.
 
 The Linux isolated-network workflow now runs the netem matrix on every change,
 retains environment and command logs as artifacts, and the macOS verification

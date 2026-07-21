@@ -165,6 +165,32 @@ jobs:
           go mod verify
           test -z "$(gofmt -l .)"
 
+      - name: Test deterministic reliability smoke matrix
+        run: |
+          set -o pipefail
+          mkdir -p build/reliability-smoke
+          {
+            # Keep a quick, explicit reliability gate on every change. These
+            # tests use only loopback peers and in-memory userspace devices;
+            # they do not mutate routes, require root, or contact an endpoint.
+            go test -count=1 -timeout=90s \
+              ./internal/carrier \
+              ./internal/labserver \
+              ./internal/userspace \
+              ./internal/wgcarrier
+            go test -count=1 -timeout=90s \
+              ./internal/ipc -run '^TestBackendFailureReasonCodeIsStableAndStateRemainsBounded$'
+          } 2>&1 | tee build/reliability-smoke/run.log
+
+      - name: Upload reliability smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-sidecar-reliability-smoke-${{ runner.arch }}-${{ github.sha }}
+          path: network-sidecar/build/reliability-smoke/run.log
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Test race safety
         run: |
           set -o pipefail

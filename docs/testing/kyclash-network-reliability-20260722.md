@@ -120,10 +120,19 @@ or scheduled Linux VM run may raise
 `KYCLASH_SOAK_ROUNDS` (maximum 1000); the script stops on the first failure and
 retains per-round logs. No soak result is a production capacity claim.
 
+The macOS sidecar workflow now also runs a short deterministic smoke matrix on
+every change before the longer race gate. It covers the carrier, loopback
+lab-server, userspace, and bind packages plus the stable IPC failure-reason
+state assertion. The smoke command uses a 90-second package timeout and
+retains its redacted log as the `network-sidecar-reliability-smoke-*` artifact;
+it remains loopback-only and needs neither root nor an external endpoint. The
+first hosted result for this newly added step is pending the next workflow run.
+
 ## Remaining S1.14 boundary
 
-The deterministic source and isolated Linux subset is now repeatable locally and
-in CI. S1.14 remains open for a reviewed compatible server under sustained
+The deterministic source, short smoke gate, and isolated Linux subset are now
+repeatable locally; the existing hosted race/netem results remain retained in
+CI. S1.14 remains open for a reviewed compatible server under sustained
 impairment, macOS sleep/wake and physical network-interface changes, and the
 production Rust-to-Go command boundary once the S1.10–S1.13 system gates are
 closed. No fallback is enabled implicitly inside Go.
