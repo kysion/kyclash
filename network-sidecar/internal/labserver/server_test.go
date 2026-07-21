@@ -159,7 +159,7 @@ func proveTunnel(t *testing.T, transport profile.Transport) {
 	if err := clientDevice.Up(); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), tunnelProofTimeout)
 	defer cancel()
 	if err := server.WaitReady(ctx); err != nil {
 		t.Fatal(err)

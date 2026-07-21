@@ -152,7 +152,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build/race
-          go test -race -count=5 -timeout=180s ./... 2>&1 | tee build/race/run.log
+          go test -race -count=5 -timeout=300s ./... 2>&1 | tee build/race/run.log
 
       - name: Upload race-test evidence
         if: always()

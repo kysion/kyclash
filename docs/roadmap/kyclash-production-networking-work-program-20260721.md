@@ -365,6 +365,12 @@ production-controller, frontend, and repository gates pass locally. Signed
 create/traffic/down and final-absence evidence in the disposable VM remains
 open, so this work package and S1 are not complete.
 
+CI note: run `29840092883` captured the previously invisible race log and
+proved the failure was the fixed eight-second loopback handshake budget under
+race instrumentation, not a reported data race. Ordinary tests retain eight
+seconds; race builds use a reviewed twenty-second operation budget and a
+five-minute suite ceiling pending the replacement macOS-runner result.
+
 Deliverables:
 
 - Add wireguard-go macOS utun creation with validated local addresses and
