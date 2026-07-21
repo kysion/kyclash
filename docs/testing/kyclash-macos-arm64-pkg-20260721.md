@@ -1,6 +1,8 @@
 # KyClash macOS arm64 PKG Evidence 2026-07-21
 
-Status: Developer ID signed, Apple-notarized and stapled internal candidate
+Status: historical Developer ID signed, Apple-notarized and stapled internal
+candidate; notarization is optional for current GitHub/no-App-Store
+distribution.
 
 Source commit: `30ef92f1`
 
@@ -41,14 +43,16 @@ APPLE_INSTALLER_SIGNING_IDENTITY='Developer ID Installer: …' \
   corepack pnpm macos:pkg aarch64-apple-darwin
 ```
 
-The current-source release build completed on Apple M5 after explicit signing
+The historical release build completed on Apple M5 after explicit signing
 authorization; the Rust release build took 4 minutes 12 seconds. Existing
 Application and Installer identities were used through the macOS Keychain
 without exporting private material. Both signature layers pass their
 cryptographic checks. The CI packaging path also passed with notarization
 explicitly disabled, proving that signing remains mandatory while notarization
-is optional. Gatekeeper correctly rejects both artifacts. This proves local
-signing only, not general-distribution readiness.
+is optional. An unsigned/non-notarized internal build is expected to trigger a
+Gatekeeper warning or quarantine handling; notarized evidence applies only to
+the exact historical bytes identified above. This proves the signing/package
+path, not general-distribution readiness for later bytes.
 
 On macOS 26, `pkgbuild --component` exposes protected
 `com.apple.provenance` extended attributes as AppleDouble entries in
