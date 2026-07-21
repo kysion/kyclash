@@ -517,7 +517,8 @@ mutation, tracks pending/applied CIDRs, expires leases after bounded heartbeat
 silence, and rolls back on XPC invalidation. VM mutation/restart evidence and
 rejects destinations returned by the fixed read-only `route -n get` lookup,
 while explicitly allowing the ordinary default underlay route and an absent
-IPv6 table, before writing the first mutation. A read-only VM probe confirmed
+IPv6 table, before writing the first mutation. The helper's read-only self-test
+is now part of the macOS CI compile gate. A read-only VM probe confirmed
 macOS reports an uninstalled private IPv4 route as `destination: default` and
 an absent IPv6 route as `not in table`; both now pass the availability guard.
 VM mutation/restart evidence and
