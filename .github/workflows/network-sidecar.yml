@@ -136,6 +136,38 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  linux-loopback-reliability-soak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: network-sidecar
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: network-sidecar/go.sum
+
+      - name: Run loopback-only reliability soak
+        run: |
+          set -o pipefail
+          mkdir -p build/reliability-soak-hosted
+          KYCLASH_SOAK_ROUNDS=20 \
+          KYCLASH_SOAK_TIMEOUT=120s \
+          KYCLASH_SOAK_OUTPUT=build/reliability-soak-hosted \
+            bash lab/linux/reliability-soak.sh 2>&1 | tee build/reliability-soak-hosted/run.log
+
+      - name: Upload loopback reliability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-sidecar-loopback-soak-${{ runner.arch }}-${{ github.sha }}
+          path: network-sidecar/build/reliability-soak-hosted/
+          if-no-files-found: error
+          retention-days: 14
+
   verify:
     runs-on: macos-15
     defaults:
@@ -284,19 +316,31 @@ jobs:
 
       - name: Test actual child data plane
         run: |
+          set -o pipefail
           mkdir -p build/actual-child
-          go build -trimpath -o build/actual-child/kyclash-network-sidecar ./cmd/kyclash-network-sidecar
-          go build -trimpath -o build/actual-child/kyclash-network-sidecar-lab ./cmd/kyclash-network-sidecar-lab
-          KYCLASH_NETWORK_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar" \
-          KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
-            cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
-              networking::stdio_runtime::unix::tests::
-          for cycle in 1 2 3; do
+          {
+            go build -trimpath -o build/actual-child/kyclash-network-sidecar ./cmd/kyclash-network-sidecar
+            go build -trimpath -o build/actual-child/kyclash-network-sidecar-lab ./cmd/kyclash-network-sidecar-lab
+            KYCLASH_NETWORK_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar" \
             KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
               cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
-                networking::stdio_runtime::unix::tests::actual_lab_child_carries_health_traffic_across_all_carriers \
-                -- --exact
-          done
+                networking::stdio_runtime::unix::tests:: -- --test-threads=1
+            for cycle in 1 2 3; do
+              KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
+                cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
+                  networking::stdio_runtime::unix::tests::actual_lab_child_carries_health_traffic_across_all_carriers \
+                  -- --exact --test-threads=1
+            done
+          } 2>&1 | tee build/actual-child/run.log
+
+      - name: Upload actual-child evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-sidecar-actual-child-${{ runner.arch }}-${{ github.sha }}
+          path: network-sidecar/build/actual-child/run.log
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Verify reproducible build
         run: |

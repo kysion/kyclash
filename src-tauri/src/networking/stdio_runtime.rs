@@ -364,6 +364,16 @@ mod unix {
             IpcResponsePayload, NetworkState, NetworkStatus, RestartPolicy, SidecarController, SidecarLifecycleState,
         };
 
+        // Hosted macOS runners can have a substantially slower first process
+        // start than a developer machine. Keep production's two-second
+        // runtime default unchanged; only the process-level integration tests
+        // use this bounded, test-scoped budget.
+        const ACTUAL_CHILD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
+
+        fn actual_child_runtime(executable: PathBuf) -> StdioSidecarRuntime {
+            StdioSidecarRuntime::new(executable).with_response_timeout(ACTUAL_CHILD_RESPONSE_TIMEOUT)
+        }
+
         #[test]
         fn bootstrap_encoding_matches_shared_fixture() -> Result<(), serde_json::Error> {
             let bootstrap = BootstrapRecord {
@@ -387,7 +397,7 @@ mod unix {
             let instance_id = "actual_child_test";
             let context =
                 SidecarLaunchContext::new(instance_id.into(), auth_token.clone()).with_private_key(vec![0x42; 32]);
-            let mut runtime = StdioSidecarRuntime::new(executable.into());
+            let mut runtime = actual_child_runtime(executable.into());
             let handshake = runtime.start(&context)?;
             assert_eq!(handshake.protocol_version, NETWORK_IPC_PROTOCOL_VERSION);
             assert_eq!(handshake.instance_id, instance_id);
@@ -420,7 +430,7 @@ mod unix {
                 .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
             let context = SidecarLaunchContext::new("stateful_child_test".into(), vec![0x43; 32])
                 .with_private_key(vec![0x44; 32]);
-            let mut runtime = StdioSidecarRuntime::new(executable.into());
+            let mut runtime = actual_child_runtime(executable.into());
             runtime.start(&context)?;
 
             for (request_id, payload) in [
@@ -454,8 +464,7 @@ mod unix {
             let instance_id = "actual_lab_child";
             let context =
                 SidecarLaunchContext::new(instance_id.into(), auth_token.clone()).with_private_key(vec![0x52; 32]);
-            let mut runtime =
-                StdioSidecarRuntime::new(executable.clone().into()).with_response_timeout(Duration::from_secs(20));
+            let mut runtime = actual_child_runtime(executable.clone().into());
             let handshake = runtime.start_lab(&context)?;
             assert_eq!(handshake.instance_id, instance_id);
             assert_eq!(handshake.auth_proof, sidecar_auth_proof(&auth_token, instance_id));
@@ -498,8 +507,7 @@ mod unix {
             let cancel_instance = "actual_lab_cancel";
             let cancel_context = SidecarLaunchContext::new(cancel_instance.into(), cancel_token.clone())
                 .with_private_key(vec![0x62; 32]);
-            let mut runtime =
-                StdioSidecarRuntime::new(executable.into()).with_response_timeout(Duration::from_secs(20));
+            let mut runtime = actual_child_runtime(executable.into());
             let cancel_handshake = runtime.start_lab(&cancel_context)?;
             assert_eq!(
                 cancel_handshake.auth_proof,
