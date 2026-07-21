@@ -186,6 +186,19 @@ observation. It does not claim that the privileged utun or route cleanup gate
 is closed; that portion still requires the authorized disposable privileged
 run.
 
+The authorized privileged VM run also exercised the standalone forced-
+termination fixture `TestRealUTUNHoldForForcedTermination`. The signed lab
+binary created the owned `utun4`, published only that interface name to the
+fixed `/var/tmp/kyclash-utun-lab-*` path, and was terminated by exact PID
+SIGKILL through an interactive sudo session. The interface was present before
+termination and an independent privileged `ifconfig` check returned exit
+status 1 afterward; the test process was absent as well. Redacted host-side
+evidence is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/utun-controller-kill-v3-20260722.txt`.
+This proves kernel/device release for the standalone forced-termination case;
+it is not a claim that the combined production-sidecar-owned utun controller
+matrix or privileged route matrix is complete.
+
 The newly rebuilt signed bundle was used for a stronger parent-reparent test.
 An isolated controller generated bootstrap material in memory and a separate
 inherited writer kept the sidecar's stdin open after the controller was
@@ -211,8 +224,9 @@ session-transition record.
 This closes the observed GUI logout/re-login path, but it does not close S1.10:
 an ordinary Mihomo child surviving an app SIGKILL is a separate cleanup
 limitation. The signed Go sidecar now has both EOF and parent-reparent
-controller-kill observations; privileged utun child absence after controller
-kill still needs its exact authorized VM observation. S1.10 remains in progress.
+controller-kill observations; the standalone privileged utun forced-termination
+subcase is now recorded, while the combined production-sidecar-owned utun
+controller case remains. S1.10 remains in progress.
 
 ## Disposable test cycle
 

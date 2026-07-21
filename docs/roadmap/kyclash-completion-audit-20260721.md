@@ -91,8 +91,13 @@ public-distribution enhancement rather than a current development blocker.
   sidecar was then tested with stdin held open by an inherited writer; after
   the exact controller was SIGKILLed, the sidecar detected re-parenting and
   exited within 100 ms while the writer remained alive. This closes the signed
-  Go process-boundary observation, but not privileged utun child absence after
-  controller kill.
+  Go process-boundary observation. A separately gated privileged hold fixture
+  then created `utun4` in the authorized Virtualization.framework guest, was
+  terminated by exact PID SIGKILL, and was independently verified absent by
+  `ifconfig`; the redacted record is
+  `target/macos-vm-lab/evidence/app-launch-20260722/utun-controller-kill-v3-20260722.txt`.
+  This closes standalone kernel/device release after forced termination; the
+  combined production-sidecar-owned utun controller case remains open.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
   localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module
