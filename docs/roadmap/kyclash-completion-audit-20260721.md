@@ -96,8 +96,15 @@ public-distribution enhancement rather than a current development blocker.
   terminated by exact PID SIGKILL, and was independently verified absent by
   `ifconfig`; the redacted record is
   `target/macos-vm-lab/evidence/app-launch-20260722/utun-controller-kill-v3-20260722.txt`.
-  This closes standalone kernel/device release after forced termination; the
-  combined production-sidecar-owned utun controller case remains open.
+  This closes standalone kernel/device release after forced termination. The
+  signed production `run()` boundary was then exercised in the same guest: a
+  controller spawned the actual sidecar child, the child owned `utun4`, and an
+  exact controller SIGKILL was followed by child and interface absence on the
+  first one-second poll. The redacted record is
+  `target/macos-vm-lab/evidence/app-launch-20260722/utun-combined-controller-20260722.txt`.
+  S1.10's real-utun termination gate is complete; the ordinary inherited
+  Mihomo proxy orphan after app SIGKILL remains a separate non-production
+  cleanup limitation.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
   localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module

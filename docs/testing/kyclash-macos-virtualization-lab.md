@@ -233,6 +233,18 @@ This proves kernel/device release for the standalone forced-termination case;
 it is not a claim that the combined production-sidecar-owned utun controller
 matrix or privileged route matrix is complete.
 
+The exact combined controller matrix was then run with the signed production
+`run()` boundary. A controller spawned the actual sidecar child and kept the
+bootstrap/IPC writer open while the child prepared `utun4`. The controller PID
+was validated from the child's parent relation and SIGKILLed; the child and
+`utun4` were both absent on the first one-second poll. Redacted evidence is
+retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/utun-combined-controller-20260722.txt`.
+This closes S1.10's real-utun termination gate. The ordinary inherited Mihomo
+proxy process surviving an app SIGKILL remains a separate non-production
+cleanup limitation; the privileged route and Mihomo coexistence matrix remain
+S1.12/S1.13 work.
+
 The newly rebuilt signed bundle was used for a stronger parent-reparent test.
 An isolated controller generated bootstrap material in memory and a separate
 inherited writer kept the sidecar's stdin open after the controller was
@@ -258,9 +270,9 @@ session-transition record.
 This closes the observed GUI logout/re-login path, but it does not close S1.10:
 an ordinary Mihomo child surviving an app SIGKILL is a separate cleanup
 limitation. The signed Go sidecar now has both EOF and parent-reparent
-controller-kill observations; the standalone privileged utun forced-termination
-subcase is now recorded, while the combined production-sidecar-owned utun
-controller case remains. S1.10 remains in progress.
+controller-kill observations; both standalone and combined production-sidecar
+utun forced-termination subcases are now recorded. S1.10 is complete; the
+privileged route and Mihomo coexistence work continues under S1.12/S1.13.
 
 ## Disposable test cycle
 

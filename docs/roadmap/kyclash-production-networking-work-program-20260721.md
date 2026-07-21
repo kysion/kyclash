@@ -57,14 +57,14 @@ stopping points.
 | S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
 | S1.08 | reproducible signed nested sidecar and launch trust | complete; local authorized Developer ID evidence; notarization remains optional hardening |
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
-| S1.10 | disposable-VM termination matrix | in progress; signed GUI/logout/re-login and signed Go sidecar controller-kill/EOF plus parent-reparent cleanup observed; standalone privileged utun forced-termination cleanup passed, while the combined production-sidecar-owned utun controller case remains |
+| S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
 | S1.12 | route lease/recovery | in progress; injected failure matrix passes, signed VM begin/apply/status/rollback and helper restart pass, privileged full matrix remains |
 | S1.13 | Mihomo coexistence VM matrix | pending; depends on real helper/XPC route execution |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
-First incomplete criterion: S1.10. Overall S1 status: in progress.
+First incomplete criterion: S1.12. Overall S1 status: in progress.
 
 ### Work-package dependency chain
 
@@ -442,8 +442,14 @@ guest: PID 1983 owned `utun4`, the interface was present before an exact
 SIGKILL, and an independent privileged `ifconfig` check returned exit status 1
 after the kill. Redacted evidence is retained at
 `target/macos-vm-lab/evidence/app-launch-20260722/utun-controller-kill-v3-20260722.txt`.
-This closes standalone kernel/device release after forced termination; the
-combined production-sidecar-owned utun controller case remains open. A freshly rebuilt
+This closes standalone kernel/device release after forced termination. The
+combined production-sidecar-owned utun controller case was then executed with
+the signed production `run()` boundary: a controller spawned the actual sidecar
+child, the child prepared `utun4`, and only the exact controller PID was
+SIGKILLed. Within the first one-second poll both the child PID and `utun4` were
+absent. Redacted evidence is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/utun-combined-controller-20260722.txt`.
+A freshly rebuilt
 signed arm64 KyClash bundle has since launched through LaunchServices in the
 same disposable guest and kept its GUI process, Mihomo child, and singleton
 listener alive; the redacted window evidence is recorded in
@@ -456,9 +462,11 @@ limitation rather than a production-sidecar pass. The exact orphan was cleaned
 only in the disposable guest and a signed relaunch restored the listener.
 System Events/loginwindow logout removed the console session and all three
 observed KyClash/Mihomo/listener processes; a Tart guest restart auto-logged the
-test user back in and auto-started the signed bundle. GUI logout/re-login and
-standalone privileged utun forced-termination cleanup are therefore observed;
-the combined production-sidecar-owned utun controller case remains open.
+test user back in and auto-started the signed bundle. GUI logout/re-login,
+standalone privileged utun forced-termination cleanup, and the combined
+production-sidecar-owned utun controller case are therefore observed. The
+ordinary bundled Mihomo proxy core surviving an app SIGKILL remains a separate
+cleanup limitation because it is not the production Go sidecar.
 
 The signed Go `kyclash-network-sidecar` was also launched by an isolated
 controller in the guest with ephemeral in-memory bootstrap material. After
@@ -476,9 +484,14 @@ while the writer remained alive. The redacted evidence is retained at
 and records sidecar SHA-256
 `fd041fc1b5e3d7b7b3498cc7714161a6c0047510c492f734b60659c11f20689b`. This
 closes the signed Go process-boundary hard-kill observation. The separately
-executed privileged hold fixture closes the kernel/device release subcase, but
-the combined production-sidecar-owned utun controller case remains the open
-S1.10 portion.
+executed privileged hold fixture and the exact production-sidecar controller
+fixture close the real-utun forced-termination portions of S1.10.
+
+The combined controller fixture used the signed production `run()` entrypoint,
+kept the bootstrap/IPC writer open while the child owned `utun4`, then killed
+only controller PID 1416. Child PID 1418 and `utun4` were both absent on the
+first one-second poll. The redacted record is
+`target/macos-vm-lab/evidence/app-launch-20260722/utun-combined-controller-20260722.txt`.
 
 Scenarios:
 
