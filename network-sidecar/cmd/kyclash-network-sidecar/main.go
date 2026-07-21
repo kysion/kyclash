@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,9 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	if len(arguments) != 0 {
 		return errors.New("command-line arguments are not accepted")
 	}
+	parentContext, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	go watchParent(parentContext, os.Getppid(), cancelParent)
 	reader := bufio.NewReaderSize(stdin, 64*1_024)
 	config, err := bootstrap.DecodeLine(reader)
 	if err != nil {
@@ -42,7 +46,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	if err := json.NewEncoder(stdout).Encode(response); err != nil {
 		return fmt.Errorf("write handshake: %w", err)
 	}
-	return ipc.ServeWithBackend(reader, stdout, backend)
+	return ipc.ServeWithBackendContext(parentContext, reader, stdout, backend)
 }
 
 func execute(arguments []string, stdin io.Reader, stdout, stderr io.Writer) int {

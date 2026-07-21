@@ -57,7 +57,7 @@ stopping points.
 | S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
 | S1.08 | reproducible signed nested sidecar and launch trust | complete; local authorized Developer ID evidence; notarization remains optional hardening |
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
-| S1.10 | disposable-VM termination matrix | in progress; signed GUI/logout/re-login and signed Go sidecar controller-kill/EOF absence observed; privileged utun child-absence matrix remains |
+| S1.10 | disposable-VM termination matrix | in progress; signed GUI/logout/re-login and signed Go sidecar controller-kill/EOF plus parent-reparent cleanup observed; privileged utun child-absence matrix remains |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
 | S1.12 | route lease/recovery | in progress; injected failure matrix passes, signed VM begin/apply/status/rollback and helper restart pass, privileged full matrix remains |
 | S1.13 | Mihomo coexistence VM matrix | pending; depends on real helper/XPC route execution |
@@ -460,6 +460,17 @@ exact command-path validation, SIGKILLing only that controller closed stdin and
 the sidecar was absent within the 10-second poll window. This closes the
 production sidecar's controller/EOF process boundary, but does not close the
 privileged utun or route cleanup portion of S1.10.
+
+A freshly rebuilt and Developer ID-signed sidecar was then tested with a
+separate inherited writer process holding stdin open after the controller was
+killed. The exact controller and sidecar paths were validated, the controller
+was SIGKILLed, and the sidecar detected re-parenting and exited within 100 ms
+while the writer remained alive. The redacted evidence is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/production-sidecar-parent-watch-v3.txt`
+and records sidecar SHA-256
+`fd041fc1b5e3d7b7b3498cc7714161a6c0047510c492f734b60659c11f20689b`. This
+closes the signed Go process-boundary hard-kill observation; privileged utun
+child absence after controller kill remains the open S1.10 portion.
 
 Scenarios:
 

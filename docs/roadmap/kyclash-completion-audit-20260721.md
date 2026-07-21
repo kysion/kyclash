@@ -71,7 +71,11 @@ public-distribution enhancement rather than a current development blocker.
 - A newly rebuilt Developer ID arm64 bundle now launches visibly in the
   disposable macOS VM. The GUI smoke proved a live KyClash window, bundled
   Mihomo child, and singleton listener; evidence and the updater-plugin startup
-  fix are recorded in `docs/testing/kyclash-macos-virtualization-lab.md`.
+  fix are recorded in `docs/testing/kyclash-macos-virtualization-lab.md`. The
+  latest foreground run uses `~/kyclash-lab/app-run-20260722-3/KyClash.app`;
+  its clean Home-page capture is
+  `target/macos-vm-lab/evidence/app-launch-20260722/kyclash-live-vm-home2-20260722.png`
+  (SHA-256 `37a762972cee3f067c7e0eb977a22bb3af40f772b910ffb06d246855f2d15377`).
 - The same disposable guest then recorded a real GUI logout/re-login cycle:
   logout removed the console session, KyClash process, bundled Mihomo process,
   and singleton listener; a Tart guest restart restored the console and the
@@ -83,9 +87,12 @@ public-distribution enhancement rather than a current development blocker.
   disposable guest generated only ephemeral in-memory bootstrap material,
   read the handshake, and then SIGKILLed the exact controller PID. The Go
   sidecar disappeared within the 10-second poll window after stdin EOF; the
-  redacted result is retained in the VM evidence directory. This closes the
-  signed Go process-boundary observation, but not privileged utun child absence
-  after controller kill.
+  redacted result is retained in the VM evidence directory. A rebuilt signed
+  sidecar was then tested with stdin held open by an inherited writer; after
+  the exact controller was SIGKILLed, the sidecar detected re-parenting and
+  exited within 100 ms while the writer remained alive. This closes the signed
+  Go process-boundary observation, but not privileged utun child absence after
+  controller kill.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
   localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module

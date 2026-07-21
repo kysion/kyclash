@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 	"unicode"
 
 	"github.com/kysion/kyclash/network-sidecar/internal/profile"
@@ -56,6 +57,19 @@ func Serve(reader *bufio.Reader, writer io.Writer) error {
 }
 
 func ServeWithBackend(reader *bufio.Reader, writer io.Writer, backend Backend) error {
+	return ServeWithBackendContext(context.Background(), reader, writer, backend)
+}
+
+// ServeWithBackendContext is the cancellable process boundary used by the
+// real sidecar.  Cancellation is deliberately handled at the IPC owner
+// rather than inside an individual carrier: it first asks an in-flight
+// connect operation to stop, waits for that operation to join, and only then
+// runs the backend close path.  This ordering prevents a parent-death cleanup
+// from racing a userspace WireGuard close and leaving an owned device behind.
+func ServeWithBackendContext(ctx context.Context, reader *bufio.Reader, writer io.Writer, backend Backend) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	encoder := json.NewEncoder(writer)
 	current := newSessionWithBackend(backend)
 	defer func() { _ = backend.Close() }()
@@ -82,6 +96,20 @@ func ServeWithBackend(reader *bufio.Reader, writer io.Writer, backend Backend) e
 	busy := false
 	for {
 		select {
+		case <-ctx.Done():
+			if busy {
+				// The only asynchronous request is connect_transport.  Backend
+				// cancellation is idempotent and is the same path used by an
+				// explicit IPC cancel request.
+				_ = current.backend.Cancel("operation.parent-death")
+				select {
+				case <-operations:
+					busy = false
+				case <-time.After(2 * time.Second):
+					return ctx.Err()
+				}
+			}
+			return ctx.Err()
 		case decoded, ok := <-requests:
 			if !ok {
 				return nil

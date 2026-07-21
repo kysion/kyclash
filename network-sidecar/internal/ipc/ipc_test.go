@@ -388,3 +388,55 @@ func TestServeReadsCancelWhileConnectIsInFlight(t *testing.T) {
 		t.Fatalf("expected one backend close, got %d", backend.closeCalls)
 	}
 }
+
+func TestServeContextCancellationJoinsConnectBeforeBackendClose(t *testing.T) {
+	profileData, err := os.ReadFile("../../../schemas/fixtures/network-v1.valid.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compactProfile bytes.Buffer
+	if err := json.Compact(&compactProfile, profileData); err != nil {
+		t.Fatal(err)
+	}
+	backend := &cancellableBackend{started: make(chan struct{}), canceled: make(chan struct{})}
+	inputReader, inputWriter := io.Pipe()
+	var output bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeWithBackendContext(ctx, bufio.NewReader(inputReader), &output, backend)
+	}()
+	write := func(record string) {
+		t.Helper()
+		if _, err := io.WriteString(inputWriter, record+"\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(fmt.Sprintf(`{"protocol_version":1,"request_id":"request.profile","payload":{"type":"apply_profile","data":%s}}`, compactProfile.Bytes()))
+	write(`{"protocol_version":1,"request_id":"request.prepare","payload":{"type":"prepare_tunnel"}}`)
+	write(`{"protocol_version":1,"request_id":"request.connect","payload":{"type":"connect_transport","data":{"transport":"quic"}}}`)
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("connect did not start")
+	}
+	cancel()
+	select {
+	case <-backend.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("context cancellation did not cancel connect")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serve did not join cancelled connect")
+	}
+	_ = inputWriter.Close()
+	if backend.closeCalls != 1 {
+		t.Fatalf("expected one backend close after context cancellation, got %d", backend.closeCalls)
+	}
+}

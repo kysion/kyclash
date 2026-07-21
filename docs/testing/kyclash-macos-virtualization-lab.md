@@ -134,6 +134,26 @@ GitHub-updater/no-store gate and keeping current application updates disabled.
 The bundle used for this GUI smoke was an isolated user-directory copy; the
 installed `/Applications` package lifecycle remains a separate S1.15 gate.
 
+The latest signed bundle was then launched directly after rebuilding the
+nested sidecar with the parent-reparent cleanup fix:
+
+```text
+~/kyclash-lab/app-run-20260722-3/KyClash.app
+```
+
+The app was brought to the foreground on the Home page and remained alive
+while independently checked. At capture time the main process was PID 1525,
+the bundled `verge-mihomo` child was PID 1540, and the singleton listener was
+`127.0.0.1:33331`. The nested sidecar is Developer ID signed for Team ID
+`RQUQ8Y3S9H` with SHA-256
+`fd041fc1b5e3d7b7b3498cc7714161a6c0047510c492f734b60659c11f20689b`.
+The clean foreground screenshot is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/kyclash-live-vm-home2-20260722.png`
+with SHA-256
+`37a762972cee3f067c7e0eb977a22bb3af40f772b910ffb06d246855f2d15377`.
+The non-secret capture record is
+`target/macos-vm-lab/evidence/app-launch-20260722/kyclash-live-vm-home2-20260722.txt`.
+
 ## GUI termination and session lifecycle evidence — 2026-07-22
 
 A second pass exercised the signed bundle's process and user-session boundary
@@ -166,21 +186,33 @@ observation. It does not claim that the privileged utun or route cleanup gate
 is closed; that portion still requires the authorized disposable privileged
 run.
 
+The newly rebuilt signed bundle was used for a stronger parent-reparent test.
+An isolated controller generated bootstrap material in memory and a separate
+inherited writer kept the sidecar's stdin open after the controller was
+SIGKILLed. Exact executable paths were checked before termination; the sidecar
+exited within 100 ms while the writer remained alive, proving the parent-watch
+cleanup path rather than relying on stdin EOF. The redacted record is retained
+at
+`target/macos-vm-lab/evidence/app-launch-20260722/production-sidecar-parent-watch-v3.txt`;
+the tested sidecar SHA-256 is
+`fd041fc1b5e3d7b7b3498cc7714161a6c0047510c492f734b60659c11f20689b`.
+This still does not claim privileged utun or route cleanup completion.
+
 The same pass sent the System Events and `loginwindow` logout actions. After
 logout, `who` had no `console` session and independent checks found no KyClash
 process, no Mihomo child, and no singleton listener. Restarting only the
 disposable Tart guest returned the `supen` console session; its login item
-auto-started the signed bundle and restored the listener. A clean GUI capture
-is retained at
-`target/macos-vm-lab/evidence/app-launch-20260722/kyclash-login-relaunch.png`
-with SHA-256
-`491c86a8be8900fca41608ba595100e2ad06271ea0cbd93bf7f841c4d6ab48e4`.
+auto-started the signed bundle and restored the listener. The latest clean
+foreground capture is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/kyclash-live-vm-home2-20260722.png`;
+the earlier login/relaunch image remains in the evidence directory as the
+session-transition record.
 
 This closes the observed GUI logout/re-login path, but it does not close S1.10:
 an ordinary Mihomo child surviving an app SIGKILL is a separate cleanup
-limitation. The signed Go sidecar controller/EOF boundary is observed, while
-privileged utun child absence after controller kill still needs its exact VM
-observation. S1.10 remains in progress.
+limitation. The signed Go sidecar now has both EOF and parent-reparent
+controller-kill observations; privileged utun child absence after controller
+kill still needs its exact authorized VM observation. S1.10 remains in progress.
 
 ## Disposable test cycle
 
