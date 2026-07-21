@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -25,8 +25,19 @@ const trust = path.join(
   'Contents/Resources/resources/kyclash-network-sidecar-aarch64-apple-darwin.trust.json',
 )
 const run = (command, args) => execFileSync(command, args, { stdio: 'inherit' })
-const output = (command, args) =>
-  execFileSync(command, args, { encoding: 'utf8' }).trim()
+const output = (command, args) => {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(
+      `${command} exited with ${result.status}: ${(result.stderr || result.stdout).trim()}`,
+    )
+  }
+  return `${result.stdout}${result.stderr}`.trim()
+}
 for (const file of [app, helper, sidecar, helperPlist, trust]) {
   if (!fs.existsSync(file)) throw new Error(`missing package file: ${file}`)
 }
