@@ -28,6 +28,7 @@ networking-dev = []
 # production build.
 networking-route-lab = []
 networking-keychain-lab = []
+updater-verifier = []
 
 [[bin]]
 name = "kyclash-network-mock"
@@ -43,6 +44,11 @@ required-features = ["networking-route-lab"]
 name = "kyclash-keychain-lab"
 path = "src/bin/kyclash-keychain-lab.rs"
 required-features = ["networking-keychain-lab"]
+
+[[bin]]
+name = "kyclash-updater-verify"
+path = "src/bin/kyclash-updater-verify.rs"
+required-features = ["updater-verifier"]
 
 [package.metadata.bundle]
 identifier = "net.kysion.kyclash"
@@ -108,6 +114,7 @@ reqwest_dav = "0.3.3"
 serde-xml-rs = "0.6.0"
 aes-gcm = { version = "0.11.0" }
 base64 = "0.22.1"
+minisign-verify = "0.2.5"
 getrandom = "0.4.3"
 futures = "0.3.32"
 gethostname = "1.1.0"

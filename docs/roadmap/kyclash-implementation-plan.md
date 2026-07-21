@@ -50,8 +50,8 @@ Completed in the current workspace:
   macOS-arm64-only draft pipeline. It is inert unless the repository variable
   `KYCLASH_MACOS_RELEASE_ENABLED` is explicitly set to `true`, requires the
   protected `kyclash-production-release` environment, and verifies Application
-  and Installer signatures, notarization, stapling, Gatekeeper assessment,
-  checksum, and provenance before creating a draft.
+  and Installer signatures, checksum, and provenance before creating a draft.
+  Optional notarization additionally gates stapling and Gatekeeper assessment.
 - Portable archives use KyClash branding while retaining `clash-verge.exe`.
 - Release, autobuild, download, and Telegram workflow links and visible release
   names target `kysion/kyclash` and display KyClash rather than publishing
@@ -402,10 +402,15 @@ Completed in the current workspace:
   identity. Optional notarization material is isolated to the protected release
   environment and never passed as a command argument or stored in the repository.
 - Locked the macOS release and rollback procedure. It separates Application and
-  Installer signatures, requires notarization/stapling and lifecycle evidence,
-  defines immutable rollback artifacts and stop triggers, and permits updater
-  re-enablement only as one reviewed KyClash-owned endpoint/key/manifest/test
-  transaction.
+  Installer signatures, records optional notarization/stapling and required
+  lifecycle evidence, defines immutable rollback artifacts and stop triggers,
+  and permits updater re-enablement only as one reviewed KyClash-owned
+  endpoint/key/manifest/test transaction.
+- Locked GitHub Releases as the KyClash-owned updater origin and added an inert
+  Tauri configuration template, strict metadata schema/sample/validator,
+  deterministic metadata builder, streaming minisign verifier, rollback policy,
+  and CI variable/secret contract. Base builds and runtime update gates remain
+  disabled; no Release or endpoint activation is performed by this preparation.
 
 Remaining:
 
@@ -414,9 +419,10 @@ Remaining:
 - Complete GitHub updater ownership and macOS installation lifecycle validation
   with authorized hosts. Notarization/stapling remain optional
   public-distribution hardening.
-- Re-enable updater capabilities only in the same reviewed change that adds
-  KyClash-owned endpoints, verification keys, rollback metadata, and tests;
-  current builds have no updater configuration or frontend updater permission.
+- Re-enable updater capabilities only in the same separately authorized change
+  that injects the KyClash public verification key, publishes signed immutable
+  GitHub assets and rollback metadata, enables permissions and runtime gates,
+  and passes lifecycle tests. Current builds remain disabled.
 - Execute the authorization-dependent host, server, credential, signing, and
   lifecycle gates enumerated in `kyclash-completion-audit-20260721.md`. No other
   safe autonomous source-level milestone remains before those gates.

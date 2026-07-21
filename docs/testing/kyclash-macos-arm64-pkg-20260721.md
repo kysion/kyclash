@@ -38,10 +38,9 @@ APPLE_INSTALLER_SIGNING_IDENTITY='Developer ID Installer: …' \
 The current-source release build completed on Apple M5 after explicit signing
 authorization. Existing Application and Installer identities were used through
 the macOS Keychain without exporting private material. Both signature layers
-pass their cryptographic checks. No App Store Connect API key or other notary
-credential was available, so notarization was not attempted and Gatekeeper
-correctly rejects both artifacts. This proves local signing only, not release
-readiness.
+pass their cryptographic checks. Notarization was not selected for this internal
+test artifact, so Gatekeeper correctly rejects both artifacts. This proves local
+signing only, not general-distribution readiness.
 
 On macOS 26, `pkgbuild --component` exposes protected
 `com.apple.provenance` extended attributes as AppleDouble entries in

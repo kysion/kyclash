@@ -1,0 +1,8 @@
+{
+  "$schema": "../src-tauri/gen/schemas/desktop-schema.json",
+  "identifier": "kyclash-updater-capability",
+  "platforms": ["macOS"],
+  "webviews": ["main"],
+  "windows": ["main"],
+  "permissions": ["updater:allow-check", "updater:allow-download-and-install"]
+}

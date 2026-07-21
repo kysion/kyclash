@@ -54,6 +54,11 @@ public-distribution enhancement rather than a current development blocker.
   `docs/testing/kyclash-macos-arm64-pkg-20260721.md`. Its Application and
   Installer signatures are valid, but it is unnotarized, unstapled, rejected by
   Gatekeeper, and must not be represented as a release artifact.
+- GitHub Releases updater preparation is source-complete: its owned endpoint,
+  inert build template, metadata schema/sample/validator, metadata builder,
+  streaming signature verifier, rollback policy, and CI configuration names are
+  documented in `../release/kyclash-github-updater-v1.md`. Runtime gates remain
+  off and no Release has been created or endpoint activated.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
   localization and dead-code checks; 140 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module
@@ -79,11 +84,25 @@ The following work is intentionally not executed under the current authority:
    operator chooses to provide Apple notary credentials.
 6. Run authorized fresh-install, upgrade, rollback, uninstall, forced-exit,
    service, system-proxy, TUN, and cleanup validation.
-7. Prepare the KyClash GitHub Releases updater contract, then provide the public
-   verification key, signed immutable artifacts, and rollback metadata before a
-   separately authorized atomic activation.
+7. Provide the generated public verification key, signed immutable GitHub
+   artifacts, retained rollback version, disposable-host lifecycle evidence,
+   and separate authorization before atomic updater activation and publication.
 8. Begin macOS x64 and later platforms only after the macOS arm64 MVP release
    gates above are closed.
+
+## Current execution matrix
+
+| Work item | Current state | Stops current source work? | Required external input |
+| --- | --- | --- | --- |
+| GitHub updater contract, templates, metadata and verification tools | Complete and default-off | No | None |
+| GitHub updater activation and first metadata publication | Prepared, not authorized or enabled | Yes, for live updates only | Generated public key, protected private signing secret, retained rollback artifact, lifecycle evidence, and explicit publication/activation authorization |
+| Developer ID internal arm64 PKG | Signed; unnotarized with Gatekeeper warning | No | None |
+| Apple notarization and stapling | Optional enhancement | No | Notary credentials only if selected |
+| Keychain destructive lifecycle | Manual/ignored and scoped to `net.kysion.kyclash.test` | No | Disposable macOS account when release evidence is desired |
+| Real route mutation and crash recovery | Harness complete; execution pending | Yes, for production route adapter | Disposable macOS host with authorized elevation and recovery console |
+| Impaired-network and sustained transport validation | Isolated POC complete; external matrix pending | Yes, for production data plane | Compatible isolated server and disposable client host |
+| Install/upgrade/rollback/uninstall cleanup | Procedure prepared; execution pending | Yes, for general distribution | Disposable macOS lifecycle host and retained candidate/rollback artifacts |
+| macOS x64 and later platforms | Deferred by locked platform order | Yes, for those platforms only | macOS arm64 MVP gates closed |
 
 ## Resume rule
 

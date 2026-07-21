@@ -63,9 +63,15 @@ const notaryIssuer = process.env.APPLE_NOTARY_ISSUER
 const hasNotaryCredentials = Boolean(
   notaryKeyPath && notaryKeyId && notaryIssuer,
 )
-if (process.env.CI && (!installerIdentity || !hasNotaryCredentials)) {
+const notarizationEnabled = process.env.KYCLASH_NOTARIZATION_ENABLED === 'true'
+if (process.env.CI && !installerIdentity) {
   throw new Error(
-    'APPLE_INSTALLER_SIGNING_IDENTITY and Apple notary API key settings are required for CI release packages',
+    'APPLE_INSTALLER_SIGNING_IDENTITY is required for CI release packages',
+  )
+}
+if (notarizationEnabled && (!installerIdentity || !hasNotaryCredentials)) {
+  throw new Error(
+    'Installer identity and Apple notary API key settings are required when KYCLASH_NOTARIZATION_ENABLED=true',
   )
 }
 if (installerIdentity) {
@@ -78,7 +84,7 @@ if (installerIdentity) {
   execFileSync('pkgutil', ['--check-signature', outputPath], {
     stdio: 'inherit',
   })
-  if (hasNotaryCredentials) {
+  if (notarizationEnabled) {
     execFileSync(
       'xcrun',
       [
@@ -103,7 +109,7 @@ if (installerIdentity) {
     })
   } else {
     console.warn(
-      '[WARN] Apple notary API key settings are unset; signed PKG was not notarized or stapled',
+      '[WARN] notarization is disabled; signed PKG was not notarized or stapled',
     )
   }
 } else {

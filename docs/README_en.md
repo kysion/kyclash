@@ -47,8 +47,9 @@ trusted release package. Application updates are disabled and do not use Clash
 Verge Rev endpoints or signing keys.
 
 The first public release must pass KyClash-owned application and installer
-signing, notarization, stapling, installation lifecycle, rollback, and release
-review. Once those gates close, packages will be published only through
+signing, installation lifecycle, rollback, and GitHub Releases ownership
+review. Notarization and stapling are recommended public-distribution hardening
+and must pass their checks whenever enabled. Once those gates close, packages will be published only through
 [KyClash Releases](https://github.com/kysion/kyclash/releases) with checksums and
 release evidence.
 

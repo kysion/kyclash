@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kysion/kyclash/blob/main/docs/release/kyclash-updater-metadata.schema.json",
+  "title": "KyClash Tauri updater metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "notes", "pub_date", "platforms", "kyclash"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "notes": { "type": "string", "minLength": 1 },
+    "pub_date": { "type": "string", "format": "date-time" },
+    "platforms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["darwin-aarch64-app"],
+      "properties": {
+        "darwin-aarch64-app": {
+          "$ref": "#/$defs/platform"
+        }
+      }
+    },
+    "kyclash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "source_commit",
+        "rollback_version",
+        "channel",
+        "sample"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "rollback_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "channel": { "enum": ["stable", "candidate", "internal"] },
+        "sample": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "signature", "sha256", "size"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/kysion/kyclash/releases/download/v[^/]+/[^/]+$"
+        },
+        "signature": { "type": "string", "minLength": 64 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

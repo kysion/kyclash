@@ -1102,6 +1102,7 @@ dependencies = [
  "gethostname",
  "getrandom 0.4.3",
  "log",
+ "minisign-verify",
  "nanoid",
  "network-interface",
  "objc2",

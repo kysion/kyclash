@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/kysion/kyclash/releases/latest/download/latest.json"
+      ],
+      "pubkey": "__KYCLASH_UPDATER_PUBLIC_KEY__"
+    }
+  }
+}

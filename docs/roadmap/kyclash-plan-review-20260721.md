@@ -2,6 +2,9 @@
 
 Status: Approved and locked
 
+Distribution note: notarization and updater-origin clauses are superseded by
+`kyclash-github-updater-review-20260721.md`.
+
 Date: 2026-07-21
 
 Reviewed inputs:
@@ -19,8 +22,9 @@ Reviewed inputs:
    Windows after the macOS MVP. The macOS-first scope now closes Iteration 2 on
    Unix local IPC; Windows named-pipe work is deferred to its platform phase.
 3. A locally reproducible package and a releasable package are different gates.
-   Local unsigned PKG output proves packaging only. Public release additionally
-   requires Developer ID signing, notarization, stapling, and install tests.
+   Local unsigned PKG output proves packaging only. Distribution additionally
+   requires Developer ID signing and install tests; the amendment makes
+   notarization/stapling optional public-distribution hardening.
 4. The workspace was detached and entirely uncommitted. A source-control
    baseline is therefore the first execution batch after plan lock.
 
@@ -30,7 +34,8 @@ Reviewed inputs:
 2. Close Iteration 2 with the feature-gated read-only development status page.
 3. Implement the macOS route transaction POC without DNS mutation.
 4. Implement WireGuard plus QUIC/WSS-TCP transport POC in an isolated lab.
-5. Deliver the signed and notarized macOS arm64 MVP.
+5. Deliver the Developer ID-signed macOS arm64 MVP through the reviewed GitHub
+   Releases path, with explicit Gatekeeper guidance when it is unnotarized.
 6. Add macOS x64, then Windows x64, Windows arm64, and Linux.
 
 ## Non-negotiable gates
@@ -44,8 +49,9 @@ Reviewed inputs:
   by rollback fault tests.
 - KyClash application updates remain disabled until its endpoint, signatures,
   rollback metadata, and release procedure exist.
-- Public macOS artifacts must be signed, notarized, and stapled. Unsigned PKGs
-  are development artifacts only.
+- Distributed macOS artifacts must be Developer ID signed. Notarization and
+  stapling are recommended for public distribution and mandatory only when the
+  optional enhancement is selected. Unsigned packages are development artifacts.
 - Each iteration must pass the repository merge gates before it is marked
   complete.
 

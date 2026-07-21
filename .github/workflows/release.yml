@@ -50,7 +50,7 @@ jobs:
       - run: pnpm knip:check
 
   build-package:
-    name: Build signed, notarized KyClash PKG
+    name: Build signed KyClash PKG
     needs: release-gate
     runs-on: macos-15
     environment: kyclash-production-release
@@ -91,13 +91,15 @@ jobs:
           includeUpdaterJson: false
 
       - name: Prepare Apple notary API key
+        if: vars.KYCLASH_NOTARIZATION_ENABLED == 'true'
         env:
           APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
         run: node scripts/prepare-apple-notary-key.mjs
 
-      - name: Package, notarize, staple, and validate PKG
+      - name: Package signed PKG with optional notarization
         env:
           APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          KYCLASH_NOTARIZATION_ENABLED: ${{ vars.KYCLASH_NOTARIZATION_ENABLED }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
         run: pnpm macos:pkg aarch64-apple-darwin
@@ -111,11 +113,20 @@ jobs:
           test "${#packages[@]}" -eq 1
           pkg="${packages[0]}"
           codesign --verify --deep --strict --verbose=2 "$app"
-          spctl --assess --type execute --verbose=2 "$app"
           pkgutil --check-signature "$pkg"
-          spctl --assess --type install --verbose=2 "$pkg"
-          xcrun stapler validate "$pkg"
           shasum -a 256 "$pkg" > "$pkg.sha256"
+
+      - name: Verify optional notarization and Gatekeeper acceptance
+        if: vars.KYCLASH_NOTARIZATION_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app='target/aarch64-apple-darwin/release/bundle/macos/KyClash.app'
+          packages=(target/aarch64-apple-darwin/release/bundle/pkg/KyClash_*_aarch64.pkg)
+          test "${#packages[@]}" -eq 1
+          spctl --assess --type execute --verbose=2 "$app"
+          spctl --assess --type install --verbose=2 "${packages[0]}"
+          xcrun stapler validate "${packages[0]}"
 
       - name: Attest PKG
         uses: actions/attest-build-provenance@v4

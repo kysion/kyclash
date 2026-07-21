@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 
 const read = (path) =>
@@ -15,6 +16,8 @@ const overridePaths = [
   'src-tauri/webview2.x86.json',
   'src-tauri/webview2.arm64.json',
 ]
+const githubUpdaterEndpoint =
+  'https://github.com/kysion/kyclash/releases/latest/download/latest.json'
 
 requireInvariant(
   tauriConfig.bundle?.createUpdaterArtifacts === false,
@@ -23,6 +26,33 @@ requireInvariant(
 requireInvariant(
   tauriConfig.plugins?.updater === undefined,
   'the base Tauri config must not define an updater endpoint or key',
+)
+const updaterTemplate = parse('config/tauri.github-updater.template.json')
+const updaterCapabilityTemplate = parse(
+  'config/tauri.github-updater-capability.template.json',
+)
+requireInvariant(
+  updaterTemplate.bundle?.createUpdaterArtifacts === true,
+  'the inert GitHub updater template must create signed updater artifacts',
+)
+requireInvariant(
+  updaterTemplate.plugins?.updater?.endpoints?.length === 1 &&
+    updaterTemplate.plugins.updater.endpoints[0] === githubUpdaterEndpoint,
+  'the inert updater template must use only the KyClash GitHub Releases endpoint',
+)
+requireInvariant(
+  updaterTemplate.plugins?.updater?.pubkey === '__KYCLASH_UPDATER_PUBLIC_KEY__',
+  'the inert updater template must not contain a committed updater key',
+)
+requireInvariant(
+  JSON.stringify(updaterCapabilityTemplate.permissions) ===
+    JSON.stringify([
+      'updater:allow-check',
+      'updater:allow-download-and-install',
+    ]) &&
+    JSON.stringify(updaterCapabilityTemplate.platforms) ===
+      JSON.stringify(['macOS']),
+  'the inert updater capability template must remain least-privilege and macOS-only',
 )
 for (const path of overridePaths) {
   requireInvariant(
@@ -90,6 +120,29 @@ for (const path of [
     !existsSync(new URL(`../${path}`, import.meta.url)),
     `${path} must remain absent until its external mutation scope is reviewed`,
   )
+}
+
+try {
+  execFileSync(
+    process.execPath,
+    ['scripts/verify-updater-metadata.mjs', '--sample'],
+    { cwd: new URL('..', import.meta.url), stdio: 'pipe' },
+  )
+} catch {
+  failures.push('the committed updater metadata sample must pass validation')
+}
+
+try {
+  execFileSync(
+    process.execPath,
+    ['--test', 'scripts/updater-contract.test.mjs'],
+    {
+      cwd: new URL('..', import.meta.url),
+      stdio: 'pipe',
+    },
+  )
+} catch {
+  failures.push('the updater preparation contract tests must pass')
 }
 
 if (failures.length > 0) {
