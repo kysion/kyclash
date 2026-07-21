@@ -18,32 +18,41 @@ fn build_route_helper_registration() {
         return;
     }
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is required"));
-    let source = std::path::Path::new("../macos/route-helper/registration.m");
-    let object = output.join("kyclash-route-helper-registration.o");
+    let sources = [
+        std::path::Path::new("../macos/route-helper/registration.m"),
+        std::path::Path::new("../macos/route-helper/client.m"),
+    ];
+    let objects = [
+        output.join("kyclash-route-helper-registration.o"),
+        output.join("kyclash-route-helper-client.o"),
+    ];
     let archive = output.join("libkyclash_route_helper_registration.a");
-    let status = std::process::Command::new("xcrun")
-        .args([
-            "clang",
-            "-fobjc-arc",
-            "-mmacosx-version-min=13.0",
-            "-c",
-            source.to_str().expect("registration source path must be UTF-8"),
-            "-o",
-            object.to_str().expect("registration object path must be UTF-8"),
-        ])
-        .status()
-        .expect("xcrun clang must be available for networking-production");
-    assert!(status.success(), "failed to compile SMAppService registration bridge");
+    for (source, object) in sources.iter().zip(&objects) {
+        let status = std::process::Command::new("xcrun")
+            .args([
+                "clang",
+                "-fobjc-arc",
+                "-fblocks",
+                "-mmacosx-version-min=13.0",
+                "-c",
+                source.to_str().expect("route-helper bridge source path must be UTF-8"),
+                "-o",
+                object.to_str().expect("route-helper bridge object path must be UTF-8"),
+            ])
+            .status()
+            .expect("xcrun clang must be available for networking-production");
+        assert!(status.success(), "failed to compile route-helper bridge");
+    }
     let status = std::process::Command::new("ar")
-        .args([
-            "rcs",
-            archive.to_str().expect("registration archive path must be UTF-8"),
-            object.to_str().expect("registration object path must be UTF-8"),
-        ])
+        .arg("rcs")
+        .arg(&archive)
+        .args(&objects)
         .status()
         .expect("ar must be available for networking-production");
     assert!(status.success(), "failed to archive SMAppService registration bridge");
-    println!("cargo:rerun-if-changed={}", source.display());
+    for source in sources {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
     println!("cargo:rustc-link-search=native={}", output.display());
     println!("cargo:rustc-link-lib=static=kyclash_route_helper_registration");
     println!("cargo:rustc-link-lib=framework=Foundation");

@@ -9,6 +9,8 @@ use tokio::sync::RwLock;
 
 use crate::networking::{
     NetworkErrorCode, ProductionEventKind, ProductionNetworkStatus, ProductionNetworkingService, ProductionSiteSummary,
+    RouteHelperRegistrationStatus, open_route_helper_settings, register_route_helper, route_helper_registration_status,
+    unregister_route_helper,
 };
 
 #[derive(Default)]
@@ -120,6 +122,28 @@ pub async fn get_networking_diagnostics(
             })
             .collect()
     })
+}
+
+#[tauri::command]
+pub fn get_route_helper_registration_status() -> RouteHelperRegistrationStatus {
+    route_helper_registration_status()
+}
+
+#[tauri::command]
+pub fn register_route_helper_service() -> Result<RouteHelperRegistrationStatus, String> {
+    register_route_helper().map_err(code)?;
+    Ok(route_helper_registration_status())
+}
+
+#[tauri::command]
+pub fn unregister_route_helper_service() -> Result<RouteHelperRegistrationStatus, String> {
+    unregister_route_helper().map_err(code)?;
+    Ok(route_helper_registration_status())
+}
+
+#[tauri::command]
+pub fn open_route_helper_system_settings() {
+    open_route_helper_settings();
 }
 
 fn code(error: NetworkErrorCode) -> String {

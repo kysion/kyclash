@@ -162,6 +162,14 @@ mod app_init {
             cmd::disconnect_networking,
             #[cfg(feature = "networking-production")]
             cmd::get_networking_diagnostics,
+            #[cfg(feature = "networking-production")]
+            cmd::get_route_helper_registration_status,
+            #[cfg(feature = "networking-production")]
+            cmd::register_route_helper_service,
+            #[cfg(feature = "networking-production")]
+            cmd::unregister_route_helper_service,
+            #[cfg(feature = "networking-production")]
+            cmd::open_route_helper_system_settings,
             cmd::get_system_hostname,
             cmd::restart_app,
             cmd::start_core,

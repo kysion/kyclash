@@ -457,3 +457,25 @@ export const getNetworkingDiagnostics = async () => {
     'get_networking_diagnostics',
   )
 }
+
+export const getRouteHelperRegistrationStatus = async () => {
+  return invoke<import('@/types/networking').RouteHelperRegistrationStatus>(
+    'get_route_helper_registration_status',
+  )
+}
+
+export const registerRouteHelperService = async () => {
+  return invoke<import('@/types/networking').RouteHelperRegistrationStatus>(
+    'register_route_helper_service',
+  )
+}
+
+export const unregisterRouteHelperService = async () => {
+  return invoke<import('@/types/networking').RouteHelperRegistrationStatus>(
+    'unregister_route_helper_service',
+  )
+}
+
+export const openRouteHelperSystemSettings = async () => {
+  return invoke<void>('open_route_helper_system_settings')
+}

@@ -475,9 +475,17 @@ discard its in-memory lease through the same idempotent cleanup boundary. A
 production-feature-only Objective-C bridge now
 links Apple's ServiceManagement framework and exposes only fixed status,
 register, unregister, and open-settings operations to Rust; unsupported
-platforms fail closed. The typed app XPC client, S1.12 executor, and VM
-lifecycle evidence
-remain open.
+platforms fail closed. The app-side typed XPC client is now complete: it keeps
+one persistent privileged NSXPC connection, mirrors the fixed NSSecureCoding
+classes and class allowlists, bounds every synchronous reply, exposes only the
+locked discover/begin/apply/rollback/recover/heartbeat/status selectors, and
+maps unknown states/errors fail-closed. Rust validates every owner/reference
+before constructing C strings and serializes the one-lease connection. The
+production UI explains the narrow private-route capability and requires an
+explicit Enable action; it exposes registration state, approval settings, and
+unregistration, and disables Connect until the helper is enabled. Registration
+and the typed round trip in the signed disposable-VM app remain open, together
+with the S1.12 executor and VM lifecycle evidence.
 
 Deliverables:
 
@@ -494,6 +502,15 @@ Deliverables:
 Merge unit: `feat(macos): add authenticated typed route helper`.
 
 #### S1.12 — route transaction lease and crash recovery (formerly N4B)
+
+Status (2026-07-22): in progress. The production lifecycle now retains the
+exact `TunnelDeviceFacts` returned by prepare and supplies those facts plus the
+accepted policy revision to the route boundary only after the encrypted health
+gate. The XPC production boundary constructs the exact owner tuple, begins one
+lease, requires an exact prepared reply, applies only that reference, and
+rolls it back on any embedded error, unexpected state, disconnect, or drop.
+The helper still deliberately returns `not_ready`; journaled route discovery,
+mutation, lease expiry, and restart recovery remain to be linked in the daemon.
 
 Deliverables:
 

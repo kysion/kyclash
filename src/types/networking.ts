@@ -121,6 +121,13 @@ export interface ProductionNetworkDiagnostic {
   error: NetworkErrorCode | null
 }
 
+export type RouteHelperRegistrationStatus =
+  | 'not_registered'
+  | 'enabled'
+  | 'requires_approval'
+  | 'not_found'
+  | 'unknown'
+
 export interface NetworkStateEvent {
   /** Monotonically increasing within one sidecar process lifetime. */
   sequence: number

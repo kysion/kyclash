@@ -17,6 +17,8 @@ mod production_service;
 mod route;
 mod route_helper;
 #[cfg(feature = "networking-production")]
+mod route_helper_client;
+#[cfg(feature = "networking-production")]
 mod route_helper_registration;
 mod sidecar;
 mod sidecar_trust;
@@ -29,6 +31,8 @@ pub use self::process_runtime::*;
 pub use self::production_controller::*;
 #[cfg(feature = "networking-production")]
 pub use self::production_service::*;
+#[cfg(feature = "networking-production")]
+pub use self::route_helper_client::*;
 #[cfg(feature = "networking-production")]
 pub use self::route_helper_registration::*;
 pub use self::{

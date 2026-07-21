@@ -6,10 +6,17 @@ use serde::{Deserialize, Serialize};
 use super::{
     IpcRequest, IpcRequestPayload, IpcResponsePayload, NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode, NetworkHealth,
     NetworkProfile, NetworkState, ProductionControllerHandle, ProductionEvent, SidecarLifecycleState, TransportKind,
+    TunnelDeviceFacts,
 };
 
 pub trait ProductionRouteBoundary: Send {
-    fn apply(&mut self, profile: &NetworkProfile, operation_id: &str) -> Result<(), NetworkErrorCode>;
+    fn apply(
+        &mut self,
+        profile: &NetworkProfile,
+        operation_id: &str,
+        tunnel: &TunnelDeviceFacts,
+        profile_revision: u64,
+    ) -> Result<(), NetworkErrorCode>;
     fn rollback(&mut self, operation_id: &str) -> Result<(), NetworkErrorCode>;
 }
 
@@ -38,6 +45,7 @@ pub struct ProductionNetworkingService {
     status: Arc<Mutex<ProductionNetworkStatus>>,
     timeout: Duration,
     instance_id: String,
+    profile_revision: u64,
 }
 
 impl ProductionNetworkingService {
@@ -46,8 +54,12 @@ impl ProductionNetworkingService {
         profile: NetworkProfile,
         routes: Box<dyn ProductionRouteBoundary>,
         instance_id: String,
+        profile_revision: u64,
     ) -> Result<Self, NetworkErrorCode> {
         profile.validate()?;
+        if profile_revision == 0 {
+            return Err(NetworkErrorCode::InvalidConfiguration);
+        }
         let site = ProductionSiteSummary {
             id: profile.site.id.clone(),
             display_name: profile.site.display_name.clone(),
@@ -59,6 +71,7 @@ impl ProductionNetworkingService {
             profile,
             routes: Arc::new(Mutex::new(routes)),
             instance_id,
+            profile_revision,
             status: Arc::new(Mutex::new(ProductionNetworkStatus {
                 state: NetworkState::Disconnected,
                 sidecar_state: SidecarLifecycleState::Stopped,
@@ -118,7 +131,7 @@ impl ProductionNetworkingService {
             None,
             None,
         );
-        self.prepare_tunnel(operation_id).await?;
+        let tunnel = self.prepare_tunnel(operation_id).await?;
         self.set_status(
             NetworkState::ConnectingPrimary,
             Some(operation_id.into()),
@@ -144,7 +157,9 @@ impl ProductionNetworkingService {
             }
         }
         let (transport, health) = selected.ok_or(last_error)?;
-        self.routes.lock().apply(&self.profile, operation_id)?;
+        self.routes
+            .lock()
+            .apply(&self.profile, operation_id, &tunnel, self.profile_revision)?;
         let state = if transport == self.profile.transports.primary {
             NetworkState::ConnectedPrimary
         } else {
@@ -179,7 +194,7 @@ impl ProductionNetworkingService {
         Ok(health)
     }
 
-    async fn prepare_tunnel(&self, operation_id: &str) -> Result<(), NetworkErrorCode> {
+    async fn prepare_tunnel(&self, operation_id: &str) -> Result<TunnelDeviceFacts, NetworkErrorCode> {
         let request_id = format!("{operation_id}.prepare");
         let response = self
             .controller
@@ -192,7 +207,8 @@ impl ProductionNetworkingService {
         let IpcResponsePayload::TunnelPrepared(facts) = response.result.map_err(|error| error.code)? else {
             return Err(NetworkErrorCode::InvalidStateTransition);
         };
-        facts.validate(&self.instance_id, &request_id)
+        facts.validate(&self.instance_id, &request_id)?;
+        Ok(facts)
     }
 
     pub async fn disconnect(&self, operation_id: String) -> Result<ProductionNetworkStatus, NetworkErrorCode> {
@@ -368,7 +384,16 @@ mod tests {
     struct Routes(Arc<Mutex<Vec<String>>>);
 
     impl ProductionRouteBoundary for Routes {
-        fn apply(&mut self, _: &NetworkProfile, _: &str) -> Result<(), NetworkErrorCode> {
+        fn apply(
+            &mut self,
+            _: &NetworkProfile,
+            _: &str,
+            tunnel: &TunnelDeviceFacts,
+            revision: u64,
+        ) -> Result<(), NetworkErrorCode> {
+            if !tunnel.interface_name.starts_with("utun") || revision == 0 {
+                return Err(NetworkErrorCode::InvalidConfiguration);
+            }
             self.0.lock().push("routes:apply".into());
             Ok(())
         }
@@ -397,6 +422,7 @@ mod tests {
             profile,
             Box::new(Routes(Arc::clone(&events))),
             "instance.test".into(),
+            42,
         )
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         assert_eq!(
@@ -443,6 +469,7 @@ mod tests {
             profile,
             Box::new(Routes(Arc::clone(&events))),
             "instance.test".into(),
+            42,
         )
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         assert_eq!(

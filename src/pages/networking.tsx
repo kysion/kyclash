@@ -20,8 +20,15 @@ import {
   disconnectNetworking,
   getNetworkingDiagnostics,
   getNetworkingStatus,
+  getRouteHelperRegistrationStatus,
+  openRouteHelperSystemSettings,
+  registerRouteHelperService,
+  unregisterRouteHelperService,
 } from '@/services/cmds'
-import type { ProductionNetworkStatus } from '@/types/networking'
+import type {
+  ProductionNetworkStatus,
+  RouteHelperRegistrationStatus,
+} from '@/types/networking'
 
 const activeStates = new Set([
   'authenticating',
@@ -50,6 +57,8 @@ const NetworkingPage = () => {
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [diagnosticCount, setDiagnosticCount] = useState(0)
+  const [helperStatus, setHelperStatus] =
+    useState<RouteHelperRegistrationStatus>('unknown')
 
   const run = useCallback(
     async (action: () => Promise<ProductionNetworkStatus>) => {
@@ -72,7 +81,16 @@ const NetworkingPage = () => {
   )
 
   const refresh = useCallback(() => run(getNetworkingStatus), [run])
+  const refreshHelper = useCallback(async () => {
+    try {
+      setHelperStatus(await getRouteHelperRegistrationStatus())
+    } catch (reason) {
+      setError(String(reason))
+      setHelperStatus('unknown')
+    }
+  }, [])
   useEffect(() => void refresh(), [refresh])
+  useEffect(() => void refreshHelper(), [refreshHelper])
 
   useEffect(() => {
     if (!status || !activeStates.has(status.state)) return
@@ -103,6 +121,54 @@ const NetworkingPage = () => {
         {status?.last_error && (
           <Alert severity="error">{status.last_error}</Alert>
         )}
+        <Card variant="outlined">
+          <CardContent>
+            <Stack spacing={1.5}>
+              <Typography variant="h6">Private route permission</Typography>
+              <Alert severity="info">
+                KyClash uses a signed, narrowly scoped macOS helper only to
+                discover, apply, and roll back the private CIDRs shown for this
+                site. It cannot run shell commands, change DNS, or take over a
+                default route. Registration happens only when you choose Enable.
+              </Alert>
+              <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                <Chip label={`Helper: ${helperStatus}`} variant="outlined" />
+                <Button
+                  disabled={busy || helperStatus === 'enabled'}
+                  onClick={() => {
+                    setBusy(true)
+                    void registerRouteHelperService()
+                      .then(setHelperStatus)
+                      .catch((reason: unknown) => setError(String(reason)))
+                      .finally(() => setBusy(false))
+                  }}
+                >
+                  Enable
+                </Button>
+                <Button
+                  disabled={busy || helperStatus === 'not_registered'}
+                  onClick={() => {
+                    setBusy(true)
+                    void unregisterRouteHelperService()
+                      .then(setHelperStatus)
+                      .catch((reason: unknown) => setError(String(reason)))
+                      .finally(() => setBusy(false))
+                  }}
+                >
+                  Disable
+                </Button>
+                {helperStatus === 'requires_approval' && (
+                  <Button onClick={() => void openRouteHelperSystemSettings()}>
+                    Open System Settings
+                  </Button>
+                )}
+                <Button disabled={busy} onClick={() => void refreshHelper()}>
+                  Refresh permission
+                </Button>
+              </Stack>
+            </Stack>
+          </CardContent>
+        </Card>
         <Card variant="outlined">
           <CardContent>
             <Stack spacing={2}>
@@ -144,7 +210,11 @@ const NetworkingPage = () => {
               </Typography>
               <Stack direction="row" spacing={1}>
                 <Button
-                  disabled={busy || status?.state !== 'disconnected'}
+                  disabled={
+                    busy ||
+                    helperStatus !== 'enabled' ||
+                    status?.state !== 'disconnected'
+                  }
                   onClick={() => void run(connectNetworking)}
                   startIcon={<PowerSettingsNewRounded />}
                   variant="contained"
