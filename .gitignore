@@ -13,6 +13,7 @@ scripts/_env.sh
 .eslintcache
 .changelog_backups
 target
+network-sidecar/build/
 CLAUDE.md
 .vfox.toml
 .vfox

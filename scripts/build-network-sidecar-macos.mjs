@@ -96,9 +96,13 @@ const trustOutput = path.join(
   'resources',
   `kyclash-network-sidecar-${target}.trust.json`,
 )
-fs.writeFileSync(trustOutput, `${JSON.stringify(manifest, null, 2)}\n`, {
-  mode: 0o600,
-})
+fs.writeFileSync(trustOutput, `${JSON.stringify(manifest, null, 2)}\n`)
+// The manifest contains only public verification metadata and is bundled as
+// an application resource. pkgbuild preserves its source mode while changing
+// ownership to root:wheel, so 0600 makes it unreadable to the signed app after
+// installation. chmod after writing also fixes an existing file whose mode is
+// not changed by writeFileSync's create-only `mode` option.
+fs.chmodSync(trustOutput, 0o644)
 fs.writeFileSync(
   path.join(evidence, 'sha256.txt'),
   `${sha256}  ${path.basename(output)}\n`,

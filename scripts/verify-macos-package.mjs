@@ -41,6 +41,12 @@ const output = (command, args) => {
 for (const file of [app, helper, sidecar, helperPlist, trust]) {
   if (!fs.existsSync(file)) throw new Error(`missing package file: ${file}`)
 }
+const trustMode = fs.statSync(trust).mode & 0o777
+if (trustMode !== 0o644) {
+  throw new Error(
+    `sidecar trust manifest must be an installed-app-readable 0644 resource, found ${trustMode.toString(8)}`,
+  )
+}
 run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app])
 run('codesign', ['--verify', '--strict', '--verbose=2', sidecar])
 run('codesign', ['--verify', '--strict', '--verbose=2', helper])
