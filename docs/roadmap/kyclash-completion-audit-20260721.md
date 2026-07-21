@@ -65,7 +65,7 @@ public-distribution enhancement rather than a current development blocker.
   verification, formatting, repeated race tests, and vet.
 - The network-sidecar GitHub Actions run for security-hardening commit
   `eaf37d8d` completed successfully, superseding the four earlier sidecar CI
-  runs. Later commits through `7ae8d4a3` did not change sidecar-scoped paths.
+  runs. Later commits through `30ef92f1` did not change sidecar-scoped paths.
 
 ## Authorization-dependent release gates
 

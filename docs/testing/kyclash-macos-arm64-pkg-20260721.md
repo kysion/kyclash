@@ -2,7 +2,7 @@
 
 Status: Locally signed, unnotarized development artifact
 
-Source commit: `7ae8d4a3`
+Source commit: `30ef92f1`
 
 Artifact:
 
@@ -16,8 +16,8 @@ Verification result:
 - `CFBundleDisplayName`: `KyClash`
 - `CFBundleIdentifier`: `net.kysion.kyclash`
 - main executable: Mach-O 64-bit arm64
-- package size: 60,702,393 bytes
-- SHA-256: `019bf5f38f36aae6bb08eaa64631e8a3eb36a1e359ec586972e4cbb2e0710f63`
+- package size: 60,709,550 bytes
+- SHA-256: `d98d082ca344ac7ff13a3e4c0cc5d6f2429675e7a46a9bf304cce4dc91c22aa3`
 - App signature: valid Developer ID Application signature with hardened runtime
 - Installer signature: valid Developer ID Installer signature with trusted
   timestamp
@@ -32,14 +32,17 @@ Build commands:
 APPLE_SIGNING_IDENTITY='Developer ID Application: …' \
   corepack pnpm tauri build --target aarch64-apple-darwin --bundles app
 APPLE_INSTALLER_SIGNING_IDENTITY='Developer ID Installer: …' \
+  CI=true KYCLASH_NOTARIZATION_ENABLED=false \
   corepack pnpm macos:pkg aarch64-apple-darwin
 ```
 
 The current-source release build completed on Apple M5 after explicit signing
-authorization. Existing Application and Installer identities were used through
-the macOS Keychain without exporting private material. Both signature layers
-pass their cryptographic checks. Notarization was not selected for this internal
-test artifact, so Gatekeeper correctly rejects both artifacts. This proves local
+authorization; the Rust release build took 4 minutes 12 seconds. Existing
+Application and Installer identities were used through the macOS Keychain
+without exporting private material. Both signature layers pass their
+cryptographic checks. The CI packaging path also passed with notarization
+explicitly disabled, proving that signing remains mandatory while notarization
+is optional. Gatekeeper correctly rejects both artifacts. This proves local
 signing only, not general-distribution readiness.
 
 On macOS 26, `pkgbuild --component` exposes protected

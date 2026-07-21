@@ -68,12 +68,16 @@ Completed in the current workspace:
 - `KyClash_2.5.3_aarch64.pkg` is the macOS installation artifact, built from
   the Tauri application bundle with bundle identifier
   `net.kysion.kyclash`.
-- Rebuilt the arm64 App and PKG from commit `7ae8d4a3` after explicit signing
+- Rebuilt the arm64 App and PKG from commit `30ef92f1` after explicit signing
   authorization. The evidence record confirms KyClash display identity, arm64
   architecture, valid Application and Installer signatures, trusted timestamp,
-  size, SHA-256, and the expected Gatekeeper/stapler refusal while notarization
-  credentials remain unavailable. No install, notary, upload, or release action
+  size, SHA-256, and the expected Gatekeeper/stapler refusal for the deliberately
+  unnotarized internal artifact. No install, notary, upload, or release action
   occurred.
+- Revalidated the CI packaging path with
+  `KYCLASH_NOTARIZATION_ENABLED=false`: Developer ID Application and Installer
+  signatures remained mandatory and valid, while the expected unnotarized
+  Gatekeeper warning did not stop internal package production.
 
 Exit criteria:
 
