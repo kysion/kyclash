@@ -88,15 +88,18 @@ It emitted the expected loopback-only delay/jitter/loss/rate, UDP-block, and
 benchmark commands. Actual queue/filter mutation remains restricted to the
 disposable Linux VM or the existing isolated GitHub Actions runner evidence.
 
-The new loopback soak driver was run for two rounds as a smoke check:
+The new loopback soak driver completed the default ten-round run on Apple
+Silicon macOS:
 
 ```bash
-KYCLASH_SOAK_ROUNDS=2 \
-  KYCLASH_SOAK_OUTPUT=build/reliability-soak-20260722 \
+KYCLASH_SOAK_ROUNDS=10 \
+  KYCLASH_SOAK_OUTPUT=/tmp/kyclash-s114-soak \
   bash lab/linux/reliability-soak.sh
 ```
 
-Both rounds passed. A manual or scheduled Linux VM run may raise
+All ten rounds passed (console-log SHA-256
+`205bfce7bc7ed62c339de98a1201d9ba6e06ee6195d956a385d4b6d956a7c1cc`). A manual
+or scheduled Linux VM run may raise
 `KYCLASH_SOAK_ROUNDS` (maximum 1000); the script stops on the first failure and
 retains per-round logs. No soak result is a production capacity claim.
 
