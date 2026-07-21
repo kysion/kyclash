@@ -368,13 +368,16 @@ private extension NSLock {
 }
 
 private final class RouteHelperService: NSObject, RouteHelperProtocol {
+    private let referenceLock = NSLock()
     private var reference: LeaseReference?
 
     func discover(reply: @escaping (HelperReply) -> Void) { reply(RouteCoordinator.shared.discover()) }
 
     func begin(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
         let result = RouteCoordinator.shared.begin(owner)
-        if result.state == "prepared" { reference = owner.reference }
+        if result.state == "prepared" {
+            referenceLock.withLock { reference = owner.reference }
+        }
         reply(result)
     }
 
@@ -384,13 +387,17 @@ private final class RouteHelperService: NSObject, RouteHelperProtocol {
 
     func rollback(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
         let result = RouteCoordinator.shared.rollback(reference)
-        if result.state == "idle" { self.reference = nil }
+        if result.state == "idle" {
+            referenceLock.withLock { self.reference = nil }
+        }
         reply(result)
     }
 
     func recover(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
         let result = RouteCoordinator.shared.recover(owner)
-        if result.errorCode == nil { reference = owner.reference }
+        if result.errorCode == nil {
+            referenceLock.withLock { reference = owner.reference }
+        }
         reply(result)
     }
 
@@ -403,8 +410,12 @@ private final class RouteHelperService: NSObject, RouteHelperProtocol {
     }
 
     func invalidateConnection() {
-        RouteCoordinator.shared.invalidate(reference)
-        reference = nil
+        let activeReference = referenceLock.withLock { () -> LeaseReference? in
+            let active = reference
+            reference = nil
+            return active
+        }
+        RouteCoordinator.shared.invalidate(activeReference)
     }
 }
 
