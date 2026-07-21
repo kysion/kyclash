@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -12,6 +13,12 @@ import (
 )
 
 func TestQUICCarrierAuthenticatesAndReassemblesLargePacket(t *testing.T) {
+	testTimeout := 5 * time.Second
+	if os.Getenv("KYCLASH_LAB_IMPAIRED") == "1" {
+		testTimeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
 	certificate, roots := testCertificate(t, "127.0.0.1")
 	listener, err := quicgo.ListenAddr("127.0.0.1:0", &tls.Config{
 		Certificates: []tls.Certificate{certificate},
@@ -24,23 +31,23 @@ func TestQUICCarrierAuthenticatesAndReassemblesLargePacket(t *testing.T) {
 	defer listener.Close()
 	serverResult := make(chan error, 1)
 	go func() {
-		connection, acceptErr := listener.Accept(context.Background())
+		connection, acceptErr := listener.Accept(ctx)
 		if acceptErr != nil {
 			serverResult <- acceptErr
 			return
 		}
 		server := newQUIC(connection)
 		defer server.Close()
-		packet, receiveErr := server.Receive(context.Background())
+		packet, receiveErr := server.Receive(ctx)
 		if receiveErr == nil {
-			receiveErr = server.Send(context.Background(), packet)
+			receiveErr = server.Send(ctx, packet)
 		}
 		if receiveErr == nil {
 			time.Sleep(20 * time.Millisecond)
 		}
 		serverResult <- receiveErr
 	}()
-	client, err := DialQUIC(context.Background(), QUICConfig{
+	client, err := DialQUIC(ctx, QUICConfig{
 		Address:    listener.Addr().String(),
 		ServerName: "127.0.0.1",
 		RootCAs:    roots,
@@ -50,10 +57,10 @@ func TestQUICCarrierAuthenticatesAndReassemblesLargePacket(t *testing.T) {
 	}
 	defer client.Close()
 	packet := bytes.Repeat([]byte{1, 2, 3}, 1_000)
-	if err := client.Send(context.Background(), packet); err != nil {
+	if err := client.Send(ctx, packet); err != nil {
 		t.Fatal(err)
 	}
-	received, err := client.Receive(context.Background())
+	received, err := client.Receive(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +69,36 @@ func TestQUICCarrierAuthenticatesAndReassemblesLargePacket(t *testing.T) {
 	}
 	if err := <-serverResult; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestQUICLabUDPBlocked(t *testing.T) {
+	if os.Getenv("KYCLASH_LAB_EXPECT_QUIC_BLOCKED") != "1" {
+		t.Skip("Linux VM impairment lab only")
+	}
+	certificate, roots := testCertificate(t, "127.0.0.1")
+	listener, err := quicgo.ListenAddr("127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{quicALPN},
+	}, &quicgo.Config{EnableDatagrams: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel()
+	connection, err := DialQUIC(ctx, QUICConfig{
+		Address:    listener.Addr().String(),
+		ServerName: "127.0.0.1",
+		RootCAs:    roots,
+		Timeout:    500 * time.Millisecond,
+	})
+	if connection != nil {
+		_ = connection.Close()
+	}
+	if err == nil {
+		t.Fatal("expected QUIC connection refusal while the Linux lab blocks UDP")
 	}
 }
 

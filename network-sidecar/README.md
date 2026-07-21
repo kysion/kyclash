@@ -16,3 +16,7 @@ metadata extraction, and a license-aware CycloneDX SBOM. Dependencies are
 pinned by `go.mod` and authenticated by `go.sum`; the generated binary, SHA-256,
 dependency metadata, and SBOM are retained as CI evidence only and are not
 published or bundled into KyClash yet.
+
+The disposable Linux VM impaired-network matrix is documented in
+[`lab/linux/README.md`](lab/linux/README.md). It covers the isolated network and
+server-side subset only; macOS system lifecycle gates remain separate.

@@ -136,3 +136,18 @@ feature-gated fixed-service lifecycle harness and disposable-account procedure
 are documented in `../testing/kyclash-macos-keychain-lab.md`. Its destructive
 cycle remains manual because the available account is the daily-use development
 account; this does not block updater or other source work.
+
+## Linux VM network-lab preparation — 2026-07-21
+
+The Linux-capable portion of item 2 now has a repository-owned Ubuntu ARM64
+`tc netem`/nftables harness and runbook. It validates authenticated baseline
+transports, bounded loss/jitter/rate impairment, UDP blocking with WSS/TCP still
+available, and sustained fragmented-QUIC benchmarking without production
+endpoints or credentials. The harness refuses non-Linux hosts, requires root
+only inside the disposable VM, defaults to loopback, and removes its isolated
+traffic-control state on exit.
+
+Execution evidence remains pending because no Fusion Linux VM exists on the
+current host. This is now an environment-provisioning dependency, not a missing
+source asset. Linux execution cannot close the macOS utun, route, lifecycle,
+sleep/wake, or network-switch gates.

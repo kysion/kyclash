@@ -18,6 +18,38 @@ permissions:
   contents: read
 
 jobs:
+  linux-impaired-network:
+    runs-on: ubuntu-24.04-arm
+    defaults:
+      run:
+        working-directory: network-sidecar
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: network-sidecar/go.sum
+
+      - name: Install isolated network-lab tools
+        run: sudo apt-get update && sudo apt-get install -y iproute2 nftables
+
+      - name: Run impaired-network matrix
+        run: |
+          set -o pipefail
+          mkdir -p build/linux-netem
+          sudo env PATH="$PATH" GOCACHE="${RUNNER_TEMP}/kyclash-go-cache" \
+            bash lab/linux/netem-lab.sh run 2>&1 | tee build/linux-netem/run.log
+
+      - name: Upload Linux network evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-sidecar-linux-netem-${{ runner.arch }}
+          path: network-sidecar/build/linux-netem/
+          if-no-files-found: error
+          retention-days: 14
+
   verify:
     runs-on: macos-15
     defaults:

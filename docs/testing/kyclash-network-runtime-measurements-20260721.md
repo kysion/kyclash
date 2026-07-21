@@ -58,3 +58,17 @@ or external-network operation.
 
 These limitations prevent Iteration 4 from being release-closed even though the
 safe local implementation and composition gates now pass.
+
+## Linux VM matrix preparation
+
+The reproducible Ubuntu ARM64 harness now lives at
+`network-sidecar/lab/linux/netem-lab.sh`. It is loopback-scoped by default,
+cleans its `tc` and nftables state on exit, needs no endpoint credential, and
+covers baseline transports, controlled delay/jitter/loss/rate, UDP blocking
+with WSS/TCP availability, and sustained QUIC benchmarking.
+
+Its dry-run and source tests pass on the development Mac. Measured impaired-link
+results remain pending until the harness is copied into a disposable Fusion
+Linux VM and executed there. Those results will close only the isolated
+server/network portion; macOS utun, routes, sleep/wake, network switching, and
+installation lifecycle remain macOS-host gates.
