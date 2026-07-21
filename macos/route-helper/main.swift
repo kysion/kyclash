@@ -210,7 +210,8 @@ private struct SystemRouteExecutor: RouteExecuting {
         // more-specific route returned by the kernel is owned by another
         // subsystem until this transaction has recorded it.
         let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return text.contains("route to: default") || text.contains("route to: ::/0")
+        guard text.contains("destination:") else { return true }
+        return text.contains("destination: default") || text.contains("destination: ::/0")
     }
 
     func mutate(action: String, cidr: String, interfaceName: String) -> Bool {
