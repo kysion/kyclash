@@ -416,9 +416,14 @@ single-connection lease, and fail-closed S1.11/S1.12 boundary.
 Status (2026-07-21): in progress. The cross-platform route-owner and lease
 contract is implemented with strict serialization, exact utun owner matching,
 bounded canonical private CIDRs, replay mismatch refusal, and no generic
-command/path/environment fields. The macOS NSSecureCoding/XPC implementation,
-nested helper build/signing, app registration client, and VM evidence remain
-open.
+command/path/environment fields. A macOS 13 Swift LaunchDaemon now implements
+the fixed typed NSSecureCoding method surface, rejects root/unsigned or
+wrong-team app connections through the locked code requirement, owns at most
+one lease per XPC connection, and keeps mutation fail-closed as `not_ready`.
+Its strict plist, arm64 compile, nested signing builder, Tauri bundle placement,
+and CI checks are implemented. The app registration/client, explicit XPC class
+allowlist assertions, S1.12 executor, signed-bundle evidence, and VM lifecycle
+evidence remain open.
 
 Deliverables:
 

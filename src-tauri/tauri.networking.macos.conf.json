@@ -5,6 +5,13 @@
       "sidecar/verge-mihomo",
       "sidecar/verge-mihomo-alpha",
       "sidecar/kyclash-network-sidecar"
-    ]
+    ],
+    "macOS": {
+      "files": {
+        "resources/kyclash-route-helper": "Resources/kyclash-route-helper",
+        "../macos/route-helper/net.kysion.kyclash.route-helper.plist": "Library/LaunchDaemons/net.kysion.kyclash.route-helper.plist"
+      },
+      "minimumSystemVersion": "13.0"
+    }
   }
 }
