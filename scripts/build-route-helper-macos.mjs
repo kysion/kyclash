@@ -7,7 +7,7 @@ if (process.platform !== 'darwin')
   throw new Error('route helper must be built on macOS')
 
 const root = path.resolve(import.meta.dirname, '..')
-const output = path.join(root, 'src-tauri', 'resources', 'kyclash-route-helper')
+const output = path.join(root, 'src-tauri', 'helpers', 'kyclash-route-helper')
 mkdirSync(path.dirname(output), { recursive: true })
 execFileSync(
   'xcrun',

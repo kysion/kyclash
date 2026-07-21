@@ -323,20 +323,25 @@ remains in progress.
 
 #### S1.08 — reproducible nested sidecar and launch trust (formerly N3A)
 
-Status (2026-07-21): implementation complete, signed-run evidence pending. A
+Status (2026-07-21): complete. A
 macOS-only builder now produces a thin target-specific Go executable with
 `-trimpath`, no VCS record or Go build ID, signs it as the nested KyClash
 network sidecar, and emits SHA-256, dependency, commit/Go-version provenance,
 and a strict trust manifest. The release workflow imports the Developer ID
-certificate before building the sidecar, supplies an inert networking bundle
-overlay, verifies the nested signature/Team ID/hash, and keeps updater
+certificate before building the sidecar and route helper, supplies an inert
+networking bundle overlay, verifies both nested signatures/Team IDs plus the
+sidecar hash, and keeps updater
 activation unchanged. Immediately before process creation, the Rust runtime
 can require the strict manifest and rejects non-regular files, symlinks,
 foreign ownership, writable permissions, non-thin/wrong Mach-O architecture,
 hash mismatch, invalid Team ID, failed strict signature, or failed designated
-requirement. Pure trust tests pass on every platform. This unit remains open
-until the protected macOS runner records the exact signed nested-bundle
-evidence; no release needs to be published for that evidence.
+requirement. Pure trust tests pass on every platform. An authorized local
+Developer ID build proves that outer application signing preserves the arm64
+sidecar identifier, Team ID, designated requirement, and manifest SHA-256.
+The helper is present once at its locked path with its own identifier, Team ID,
+and designated requirement. Gatekeeper correctly reports `Unnotarized
+Developer ID`; that is an expected limitation of this internal no-store build,
+not an S1.08 stop condition. No release was published.
 
 Deliverables:
 
@@ -376,6 +381,20 @@ without CI's intentionally absent Mihomo binaries. The build script now skips
 Tauri packaging only for this non-application test feature, matching the
 existing clippy/system-lab boundary. The exact local actual-child matrix passes;
 replacement macOS-runner evidence remains pending.
+
+Local Developer ID evidence (2026-07-21): the authorized Keychain identity
+`Developer ID Application: Huang Chapping (RQUQ8Y3S9H)` signed the arm64
+sidecar and route helper with trusted timestamps and the locked Team ID. A full
+KyClash.app build then exposed that Tauri re-signed an `externalBin`, changing
+both its identifier and hash after trust-manifest generation. The networking
+overlay now places the already signed sidecar directly in
+`Contents/Resources/kyclash-network-sidecar`, and release verification uses
+that immutable path. The replacement bundle passes deep strict verification;
+its sidecar SHA-256 is
+`27e49f04434bd19a5460cb885cc0ed30498ff51d6b77f6849627aa7923e922d5` and
+matches the bundled trust manifest. The helper is no longer duplicated through
+the generic resources directory. No install, registration, utun, route,
+notarization, upload, or release occurred.
 
 Deliverables:
 

@@ -94,6 +94,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm network-sidecar:macos aarch64-apple-darwin
 
+      - name: Build and sign route helper
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm route-helper:macos
+
       - name: Build signed arm64 application bundle
         uses: tauri-apps/tauri-action@v1.0.0
         env:
@@ -129,14 +135,24 @@ jobs:
           packages=(target/aarch64-apple-darwin/release/bundle/pkg/KyClash_*_aarch64.pkg)
           test "${#packages[@]}" -eq 1
           pkg="${packages[0]}"
-          sidecar="$app/Contents/MacOS/kyclash-network-sidecar"
+          sidecar="$app/Contents/Resources/kyclash-network-sidecar"
+          helper="$app/Contents/Resources/kyclash-route-helper"
+          helper_plist="$app/Contents/Library/LaunchDaemons/net.kysion.kyclash.route-helper.plist"
           trust="$app/Contents/Resources/resources/kyclash-network-sidecar-aarch64-apple-darwin.trust.json"
           codesign --verify --deep --strict --verbose=2 "$app"
           test -f "$sidecar"
+          test -f "$helper"
+          test -f "$helper_plist"
           test -f "$trust"
           codesign --verify --strict --verbose=2 "$sidecar"
+          codesign --verify --strict --verbose=2 "$helper"
           test "$(codesign -d --verbose=4 "$sidecar" 2>&1 | sed -n 's/^TeamIdentifier=//p')" = "$APPLE_TEAM_ID"
-          test "$(shasum -a 256 "$sidecar" | awk '{print $1}')" = "$(node -p "require(process.argv[1]).sha256" "$trust")"
+          test "$(codesign -d --verbose=4 "$helper" 2>&1 | sed -n 's/^TeamIdentifier=//p')" = "$APPLE_TEAM_ID"
+          codesign --verify --strict --verbose=2 -R='identifier "net.kysion.kyclash.network-sidecar" and anchor apple generic and certificate leaf[subject.OU] = "RQUQ8Y3S9H"' "$sidecar"
+          codesign --verify --strict --verbose=2 -R='identifier "net.kysion.kyclash.route-helper" and anchor apple generic and certificate leaf[subject.OU] = "RQUQ8Y3S9H"' "$helper"
+          test "$(shasum -a 256 "$sidecar" | awk '{print $1}')" = "$(node -p "require(require('path').resolve(process.argv[1])).sha256" "$trust")"
+          test ! -e "$app/Contents/Resources/resources/kyclash-route-helper"
+          plutil -lint "$helper_plist"
           pkgutil --check-signature "$pkg"
           shasum -a 256 "$pkg" > "$pkg.sha256"
 

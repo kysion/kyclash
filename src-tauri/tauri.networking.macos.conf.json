@@ -1,15 +1,12 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
-    "externalBin": [
-      "sidecar/verge-mihomo",
-      "sidecar/verge-mihomo-alpha",
-      "sidecar/kyclash-network-sidecar"
-    ],
+    "externalBin": ["sidecar/verge-mihomo", "sidecar/verge-mihomo-alpha"],
     "macOS": {
       "files": {
-        "resources/kyclash-route-helper": "Resources/kyclash-route-helper",
-        "../macos/route-helper/net.kysion.kyclash.route-helper.plist": "Library/LaunchDaemons/net.kysion.kyclash.route-helper.plist"
+        "Resources/kyclash-network-sidecar": "sidecar/kyclash-network-sidecar-aarch64-apple-darwin",
+        "Resources/kyclash-route-helper": "helpers/kyclash-route-helper",
+        "Library/LaunchDaemons/net.kysion.kyclash.route-helper.plist": "../macos/route-helper/net.kysion.kyclash.route-helper.plist"
       },
       "minimumSystemVersion": "13.0"
     }
