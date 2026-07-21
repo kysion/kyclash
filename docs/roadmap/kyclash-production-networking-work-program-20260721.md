@@ -524,8 +524,14 @@ IPv6 table, before writing the first mutation. The helper's read-only self-test
 is now part of the macOS CI compile gate. A read-only VM probe confirmed
 macOS reports an uninstalled private IPv4 route as `destination: default` and
 an absent IPv6 route as `not in table`; both now pass the availability guard.
-VM mutation/restart evidence and
-injected helper failure tests remain open.
+The resumed interactive disposable VM has now re-run the scoped route
+transaction lab: normal cycle, abort-after-apply (exit 134), and journal
+recovery all passed, with no final `192.0.2.0/24` route. The redacted journal
+evidence is retained under the ignored VM evidence directory with SHA-256
+`50bf02a0536344ad46d398c759f2770daea16f1a2638568b769625396f3e657a`.
+The actual SMAppService/XPC round trip, helper restart, and injected helper
+failure tests remain open; the LaunchDaemon registration is enabled but still
+requires the logged-in VM administrator's Login Items approval before launch.
 
 Deliverables:
 
