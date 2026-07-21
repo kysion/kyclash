@@ -1,12 +1,12 @@
 fn main() {
     build_route_helper_registration();
 
-    #[cfg(any(feature = "clippy", feature = "networking-system-lab"))]
+    #[cfg(any(feature = "clippy", feature = "networking-dev", feature = "networking-system-lab"))]
     {
         println!("cargo:warning=Skipping tauri_build for non-application validation");
     }
 
-    #[cfg(not(any(feature = "clippy", feature = "networking-system-lab")))]
+    #[cfg(not(any(feature = "clippy", feature = "networking-dev", feature = "networking-system-lab")))]
     tauri_build::build();
 }
 

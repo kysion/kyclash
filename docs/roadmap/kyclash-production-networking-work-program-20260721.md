@@ -369,7 +369,13 @@ CI note: run `29840092883` captured the previously invisible race log and
 proved the failure was the fixed eight-second loopback handshake budget under
 race instrumentation, not a reported data race. Ordinary tests retain eight
 seconds; race builds use a reviewed twenty-second operation budget and a
-five-minute suite ceiling pending the replacement macOS-runner result.
+five-minute suite ceiling. Run `29840681961` then passed that race matrix and
+the tagged utun compile; its later actual-child step exposed that
+`networking-dev` library validation still invoked Tauri application packaging
+without CI's intentionally absent Mihomo binaries. The build script now skips
+Tauri packaging only for this non-application test feature, matching the
+existing clippy/system-lab boundary. The exact local actual-child matrix passes;
+replacement macOS-runner evidence remains pending.
 
 Deliverables:
 
