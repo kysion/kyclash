@@ -179,6 +179,15 @@ The installed-app screenshot is
 with SHA-256
 `5630fa3513fbddf96af38c3a78eedf43bd3f327eb42ed2971fc5edf3c83cdea9`.
 
+The retained historical notarized package was next installed as a rollback
+probe. The package transaction succeeded, but that older app did not remain
+running or restore the singleton listener and predates the production sidecar
+trust resource, so it is not accepted as a functional rollback artifact. The
+corrected current package was immediately restored and again passed non-admin
+deep signature verification, `0644` trust-resource validation, installed-app
+launch, Mihomo-child, and listener checks. The redacted record is
+`target/macos-vm-lab/evidence/app-launch-20260722/pkg-rollback-restore-20260722.txt`.
+
 ## GUI termination and session lifecycle evidence — 2026-07-22
 
 A second pass exercised the signed bundle's process and user-session boundary

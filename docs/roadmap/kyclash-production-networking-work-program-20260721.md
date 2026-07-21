@@ -707,6 +707,17 @@ fresh-install/rollback/uninstall/reboot evidence, and the remaining exact-byte
 lifecycle matrix remain open. Notarization was intentionally not required for
 this internal candidate.
 
+The retained historical notarized package was then exercised as a rollback
+artifact. Its installer transaction succeeded, but its application did not
+remain running or restore the singleton listener within the bounded poll and
+it predates the production sidecar trust resource. It is therefore recorded as
+negative compatibility evidence, not an acceptable rollback candidate. The
+corrected current candidate was immediately reinstalled; non-admin deep
+signature verification, manifest mode, installed-app launch, Mihomo child, and
+listener all returned to the passing state. Redacted evidence is
+`target/macos-vm-lab/evidence/app-launch-20260722/pkg-rollback-restore-20260722.txt`.
+A compatible retained rollback artifact is still required.
+
 The sidecar verification workflow now retains a repeated QUIC fragmented-round-
 trip benchmark with CPU/runtime and allocation metadata. A local Apple M5 run
 produced 14.00 MB/s, 292599 ns/op, and 67260 B/op at the current source; this

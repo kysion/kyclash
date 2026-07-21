@@ -90,3 +90,12 @@ signature verification, exact trust-manifest/sidecar hash matching, nested
 Team ID verification, and installed-app LaunchServices smoke from
 `/Applications/KyClash.app`. No App Store record, GitHub Release, updater
 activation, or production-network mutation occurred.
+
+The historical notarized package was subsequently used as a rollback probe.
+Although its installer transaction succeeded, the older app did not remain
+running or restore the singleton listener and it predates the production
+sidecar trust resource. It is therefore retained only as negative compatibility
+evidence, not as an accepted rollback artifact. Reinstalling the corrected
+current candidate restored non-admin deep signature verification and the live
+installed application. A compatible retained rollback artifact remains an
+open lifecycle requirement.
