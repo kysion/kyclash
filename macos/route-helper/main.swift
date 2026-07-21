@@ -493,6 +493,17 @@ private func validInterface(_ value: String) -> Bool {
 @main
 private enum RouteHelperMain {
     static func main() {
+        if CommandLine.arguments.contains("--route-readonly-self-test") {
+            let executor = SystemRouteExecutor()
+            let ipv4Available = executor.canAdd(cidr: "10.127.0.0/16", interfaceName: "utun999")
+            let ipv6Available = executor.canAdd(cidr: "fd00:127::/48", interfaceName: "utun999")
+            guard ipv4Available && ipv6Available else {
+                fputs("route_readonly_self_test_failed\n", stderr)
+                exit(1)
+            }
+            print("route_readonly_self_test_ok")
+            return
+        }
         let delegate = ListenerDelegate()
         let listener = NSXPCListener(machServiceName: "net.kysion.kyclash.route-helper")
         listener.delegate = delegate
