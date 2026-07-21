@@ -87,6 +87,40 @@ export interface NetworkingDevStatus {
   last_error: NetworkErrorCode | null
 }
 
+export interface ProductionNetworkStatus {
+  state: NetworkState
+  sidecar_state: 'stopped' | 'starting' | 'running' | 'backoff' | 'crash_loop'
+  site: {
+    id: string
+    display_name: string
+    private_route_count: number
+  }
+  active_transport: TransportKind | null
+  health: {
+    reachable: boolean
+    latency_ms: number
+    jitter_ms: number
+    loss_percent: number
+  } | null
+  operation_id: string | null
+  last_error: NetworkErrorCode | null
+}
+
+export interface ProductionNetworkDiagnostic {
+  sequence: number
+  operation_id: string | null
+  kind:
+    | 'started'
+    | 'request_completed'
+    | 'cancelled'
+    | 'timed_out'
+    | 'restarting'
+    | 'crash_loop'
+    | 'stopped'
+    | 'failed'
+  error: NetworkErrorCode | null
+}
+
 export interface NetworkStateEvent {
   /** Monotonically increasing within one sidecar process lifetime. */
   sequence: number

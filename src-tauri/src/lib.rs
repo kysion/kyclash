@@ -150,6 +150,18 @@ mod app_init {
             cmd::connect_networking_dev,
             #[cfg(feature = "networking-dev")]
             cmd::disconnect_networking_dev,
+            #[cfg(feature = "networking-production")]
+            cmd::list_networking_sites,
+            #[cfg(feature = "networking-production")]
+            cmd::get_networking_status,
+            #[cfg(feature = "networking-production")]
+            cmd::connect_networking,
+            #[cfg(feature = "networking-production")]
+            cmd::cancel_networking_operation,
+            #[cfg(feature = "networking-production")]
+            cmd::disconnect_networking,
+            #[cfg(feature = "networking-production")]
+            cmd::get_networking_diagnostics,
             cmd::get_system_hostname,
             cmd::restart_app,
             cmd::start_core,
@@ -238,7 +250,10 @@ pub fn run() {
 
     let _ = utils::dirs::init_portable_flag();
 
-    let builder = app_init::setup_plugins(tauri::Builder::default())
+    let builder = app_init::setup_plugins(tauri::Builder::default());
+    #[cfg(feature = "networking-production")]
+    let builder = builder.manage(cmd::ProductionCommandState::default());
+    let builder = builder
         .setup(|app| {
             // Logger may not be ready yet, so mirror setup panics to stderr.
             fn log_setup_panic(stage: &str, panic: Box<dyn std::any::Any + Send>) {

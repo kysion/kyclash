@@ -429,3 +429,31 @@ export const disconnectNetworkingDev = async () => {
     'disconnect_networking_dev',
   )
 }
+
+export const getNetworkingStatus = async () => {
+  return invoke<import('@/types/networking').ProductionNetworkStatus>(
+    'get_networking_status',
+  )
+}
+
+export const connectNetworking = async () => {
+  return invoke<import('@/types/networking').ProductionNetworkStatus>(
+    'connect_networking',
+  )
+}
+
+export const cancelNetworkingOperation = async (operationId: string) => {
+  return invoke<void>('cancel_networking_operation', { operationId })
+}
+
+export const disconnectNetworking = async () => {
+  return invoke<import('@/types/networking').ProductionNetworkStatus>(
+    'disconnect_networking',
+  )
+}
+
+export const getNetworkingDiagnostics = async () => {
+  return invoke<import('@/types/networking').ProductionNetworkDiagnostic[]>(
+    'get_networking_diagnostics',
+  )
+}

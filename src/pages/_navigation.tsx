@@ -22,6 +22,7 @@ import { navigationItems } from './_navigation-meta'
 import ConnectionsPage from './connections'
 import HomePage from './home'
 import LogsPage from './logs'
+import NetworkingPage from './networking'
 import NetworkingDevPage from './networking-dev'
 import ProfilePage from './profiles'
 import ProxyPage from './proxies'
@@ -32,6 +33,7 @@ import UnlockPage from './unlock'
 type NavigationItem = {
   label:
     | (typeof navigationItems)[keyof typeof navigationItems]['label']
+    | 'KyClash Network'
     | 'KyClash Network (Dev)'
   path: string
   icon: ReactNode[]
@@ -93,7 +95,20 @@ const networkingDevItems: NavigationItem[] =
       ]
     : []
 
+const networkingProductionItems: NavigationItem[] =
+  import.meta.env.VITE_NETWORKING_PRODUCTION === 'true'
+    ? [
+        {
+          label: 'KyClash Network',
+          path: '/networking',
+          icon: [<MonitorHeartOutlinedIcon key="mui" />],
+          Component: NetworkingPage,
+        },
+      ]
+    : []
+
 export const navItems: NavigationItem[] = [
   ...standardNavItems,
+  ...networkingProductionItems,
   ...networkingDevItems,
 ]

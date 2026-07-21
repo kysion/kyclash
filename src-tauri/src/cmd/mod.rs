@@ -12,6 +12,8 @@ pub mod media_unlock_checker;
 pub mod network;
 #[cfg(feature = "networking-dev")]
 pub mod networking;
+#[cfg(feature = "networking-production")]
+pub mod networking_production;
 pub mod profile;
 pub mod proxy;
 pub mod runtime;
@@ -32,6 +34,8 @@ pub use media_unlock_checker::*;
 pub use network::*;
 #[cfg(feature = "networking-dev")]
 pub use networking::*;
+#[cfg(feature = "networking-production")]
+pub use networking_production::*;
 pub use profile::*;
 pub use proxy::*;
 pub use runtime::*;

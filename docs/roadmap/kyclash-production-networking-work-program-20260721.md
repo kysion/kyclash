@@ -256,6 +256,23 @@ Merge unit: `feat(networking): enforce policy v2 and credential boundary`.
 
 ### N2C — production API, UI, and lifecycle transaction
 
+Status (2026-07-21): complete. The default-off production command module now
+exposes only typed site summaries, redacted status, connect/cancel/disconnect,
+and bounded diagnostic events. Its separately gated UI renders authenticating,
+preparing, primary, fallback, cancelling, recovering, disconnecting, and
+structured failure states without endpoints, credential references, policy
+documents, or keys. The production service owns one operation at a time and
+enforces authenticate/apply-profile -> prepare tunnel -> Rust-selected carrier
+-> typed health gate -> route apply. Failure and disconnect converge through
+route rollback -> carrier close -> tunnel stop -> controller shutdown/secret
+release. Tests assert the exact order and QUIC break-before-make fallback. The
+all-feature Rust suite continues to drive the actual Go child/lab server from
+the same IPC/runtime boundary, while the production service uses injected fake
+route adapters to prove mutation order. Production-feature Rust and web builds
+pass; ordinary builds register neither the production Tauri commands nor its
+navigation entry. Runtime configuration remains intentionally uninstalled
+until the N3 trusted bundle and N4 route-helper gates close.
+
 Deliverables:
 
 - Add typed site/status/connect/cancel/disconnect/diagnostic Tauri commands;
@@ -275,6 +292,8 @@ Exit evidence:
 Merge unit: `feat(networking): wire gated production UI and lifecycle`.
 
 N2 is complete only after N2A–N2C pass together.
+
+N2 status: complete. N2A–N2C pass together; the feature remains default-off.
 
 ## N3: trusted bundle and real macOS utun
 

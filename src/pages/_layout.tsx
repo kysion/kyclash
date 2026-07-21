@@ -112,7 +112,9 @@ const getNavLabel = (
   item: NavItem,
   translate: ReturnType<typeof useTranslation>['t'],
 ) =>
-  item.label === 'KyClash Network (Dev)' ? item.label : translate(item.label)
+  item.label === 'KyClash Network (Dev)' || item.label === 'KyClash Network'
+    ? item.label
+    : translate(item.label)
 
 const Layout = () => {
   const mode = useThemeMode()

@@ -12,6 +12,8 @@ mod policy;
 mod process_runtime;
 #[cfg(feature = "networking-production")]
 mod production_controller;
+#[cfg(feature = "networking-production")]
+mod production_service;
 mod route;
 mod sidecar;
 mod state;
@@ -21,6 +23,8 @@ mod stdio_runtime;
 pub use self::process_runtime::*;
 #[cfg(feature = "networking-production")]
 pub use self::production_controller::*;
+#[cfg(feature = "networking-production")]
+pub use self::production_service::*;
 pub use self::{
     config::*, credentials::*, data_plane::*, diagnostics::*, ipc::*, macos_route::*, mock::*, mock_control::*,
     operation::*, policy::*, route::*, sidecar::*, state::*, stdio_runtime::*,

@@ -72,16 +72,23 @@ impl<W: WireGuardAdapter, T: TransportAdapter, R: PrivateRouteAdapter> DataPlane
             self.fail_to_disconnected()?;
             return Err(error);
         }
-        if let Err(error) = self.routes.apply(profile) {
-            self.cleanup_after_failure()?;
-            return Err(error);
-        }
         self.state.transition_to(NetworkState::ConnectingPrimary)?;
-        if self.connect_kind(profile, profile.transports.primary).is_ok() {
+        if self.connect_kind_healthy(profile, profile.transports.primary).is_ok() {
+            if let Err(error) = self.routes.apply(profile) {
+                self.cleanup_after_failure()?;
+                return Err(error);
+            }
             self.state.transition_to(NetworkState::ConnectedPrimary)?;
             return Ok(());
         }
+        if self.active_transport.is_some() {
+            self.disconnect_active(profile.transports.primary)?;
+        }
         if self.connect_first_fallback(profile).is_ok() {
+            if let Err(error) = self.routes.apply(profile) {
+                self.cleanup_after_failure()?;
+                return Err(error);
+            }
             self.state.transition_to(NetworkState::DegradedFallback)?;
             return Ok(());
         }
@@ -157,11 +164,23 @@ impl<W: WireGuardAdapter, T: TransportAdapter, R: PrivateRouteAdapter> DataPlane
 
     fn connect_first_fallback(&mut self, profile: &NetworkProfile) -> Result<(), NetworkErrorCode> {
         for kind in profile.transports.fallbacks.iter().copied() {
-            if self.connect_kind(profile, kind).is_ok() {
+            if self.connect_kind_healthy(profile, kind).is_ok() {
                 return Ok(());
+            }
+            if self.active_transport.is_some() {
+                self.disconnect_active(kind)?;
             }
         }
         Err(NetworkErrorCode::FallbackTransportUnavailable)
+    }
+
+    fn connect_kind_healthy(&mut self, profile: &NetworkProfile, kind: TransportKind) -> Result<(), NetworkErrorCode> {
+        self.connect_kind(profile, kind)?;
+        if self.transport.health(kind)?.healthy() {
+            Ok(())
+        } else {
+            Err(NetworkErrorCode::PrimaryTransportUnavailable)
+        }
     }
 
     fn connect_kind(&mut self, profile: &NetworkProfile, kind: TransportKind) -> Result<(), NetworkErrorCode> {
@@ -276,7 +295,12 @@ mod tests {
         }
 
         fn health(&mut self, _: TransportKind) -> Result<TransportHealth, NetworkErrorCode> {
-            self.health.pop_front().ok_or(NetworkErrorCode::OperationTimedOut)
+            Ok(self.health.pop_front().unwrap_or(TransportHealth {
+                reachable: true,
+                latency_ms: 1,
+                jitter_ms: 0,
+                packet_loss_percent: 0,
+            }))
         }
     }
 
@@ -337,7 +361,13 @@ mod tests {
             jitter_ms: 300,
             packet_loss_percent: 100,
         };
-        let (mut controller, events) = controller(Vec::new(), vec![unhealthy, unhealthy]);
+        let healthy = TransportHealth {
+            reachable: true,
+            latency_ms: 1,
+            jitter_ms: 0,
+            packet_loss_percent: 0,
+        };
+        let (mut controller, events) = controller(Vec::new(), vec![healthy, unhealthy, unhealthy, healthy]);
         controller
             .connect(&profile)
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
@@ -388,7 +418,13 @@ mod tests {
         assert_eq!(controller.state(), NetworkState::Disconnected);
         assert_eq!(
             events.lock().as_slice(),
-            ["wireguard:start", "routes:apply", "routes:rollback", "wireguard:stop"]
+            [
+                "wireguard:start",
+                "connect:Quic",
+                "routes:apply",
+                "routes:rollback",
+                "wireguard:stop"
+            ]
         );
         Ok(())
     }
@@ -403,7 +439,13 @@ mod tests {
             jitter_ms: 0,
             packet_loss_percent: 100,
         };
-        let (mut controller, events) = controller(Vec::new(), vec![unhealthy]);
+        let healthy = TransportHealth {
+            reachable: true,
+            latency_ms: 1,
+            jitter_ms: 0,
+            packet_loss_percent: 0,
+        };
+        let (mut controller, events) = controller(Vec::new(), vec![healthy, unhealthy]);
         controller
             .connect(&profile)
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
