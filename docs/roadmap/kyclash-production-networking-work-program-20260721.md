@@ -424,8 +424,16 @@ owned real utun in the disposable guest, published only its validated name to
 a fixed `/var/tmp/kyclash-utun-lab-*` evidence path, and was then killed with
 SIGKILL. The kernel released the exact device and an independent `ifconfig`
 poll proved final absence. Normal repeated close and backend-close paths are
-also covered by S1.09. Carrier-failure, stdin EOF, app/controller kill,
-login/logout, guest reboot, and stale-unowned-interface refusal remain open.
+also covered by S1.09. The signed real-sidecar test boundary then proved both
+stdin EOF and malformed IPC close the exact prepared device. Additional real
+utun cases prove failed carrier setup cleans up and cleanup never claims or
+closes a separately created unowned `utunN`. After the work guest stopped and
+was restarted through Virtualization.framework, independent address, route,
+process, and interface checks again proved final absence. The encrypted-traffic
+case now also closes its authenticated QUIC peer after health before tearing
+down the owned device. A distinct killed-app/controller process and actual GUI
+login/logout remain open; their source-equivalent EOF and process-kill paths
+are covered but do not replace those two VM observations.
 
 Scenarios:
 

@@ -5,6 +5,7 @@ package userspace
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -14,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kysion/kyclash/network-sidecar/internal/carrier"
 	"github.com/kysion/kyclash/network-sidecar/internal/labserver"
 	"github.com/kysion/kyclash/network-sidecar/internal/profile"
 	"golang.org/x/crypto/curve25519"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 const utunLabConfirmation = "authorized-kyclash-virtualization-framework-vm"
@@ -67,6 +70,56 @@ func TestRealUTUNCloseCleansPreparedDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertInterfaceAbsent(t, facts.InterfaceName)
+}
+
+func TestRealUTUNCarrierSetupFailureCleansDevice(t *testing.T) {
+	requireDisposableVirtualMac(t)
+	backend, networkProfile := realUTUNFixture(t, 11)
+	backend.dialer = func(context.Context, profile.Transport, profile.NormalizedEndpoint) (carrier.Carrier, error) {
+		return nil, net.ErrClosed
+	}
+	facts, err := backend.Prepare(context.Background(), networkProfile, "operation.failure.prepare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := networkProfile.Endpoint(profile.QUIC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Connect(context.Background(), profile.QUIC, endpoint); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("carrier setup failure = %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertInterfaceAbsent(t, facts.InterfaceName)
+}
+
+func TestRealUTUNCleanupNeverClaimsUnownedInterface(t *testing.T) {
+	requireDisposableVirtualMac(t)
+	unowned, err := tun.CreateTUN("utun", profile.TunnelMTU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unownedName, err := unowned.Name()
+	if err != nil || !validUTUNName(unownedName) {
+		_ = unowned.Close()
+		t.Fatalf("unowned device name = %q, error = %v", unownedName, err)
+	}
+	defer func() {
+		_ = unowned.Close()
+		assertInterfaceAbsent(t, unownedName)
+	}()
+	backend, networkProfile := realUTUNFixture(t, 12)
+	facts, err := backend.Prepare(context.Background(), networkProfile, "operation.owned.prepare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertInterfaceAbsent(t, facts.InterfaceName)
+	assertInterfacePresent(t, unownedName)
 }
 
 func TestRealUTUNCarriesEncryptedLoopbackTraffic(t *testing.T) {
@@ -138,6 +191,10 @@ func TestRealUTUNCarriesEncryptedLoopbackTraffic(t *testing.T) {
 		}
 		t.Fatalf("encrypted utun traffic counters did not advance")
 	}
+	if err := cluster.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
 	if err := backend.Disconnect(ctx); err != nil {
 		t.Fatal(err)
 	}

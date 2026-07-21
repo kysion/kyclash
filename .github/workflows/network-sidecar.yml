@@ -184,7 +184,7 @@ jobs:
       - name: Compile owned macOS utun adapter
         run: |
           go test -run '^$' -tags=kyclash_utun ./internal/userspace ./cmd/kyclash-network-sidecar
-          go test -run '^$' -tags='kyclash_utun kyclash_utun_lab' ./internal/userspace
+          go test -run '^$' -tags='kyclash_utun kyclash_utun_lab' ./internal/userspace ./cmd/kyclash-network-sidecar
 
       - name: Compile typed macOS route helper
         working-directory: .
