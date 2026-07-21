@@ -8,8 +8,8 @@ caller.
 
 ## Fixed scope
 
-- Service: `net.kysion.kyclash.networking`
-- Account: one KyClash-owned synthetic lab account
+- Service: `net.kysion.kyclash.test`
+- Account: `keychain:kyclash.test.synthetic.v1`
 - Value: 32 random bytes generated in process, never printed or persisted
 - Operations: refuse pre-existing value, create, read, exact compare,
   delete, and verify absence
@@ -17,7 +17,13 @@ caller.
   lab and the feature is absent from normal builds.
 
 Run only in a disposable local macOS account whose login Keychain may be
-modified. Do not run in a daily-use or production account.
+modified. This prevents a failed or mis-scoped create/update/delete cycle from
+polluting or deleting real entries. Do not run in a daily-use or production
+account.
+
+This destructive lifecycle check is manual and release-evidence-only. Its
+absence does not block other source development or non-destructive credential
+adapter tests.
 
 ## Build and execute
 

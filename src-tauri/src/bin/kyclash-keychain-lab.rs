@@ -9,8 +9,8 @@ mod macos {
 
     const CONFIRMATION_VARIABLE: &str = "KYCLASH_KEYCHAIN_LAB_CONFIRM";
     const CONFIRMATION_VALUE: &str = "authorized-disposable-macos-account";
-    const SERVICE: &str = "net.kysion.kyclash.networking";
-    const REFERENCE: &str = "keychain:kyclash.lab.synthetic.v1";
+    const SERVICE: &str = "net.kysion.kyclash.test";
+    const REFERENCE: &str = "keychain:kyclash.test.synthetic.v1";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Mode {

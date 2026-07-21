@@ -8,9 +8,10 @@ credential boundary, release procedure, branding, documentation, CI, and
 signed-but-unnotarized arm64 development PKG have passed their applicable
 source-level gates.
 
-This is not a production-release declaration. The remaining gates require host
-mutation, external infrastructure, or private signing credentials and therefore
-need separate explicit authorization.
+This is not a production-release declaration. Continuation is authorized. Real
+route and lifecycle gates still require disposable hosts, and impaired-network
+validation requires a compatible isolated endpoint. Notarization is an optional
+public-distribution enhancement rather than a current development blocker.
 
 ## Completed evidence
 
@@ -32,8 +33,9 @@ need separate explicit authorization.
 - The credential boundary uses fixed Keychain references and redacted,
   clear-on-drop secret material. Automated tests do not touch the host Keychain.
 - The release workflow requires separate Application and Installer identities,
-  notarization, stapling, validation, SBOM/provenance evidence, and rollback
-  controls. Updater permissions remain disabled.
+  optional notarization/stapling, SBOM/provenance evidence, and rollback
+  controls. Updater permissions remain disabled pending the GitHub updater
+  activation transaction.
 - The release pipeline cannot generate updater JSON or invoke updater publishing,
   the manual inherited updater workflow is absent, fixed-WebView2 overrides do
   not restore an inherited verification key, and a CI verifier locks these
@@ -42,7 +44,8 @@ need separate explicit authorization.
   absent. The remaining release workflow is macOS arm64 only, defaults closed
   behind an explicit repository authorization variable and protected
   environment, and can create only a draft after all signing, notarization,
-  stapling, Gatekeeper, checksum, and provenance checks succeed.
+  signature, checksum, and provenance checks succeed. Optional notarization and
+  stapling evidence is required only when that enhancement is enabled.
 - Maintained README and issue intake surfaces identify KyClash, link only to the
   KyClash repository for releases and support, preserve explicit upstream
   attribution, and no longer advertise upstream packages, AutoBuild channels,
@@ -52,12 +55,12 @@ need separate explicit authorization.
   Installer signatures are valid, but it is unnotarized, unstapled, rejected by
   Gatekeeper, and must not be represented as a release artifact.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
-  localization and dead-code checks; 140 Rust all-feature library tests; two process-level
-  sidecar tests; Clippy with all features and warnings denied; Go module
+  localization and dead-code checks; 140 Rust all-feature library tests; two
+  process-level sidecar tests; Clippy with all features and warnings denied; Go module
   verification, formatting, repeated race tests, and vet.
 - The network-sidecar GitHub Actions run for security-hardening commit
-  `eaf37d8d` completed successfully, superseding the four earlier successful
-  runs through `7ae8d4a3`.
+  `eaf37d8d` completed successfully, superseding the four earlier sidecar CI
+  runs. Later commits through `7ae8d4a3` did not change sidecar-scoped paths.
 
 ## Authorization-dependent release gates
 
@@ -69,15 +72,16 @@ The following work is intentionally not executed under the current authority:
    sustained load, suspend/resume, and network switching.
 3. Integrate the production macOS utun and route adapters, then replace the mock
    command boundary only after the first two gates pass.
-4. Exercise real Keychain create/read/delete and account lifecycle behavior on
-   an authorized disposable account and host.
-5. Import authorized Apple Developer Application and Installer identities plus
-   App Store Connect notarization credentials, then produce and verify a signed,
-   notarized, stapled PKG.
+4. Optionally exercise the manual destructive Keychain lifecycle test on a
+   disposable account using only `net.kysion.kyclash.test`; this does not block
+   other development.
+5. Optionally notarize and staple a public-distribution candidate when the
+   operator chooses to provide Apple notary credentials.
 6. Run authorized fresh-install, upgrade, rollback, uninstall, forced-exit,
    service, system-proxy, TUN, and cleanup validation.
-7. Provision a KyClash-owned update endpoint, public verification key, immutable
-   artifacts, and rollback metadata before enabling the updater atomically.
+7. Prepare the KyClash GitHub Releases updater contract, then provide the public
+   verification key, signed immutable artifacts, and rollback metadata before a
+   separately authorized atomic activation.
 8. Begin macOS x64 and later platforms only after the macOS arm64 MVP release
    gates above are closed.
 
@@ -101,6 +105,6 @@ runbook preparation are complete.
 
 The authorized credential-lab source preparation is also complete. The
 feature-gated fixed-service lifecycle harness and disposable-account procedure
-are documented in `../testing/kyclash-macos-keychain-lab.md`. Item 4 remains
-open for actual execution because the available account is the daily-use
-development account rather than a disposable account.
+are documented in `../testing/kyclash-macos-keychain-lab.md`. Its destructive
+cycle remains manual because the available account is the daily-use development
+account; this does not block updater or other source work.

@@ -4,6 +4,8 @@ Status: Locked for execution
 
 Review record: `docs/roadmap/kyclash-plan-review-20260721.md`
 
+Distribution amendment: `docs/roadmap/kyclash-github-updater-review-20260721.md`
+
 Architecture baseline: `docs/architecture/kyclash-networking-v1.md`
 
 Runtime implementation: `docs/architecture/kyclash-network-runtime-v1.md`
@@ -15,8 +17,9 @@ upstream Clash Verge Rev release.
 
 Progress (2026-07-21): development baseline complete. The locally reproducible
 PKG now has valid Developer ID Application and Installer signatures after
-explicit authorization, but notarization, stapling, and installation lifecycle
-tests remain release gates.
+explicit authorization. Notarization and stapling are optional
+public-distribution enhancements; installation lifecycle tests remain release
+gates.
 
 - Disable application update endpoints until KyClash signing is available.
 - Correct portable archive branding without renaming compatibility binaries.
@@ -160,8 +163,9 @@ Exit criteria:
 
 Goal: safely apply and roll back private CIDRs in an isolated lab.
 
-Progress (2026-07-21): transaction persistence and macOS read-only discovery
-are complete; no platform route mutation command is implemented or executed.
+Progress (2026-07-21): transaction persistence, macOS read-only discovery, and
+a feature-gated fixed-scope route lab executor are complete. No route mutation
+has been executed because the available Mac is not a disposable lab host.
 
 - Implement platform route discovery and conflict detection.
 - Add an ownership journal and idempotent transaction API.
@@ -364,7 +368,7 @@ host, server, and release gates recorded in
 
 - Add site selection, connect/disconnect, health, routes, and diagnostics UI.
 - Integrate system credential storage.
-- Complete signing, notarization, updater ownership, and rollback procedures.
+- Complete signing, GitHub updater ownership, and rollback procedures.
 - Execute fresh install, upgrade, uninstall, sleep, network switch, and crash tests.
 
 Completed in the current workspace:
@@ -395,10 +399,8 @@ Completed in the current workspace:
   verifies absence, and provides fixed-scope interrupted-run cleanup. It has no
   application command wiring and remains unexecuted on the daily-use account.
 - Hardened macOS release packaging so CI requires an Installer signing
-  identity plus an App Store Connect notary API key, submits the final PKG to
-  `notarytool`, staples the ticket, and validates it before upload. The private
-  key is materialized as a mode-0600 runner file and only its path is passed to
-  tools; credentials are never command arguments.
+  identity. Optional notarization material is isolated to the protected release
+  environment and never passed as a command argument or stored in the repository.
 - Locked the macOS release and rollback procedure. It separates Application and
   Installer signatures, requires notarization/stapling and lifecycle evidence,
   defines immutable rollback artifacts and stop triggers, and permits updater
@@ -409,8 +411,9 @@ Remaining:
 
 - Replace the mock command boundary only after the real sidecar, route lab,
   and system credential adapters pass their isolated validation gates.
-- Complete signing, notarization, stapling, updater ownership, and macOS
-  installation lifecycle validation with authorized credentials and hosts.
+- Complete GitHub updater ownership and macOS installation lifecycle validation
+  with authorized hosts. Notarization/stapling remain optional
+  public-distribution hardening.
 - Re-enable updater capabilities only in the same reviewed change that adds
   KyClash-owned endpoints, verification keys, rollback metadata, and tests;
   current builds have no updater configuration or frontend updater permission.

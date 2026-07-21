@@ -1,15 +1,22 @@
 # KyClash macOS Release Procedure v1
 
-Status: Approved and locked; credentials and first release not authorized
+Status: Approved and locked; amended by the GitHub updater/no-store review
 
 Date: 2026-07-21
 
 ## Current release state
 
 KyClash application updates are disabled. The repository contains no updater
-endpoint, updater public key, or frontend updater permission. Local PKGs are
-unsigned development artifacts. No artifact may be described as a KyClash
-release until every required item below exists for the same commit and version.
+endpoint, updater public key, or frontend updater permission. The latest local
+arm64 PKG has valid Developer ID Application and Installer signatures, but it
+is not notarized or stapled and Gatekeeper rejects it. It remains a development
+artifact. No artifact may be described as a KyClash release until every
+required item below exists for the same commit and version.
+
+KyClash does not target the Mac App Store. Notarization and stapling are
+recommended public-distribution hardening, not a blocker for signed internal
+test packages or preparation of the GitHub Releases updater path. Every
+unnotarized package must retain an explicit Gatekeeper warning.
 
 ## Required ownership
 
@@ -17,8 +24,7 @@ Before the first release, the operator must provide and explicitly authorize:
 
 - a KyClash-controlled Apple Developer team and Developer ID Application and
   Installer identities;
-- an App Store Connect notary API key restricted to the release workflow;
-- a KyClash-controlled HTTPS download/update origin;
+- the KyClash-controlled `kysion/kyclash` GitHub Releases origin;
 - an offline-held updater signing private key and repository-pinned public key;
 - protected GitHub environments with reviewer approval for release secrets;
 - immutable retention for the current and immediately previous installers,
@@ -41,9 +47,11 @@ For one immutable Git commit and version:
    identity and strict `codesign` verification passes.
 6. The final PKG is signed with the authorized Installer identity and
    `pkgutil --check-signature` reports the expected KyClash team.
-7. The exact final PKG is submitted to Apple, accepted, stapled, and validated.
+7. When notarization is enabled for public distribution, the exact final PKG is
+   submitted to Apple, accepted, stapled, and validated. Internal test packages
+   may omit this optional enhancement only when clearly labelled unnotarized.
 8. SHA-256, SBOM, dependency inventory, and GitHub artifact attestation refer to
-   the stapled PKG bytes that will be published.
+   the exact PKG bytes selected for the authorized release.
 9. Fresh install, authorized upgrade, uninstall, sleep/wake, network switch,
    forced-exit cleanup, Mihomo TUN coexistence, and rollback tests pass on
    disposable hosts.
@@ -58,7 +66,7 @@ cannot be promoted by renaming or manually uploading it.
 Updater support may be reintroduced only as one reviewed commit containing all
 of the following:
 
-- a KyClash HTTPS endpoint and pinned updater public key;
+- the KyClash GitHub Releases `latest.json` endpoint and pinned updater public key;
 - frontend/backend capabilities limited to check, authenticated download, and
   verified install operations actually used by the UI;
 - a signed manifest schema with version, platform/architecture, minimum
@@ -76,8 +84,9 @@ implicitly.
 
 ## Rollback policy
 
-Before publication, retain one previously accepted, signed, notarized, stapled,
-and installation-tested version for every supported architecture. Trigger a
+Before publication, retain one previously accepted, signed and
+installation-tested version for every supported architecture. Record whether
+each retained package is notarized and stapled. Trigger a
 rollout halt and rollback review on any of these signals:
 
 - signature, notarization, checksum, or provenance verification failure;
@@ -97,11 +106,12 @@ disabled and recovery is manual from documented backups.
 
 - commit, tag, source archive, toolchain versions, and dependency locks;
 - complete gate logs and authorized-host lifecycle matrix;
-- app/PKG signature identities, notarization submission result, and staple
-  validation;
+- app/PKG signature identities and, when used, notarization submission and
+  staple validation;
 - artifact sizes and SHA-256 values, SBOMs, license inventory, and attestations;
 - signed application/sidecar manifests and public keys used to verify them;
 - release approval, rollout decisions, incident notes, and rollback evidence.
 
-Signing, notarization, publication, updater activation, or external-host testing
-requires explicit user authorization even though this procedure is locked.
+Signing, publication, updater activation, or external-host testing requires
+explicit user authorization even though this procedure is locked. Notarization
+is optional public-distribution hardening and requires credentials when chosen.

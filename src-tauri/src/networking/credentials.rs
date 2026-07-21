@@ -78,7 +78,7 @@ pub struct MacOsKeychainCredentialStore {
 #[cfg(target_os = "macos")]
 impl MacOsKeychainCredentialStore {
     pub fn new(service: &str) -> Result<Self, NetworkErrorCode> {
-        if service != "net.kysion.kyclash.networking" {
+        if service != "net.kysion.kyclash.networking" && service != "net.kysion.kyclash.test" {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
         Ok(Self {
@@ -186,6 +186,7 @@ mod tests {
     #[test]
     fn macos_store_accepts_only_the_kyclash_service_namespace() {
         assert!(MacOsKeychainCredentialStore::new("net.kysion.kyclash.networking").is_ok());
+        assert!(MacOsKeychainCredentialStore::new("net.kysion.kyclash.test").is_ok());
         assert!(matches!(
             MacOsKeychainCredentialStore::new("untrusted.service"),
             Err(NetworkErrorCode::InvalidConfiguration)
