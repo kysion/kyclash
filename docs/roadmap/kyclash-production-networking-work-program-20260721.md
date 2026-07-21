@@ -59,7 +59,7 @@ stopping points.
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
 | S1.10 | disposable-VM termination matrix | in progress; signed GUI launch now passes; distinct killed app/controller and GUI login/logout observations remain |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
-| S1.12 | route lease/recovery | in progress; signed VM begin/apply/status/rollback and helper restart pass, injected failure/full matrix remains |
+| S1.12 | route lease/recovery | in progress; injected failure matrix passes, signed VM begin/apply/status/rollback and helper restart pass, privileged full matrix remains |
 | S1.13 | Mihomo coexistence VM matrix | pending; depends on real helper/XPC route execution |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
