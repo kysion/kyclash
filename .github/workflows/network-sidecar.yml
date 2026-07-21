@@ -319,19 +319,39 @@ jobs:
           set -o pipefail
           mkdir -p build/actual-child
           {
+            echo '[phase] build actual-child binaries'
             go build -trimpath -o build/actual-child/kyclash-network-sidecar ./cmd/kyclash-network-sidecar
             go build -trimpath -o build/actual-child/kyclash-network-sidecar-lab ./cmd/kyclash-network-sidecar-lab
+            echo '[phase] aggregate stdio_runtime tests'
             KYCLASH_NETWORK_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar" \
             KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
               cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
                 networking::stdio_runtime::unix::tests:: -- --test-threads=1
             for cycle in 1 2 3; do
+              echo "[phase] carrier repeat ${cycle}"
               KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
                 cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
                   networking::stdio_runtime::unix::tests::actual_lab_child_carries_health_traffic_across_all_carriers \
                   -- --exact --test-threads=1
             done
           } 2>&1 | tee build/actual-child/run.log
+
+      - name: Report actual-child failure tail
+        if: failure()
+        run: |
+          set -euo pipefail
+          log='build/actual-child/run.log'
+          if [[ ! -s "$log" ]]; then
+            echo '::error title=actual-child::run.log was not produced'
+            exit 0
+          fi
+          while IFS= read -r line; do
+            # Keep failure diagnostics useful without echoing long key/token
+            # shaped values into the Actions annotation stream.
+            safe="$(printf '%s' "$line" \
+              | sed -E 's/[[:xdigit:]]{32,}/[redacted-hex]/g; s/[A-Za-z0-9+\/]{40,}={0,2}/[redacted-value]/g; s/%/%25/g; s/\r/%0D/g')"
+            echo "::error title=actual-child::${safe}"
+          done < <(tail -n 60 "$log")
 
       - name: Upload actual-child evidence
         if: always()
