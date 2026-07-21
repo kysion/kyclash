@@ -25,6 +25,7 @@
     "updater:contract-test": "node --test scripts/updater-contract.test.mjs",
     "updater:verify-signature": "cargo run -p clash-verge --features updater-verifier --bin kyclash-updater-verify --",
     "release:ownership-check": "node scripts/assert-updater-disabled.mjs --check",
+    "network-sidecar:macos": "node scripts/build-network-sidecar-macos.mjs",
     "portable": "node scripts/portable.mjs",
     "portable-fixed-webview2": "node scripts/portable-fixed-webview2.mjs",
     "macos:pkg": "node scripts/package-macos-pkg.mjs",

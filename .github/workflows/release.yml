@@ -75,19 +75,34 @@ jobs:
           node-version: '24.18.0'
           cache: pnpm
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: network-sidecar/go.sum
+
       - run: pnpm install --frozen-lockfile
+
+      - name: Import Developer ID certificate
+        uses: apple-actions/import-codesign-certs@v6
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Build and sign nested network sidecar
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm network-sidecar:macos aarch64-apple-darwin
 
       - name: Build signed arm64 application bundle
         uses: tauri-apps/tauri-action@v1.0.0
         env:
           NODE_OPTIONS: '--max_old_space_size=4096'
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tauriScript: pnpm
-          args: --target aarch64-apple-darwin --bundles app
+          args: --target aarch64-apple-darwin --bundles app --config src-tauri/tauri.networking.macos.conf.json
           includeUpdaterJson: false
 
       - name: Prepare Apple notary API key
@@ -106,13 +121,22 @@ jobs:
 
       - name: Verify application and installer identities
         shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           app='target/aarch64-apple-darwin/release/bundle/macos/KyClash.app'
           packages=(target/aarch64-apple-darwin/release/bundle/pkg/KyClash_*_aarch64.pkg)
           test "${#packages[@]}" -eq 1
           pkg="${packages[0]}"
+          sidecar="$app/Contents/MacOS/kyclash-network-sidecar"
+          trust="$app/Contents/Resources/resources/kyclash-network-sidecar-aarch64-apple-darwin.trust.json"
           codesign --verify --deep --strict --verbose=2 "$app"
+          test -f "$sidecar"
+          test -f "$trust"
+          codesign --verify --strict --verbose=2 "$sidecar"
+          test "$(codesign -d --verbose=4 "$sidecar" 2>&1 | sed -n 's/^TeamIdentifier=//p')" = "$APPLE_TEAM_ID"
+          test "$(shasum -a 256 "$sidecar" | awk '{print $1}')" = "$(node -p "require(process.argv[1]).sha256" "$trust")"
           pkgutil --check-signature "$pkg"
           shasum -a 256 "$pkg" > "$pkg.sha256"
 

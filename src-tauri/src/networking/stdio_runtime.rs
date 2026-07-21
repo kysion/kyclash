@@ -14,7 +14,7 @@ mod unix {
 
     use super::super::{
         IpcRequest, IpcRequestPayload, IpcResponse, NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode, SidecarHandshake,
-        SidecarLaunchContext, SidecarProcessStatus, SidecarRuntime,
+        SidecarLaunchContext, SidecarProcessStatus, SidecarRuntime, SidecarTrustManifest, verify_macos_sidecar,
     };
 
     const MAX_RECORD_SIZE: usize = 64 * 1_024;
@@ -44,6 +44,7 @@ mod unix {
         stdin: Option<ChildStdin>,
         records: Option<Receiver<Result<Vec<u8>, NetworkErrorCode>>>,
         response_timeout: Duration,
+        trust: Option<SidecarTrustManifest>,
     }
 
     impl StdioSidecarRuntime {
@@ -54,6 +55,18 @@ mod unix {
                 stdin: None,
                 records: None,
                 response_timeout: Duration::from_secs(2),
+                trust: None,
+            }
+        }
+
+        pub const fn new_trusted(executable: PathBuf, trust: SidecarTrustManifest) -> Self {
+            Self {
+                executable,
+                child: None,
+                stdin: None,
+                records: None,
+                response_timeout: Duration::from_secs(2),
+                trust: Some(trust),
             }
         }
 
@@ -155,6 +168,9 @@ mod unix {
         fn start_record(&mut self, context: &SidecarLaunchContext) -> Result<Vec<u8>, NetworkErrorCode> {
             if self.child.is_some() || context.private_key().len() != 32 {
                 return Err(NetworkErrorCode::InvalidConfiguration);
+            }
+            if let Some(trust) = &self.trust {
+                verify_macos_sidecar(&self.executable, trust)?;
             }
             let mut child = Command::new(&self.executable)
                 .env_clear()

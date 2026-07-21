@@ -16,6 +16,7 @@ mod production_controller;
 mod production_service;
 mod route;
 mod sidecar;
+mod sidecar_trust;
 mod state;
 mod stdio_runtime;
 
@@ -27,5 +28,5 @@ pub use self::production_controller::*;
 pub use self::production_service::*;
 pub use self::{
     config::*, credentials::*, data_plane::*, diagnostics::*, ipc::*, macos_route::*, mock::*, mock_control::*,
-    operation::*, policy::*, route::*, sidecar::*, state::*, stdio_runtime::*,
+    operation::*, policy::*, route::*, sidecar::*, sidecar_trust::*, state::*, stdio_runtime::*,
 };

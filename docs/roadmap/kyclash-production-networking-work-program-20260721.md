@@ -299,6 +299,21 @@ N2 status: complete. N2A–N2C pass together; the feature remains default-off.
 
 ### N3A — reproducible nested sidecar and launch trust
 
+Status (2026-07-21): implementation complete, signed-run evidence pending. A
+macOS-only builder now produces a thin target-specific Go executable with
+`-trimpath`, no VCS record or Go build ID, signs it as the nested KyClash
+network sidecar, and emits SHA-256, dependency, commit/Go-version provenance,
+and a strict trust manifest. The release workflow imports the Developer ID
+certificate before building the sidecar, supplies an inert networking bundle
+overlay, verifies the nested signature/Team ID/hash, and keeps updater
+activation unchanged. Immediately before process creation, the Rust runtime
+can require the strict manifest and rejects non-regular files, symlinks,
+foreign ownership, writable permissions, non-thin/wrong Mach-O architecture,
+hash mismatch, invalid Team ID, failed strict signature, or failed designated
+requirement. Pure trust tests pass on every platform. This unit remains open
+until the protected macOS runner records the exact signed nested-bundle
+evidence; no release needs to be published for that evidence.
+
 Deliverables:
 
 - Build the arm64 Go sidecar reproducibly with pinned Go and module hashes.
