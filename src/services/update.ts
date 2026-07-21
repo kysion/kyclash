@@ -99,6 +99,84 @@ const compareVersions = (a: string | null, b: string | null): number | null => {
   return compareVersionParts(partsA, partsB)
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+
+const hasExactKeys = (
+  value: Record<string, unknown>,
+  expected: string[],
+): boolean =>
+  Object.keys(value).sort().join('\0') === [...expected].sort().join('\0')
+
+const isOwnedUpdateMetadata = (update: Update): boolean => {
+  const raw = asRecord(update.rawJson)
+  if (
+    !raw ||
+    !hasExactKeys(raw, [
+      'version',
+      'notes',
+      'pub_date',
+      'platforms',
+      'kyclash',
+    ]) ||
+    raw.version !== update.version ||
+    typeof raw.notes !== 'string' ||
+    raw.notes.trim().length === 0 ||
+    typeof raw.pub_date !== 'string' ||
+    !Number.isFinite(Date.parse(raw.pub_date))
+  ) {
+    return false
+  }
+
+  const platforms = asRecord(raw.platforms)
+  const policy = asRecord(raw.kyclash)
+  if (
+    !platforms ||
+    !hasExactKeys(platforms, ['darwin-aarch64-app']) ||
+    !policy ||
+    !hasExactKeys(policy, [
+      'schema_version',
+      'source_commit',
+      'rollback_version',
+      'channel',
+      'sample',
+    ])
+  ) {
+    return false
+  }
+
+  const artifact = asRecord(platforms['darwin-aarch64-app'])
+  const expectedUrl = `https://github.com/kysion/kyclash/releases/download/v${update.version}/KyClash_${update.version}_aarch64.app.tar.gz`
+  const rollbackVersion =
+    typeof policy.rollback_version === 'string'
+      ? ensureSemver(policy.rollback_version)
+      : null
+  const version = ensureSemver(update.version)
+  return Boolean(
+    artifact &&
+      hasExactKeys(artifact, ['url', 'signature', 'sha256', 'size']) &&
+      artifact.url === expectedUrl &&
+      typeof artifact.signature === 'string' &&
+      /^[A-Za-z0-9+/]+={0,2}$/.test(artifact.signature) &&
+      artifact.signature.length % 4 === 0 &&
+      typeof artifact.sha256 === 'string' &&
+      /^[0-9a-f]{64}$/.test(artifact.sha256) &&
+      Number.isSafeInteger(artifact.size) &&
+      Number(artifact.size) > 0 &&
+      policy.schema_version === 1 &&
+      policy.sample === false &&
+      typeof policy.source_commit === 'string' &&
+      /^(?!0{40})[0-9a-f]{40}$/.test(policy.source_commit) &&
+      typeof policy.channel === 'string' &&
+      ['stable', 'candidate', 'internal'].includes(policy.channel) &&
+      rollbackVersion &&
+      version &&
+      compareVersions(rollbackVersion, version) === -1,
+  )
+}
+
 const resolveRemoteVersion = (update: Update): string | null => {
   const primary = ensureSemver(update.version)
   if (primary) return primary
@@ -134,6 +212,16 @@ export const checkUpdateSafe = async (
 
   const result = await check({ ...(options ?? {}), allowDowngrades: false })
   if (!result) return null
+
+  if (!isOwnedUpdateMetadata(result)) {
+    try {
+      await result.close()
+    } catch {
+      // The rejected metadata is intentionally not echoed to logs.
+    }
+    console.warn('[updater] rejected non-KyClash update metadata')
+    return null
+  }
 
   const remoteVersion = resolveRemoteVersion(result)
   const comparison = compareVersions(remoteVersion, localVersionNormalized)

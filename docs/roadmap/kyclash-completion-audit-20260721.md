@@ -65,6 +65,9 @@ public-distribution enhancement rather than a current development blocker.
 - Cached updater bytes are cryptographically verified again immediately before
   installation. Missing public-key configuration, malformed encoding, altered
   cache bytes, or signature mismatch deletes the cache and refuses installation.
+- The frontend manual-check wrapper independently rejects and closes metadata
+  that violates the same KyClash GitHub/platform/source/rollback contract,
+  preventing a future JavaScript capability from bypassing the Rust policy.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
   localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module

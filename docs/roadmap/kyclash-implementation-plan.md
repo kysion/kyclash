@@ -423,6 +423,9 @@ Completed in the current workspace:
   Cached bytes are checked again with the pinned Tauri public key and freshly
   fetched owned signature; missing key or altered bytes delete the cache and
   refuse installation.
+- Applied the owned metadata policy to the frontend manual-check wrapper as
+  well, so future JavaScript updater permissions cannot bypass the Rust silent
+  updater's GitHub, platform, rollback, and strict-field checks.
 
 Remaining:
 

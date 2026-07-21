@@ -80,6 +80,12 @@ installation using the pinned config public key and the freshly fetched owned
 metadata signature. A missing key, malformed base64, altered cache, or signature
 mismatch deletes the cache and fails closed.
 
+The frontend manual-check wrapper applies the same endpoint, platform, version,
+source, channel, rollback, artifact, and strict-field policy before returning an
+update resource to the UI. Rejected resources are closed and their metadata is
+not logged. This prevents a future capability activation from bypassing the Rust
+silent-updater policy through the JavaScript plugin API.
+
 ## CI configuration names
 
 Repository/environment variables (not secrets):
