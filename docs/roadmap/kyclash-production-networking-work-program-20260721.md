@@ -534,9 +534,11 @@ transaction lab: normal cycle, abort-after-apply (exit 134), and journal
 recovery all passed, with no final `192.0.2.0/24` route. The redacted journal
 evidence is retained under the ignored VM evidence directory with SHA-256
 `50bf02a0536344ad46d398c759f2770daea16f1a2638568b769625396f3e657a`.
-The actual SMAppService/XPC round trip, helper restart, and injected helper
-failure tests remain open; the LaunchDaemon registration is enabled but still
-requires the logged-in VM administrator's Login Items approval before launch.
+The signed VM client has now completed `begin/apply/status/rollback` on an
+owned `utun4`, and the exact private route was absent after rollback. A
+subsequent forced helper termination caused launchd to start a new instance
+for the next discover call. Injected helper-failure and the full route
+mutation/restart matrix remain open.
 
 Deliverables:
 
