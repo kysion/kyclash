@@ -157,67 +157,254 @@ private func routeHelperInterface() -> NSXPCInterface {
     return interface
 }
 
-private final class RouteHelperService: NSObject, RouteHelperProtocol {
+private struct JournalOwner: Codable, Equatable {
+    let leaseID: String
+    let operationID: String
+    let sidecarInstanceID: String
+    let interfaceName: String
+    let tunnelOperationID: String
+    let mtu: UInt16
+    let profileRevision: UInt64
+    let privateCIDRs: [String]
+
+    init(_ owner: LeaseOwner) {
+        leaseID = owner.reference.leaseID
+        operationID = owner.reference.operationID
+        sidecarInstanceID = owner.sidecarInstanceID
+        interfaceName = owner.interfaceName
+        tunnelOperationID = owner.tunnelOperationID
+        mtu = owner.mtu
+        profileRevision = owner.profileRevision
+        privateCIDRs = owner.privateCIDRs
+    }
+}
+
+private struct RouteJournal: Codable {
+    let version: UInt8
+    var owner: JournalOwner
+    var pendingCIDR: String?
+    var appliedCIDRs: [String]
+}
+
+private protocol RouteExecuting {
+    func mutate(action: String, cidr: String, interfaceName: String) -> Bool
+}
+
+private struct SystemRouteExecutor: RouteExecuting {
+    func mutate(action: String, cidr: String, interfaceName: String) -> Bool {
+        guard action == "add" || action == "delete", validCIDR(cidr), validInterface(interfaceName) else { return false }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/sbin/route")
+        var arguments = ["-n", action]
+        if cidr.contains(":") { arguments.append("-inet6") }
+        arguments += ["-net", cidr, "-interface", interfaceName]
+        task.arguments = arguments
+        task.standardInput = FileHandle.nullDevice
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        do { try task.run(); task.waitUntilExit() } catch { return false }
+        return task.terminationStatus == 0
+    }
+}
+
+private final class RouteCoordinator {
+    static let shared = RouteCoordinator()
     private let lock = NSLock()
-    private var owner: LeaseOwner?
+    private let executor: RouteExecuting
+    private let journalURL: URL
+    private var journal: RouteJournal?
+    private var heartbeatDeadline = Date.distantPast
+    private var timer: DispatchSourceTimer?
 
-    func discover(reply: @escaping (HelperReply) -> Void) { reply(HelperReply(state: "idle")) }
+    init(executor: RouteExecuting = SystemRouteExecutor(), journalURL: URL = URL(fileURLWithPath: "/Library/Application Support/KyClash/route-lease-v1.plist")) {
+        self.executor = executor
+        self.journalURL = journalURL
+        journal = loadJournal()
+        if journal != nil { _ = rollbackLocked() }
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in self?.expireLease() }
+        timer.resume()
+        self.timer = timer
+    }
 
-    func begin(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard owner.isValid(), self.owner == nil else {
-            reply(HelperReply(state: "failed_closed", errorCode: "invalid_owner")); return
+    func discover() -> HelperReply {
+        lock.withLock { journal == nil ? HelperReply(state: "idle") : HelperReply(state: "failed_closed", errorCode: "recovery_required") }
+    }
+
+    func begin(_ owner: LeaseOwner) -> HelperReply {
+        lock.withLock {
+            guard owner.isValid(), journal == nil else { return HelperReply(state: "failed_closed", errorCode: "invalid_owner") }
+            let candidate = RouteJournal(version: 1, owner: JournalOwner(owner), pendingCIDR: nil, appliedCIDRs: [])
+            guard persist(candidate) else { return HelperReply(state: "failed_closed", errorCode: "journal_write_failed") }
+            journal = candidate
+            heartbeatDeadline = Date().addingTimeInterval(15)
+            return HelperReply(state: "prepared")
         }
-        self.owner = owner
-        reply(HelperReply(state: "prepared", errorCode: "not_ready"))
     }
 
-    func apply(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-        reply(valid(reference) ? HelperReply(state: "prepared", errorCode: "not_ready") : invalidReply())
+    func apply(_ reference: LeaseReference) -> HelperReply {
+        lock.withLock {
+            guard valid(reference), var current = journal else { return ownershipFailure() }
+            for cidr in current.owner.privateCIDRs where !current.appliedCIDRs.contains(cidr) {
+                current.pendingCIDR = cidr
+                guard persist(current) else { _ = rollbackLocked(); return HelperReply(state: "failed_closed", errorCode: "journal_write_failed") }
+                journal = current
+                guard executor.mutate(action: "add", cidr: cidr, interfaceName: current.owner.interfaceName) else {
+                    current.pendingCIDR = nil
+                    journal = current
+                    _ = persist(current)
+                    _ = rollbackLocked(); return HelperReply(state: "failed_closed", errorCode: "route_apply_failed")
+                }
+                current.appliedCIDRs.append(cidr)
+                current.pendingCIDR = nil
+                guard persist(current) else { journal = current; _ = rollbackLocked(); return HelperReply(state: "failed_closed", errorCode: "journal_write_failed") }
+                journal = current
+            }
+            return HelperReply(state: "applied")
+        }
     }
 
-    func rollback(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard valid(reference) else { reply(invalidReply()); return }
-        owner = nil
-        reply(HelperReply(state: "idle"))
+    func rollback(_ reference: LeaseReference) -> HelperReply {
+        lock.withLock {
+            guard valid(reference) else { return ownershipFailure() }
+            return rollbackLocked() ? HelperReply(state: "idle") : HelperReply(state: "failed_closed", errorCode: "rollback_failed")
+        }
     }
 
-    func recover(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-        reply(HelperReply(state: "failed_closed", errorCode: owner.isValid() ? "not_ready" : "invalid_owner"))
+    func recover(_ owner: LeaseOwner) -> HelperReply {
+        lock.withLock {
+            guard owner.isValid(), journal?.owner == JournalOwner(owner) else { return HelperReply(state: "failed_closed", errorCode: "ownership_mismatch") }
+            heartbeatDeadline = Date().addingTimeInterval(15)
+            return HelperReply(state: journal?.appliedCIDRs.count == journal?.owner.privateCIDRs.count ? "applied" : "prepared")
+        }
     }
 
-    func heartbeat(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-        reply(valid(reference) ? HelperReply(state: "prepared") : invalidReply())
+    func heartbeat(_ reference: LeaseReference) -> HelperReply {
+        lock.withLock {
+            guard valid(reference) else { return ownershipFailure() }
+            heartbeatDeadline = Date().addingTimeInterval(15)
+            return statusLocked()
+        }
     }
 
-    func status(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-        reply(valid(reference) ? HelperReply(state: "prepared") : invalidReply())
+    func status(_ reference: LeaseReference) -> HelperReply {
+        lock.withLock { valid(reference) ? statusLocked() : ownershipFailure() }
     }
 
-    func invalidateConnection() {
-        lock.lock()
-        owner = nil
-        lock.unlock()
+    func invalidate(_ reference: LeaseReference?) {
+        lock.withLock {
+            guard let reference, valid(reference) else { return }
+            _ = rollbackLocked()
+        }
+    }
+
+    private func statusLocked() -> HelperReply {
+        guard let journal else { return HelperReply(state: "idle") }
+        return HelperReply(state: journal.appliedCIDRs.count == journal.owner.privateCIDRs.count ? "applied" : "prepared")
     }
 
     private func valid(_ reference: LeaseReference) -> Bool {
-        reference.isValid() && reference.leaseID == owner?.reference.leaseID
-            && reference.operationID == owner?.reference.operationID
+        reference.isValid() && reference.leaseID == journal?.owner.leaseID && reference.operationID == journal?.owner.operationID
     }
 
-    private func invalidReply() -> HelperReply {
-        HelperReply(state: "failed_closed", errorCode: "ownership_mismatch")
+    private func ownershipFailure() -> HelperReply { HelperReply(state: "failed_closed", errorCode: "ownership_mismatch") }
+
+    private func expireLease() {
+        lock.withLock { if journal != nil && Date() > heartbeatDeadline { _ = rollbackLocked() } }
+    }
+
+    private func rollbackLocked() -> Bool {
+        guard var current = journal else { return true }
+        var succeeded = true
+        var owned = current.appliedCIDRs
+        if let pending = current.pendingCIDR, !owned.contains(pending) { owned.append(pending) }
+        for cidr in owned.reversed() {
+            current.pendingCIDR = cidr
+            if !persist(current) { succeeded = false; continue }
+            if executor.mutate(action: "delete", cidr: cidr, interfaceName: current.owner.interfaceName) {
+                current.appliedCIDRs.removeAll { $0 == cidr }
+                current.pendingCIDR = nil
+                journal = current
+                if !persist(current) { succeeded = false }
+            } else { succeeded = false }
+        }
+        if succeeded {
+            journal = nil
+            heartbeatDeadline = .distantPast
+            do {
+                try FileManager.default.removeItem(at: journalURL)
+            } catch {
+                if (error as NSError).code != NSFileNoSuchFileError { return false }
+            }
+        } else { journal = current }
+        return succeeded
+    }
+
+    private func loadJournal() -> RouteJournal? {
+        guard let data = try? Data(contentsOf: journalURL), let decoded = try? PropertyListDecoder().decode(RouteJournal.self, from: data), decoded.version == 1 else { return nil }
+        return decoded
+    }
+
+    private func persist(_ value: RouteJournal) -> Bool {
+        let directory = journalURL.deletingLastPathComponent()
+        do {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory) {
+                guard isDirectory.boolValue, (try directory.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { return false }
+            } else {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            }
+            let data = try PropertyListEncoder().encode(value)
+            try data.write(to: journalURL, options: [.atomic])
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalURL.path)
+            return true
+        } catch { return false }
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () -> T) -> T { lock(); defer { unlock() }; return body() }
+}
+
+private final class RouteHelperService: NSObject, RouteHelperProtocol {
+    private var reference: LeaseReference?
+
+    func discover(reply: @escaping (HelperReply) -> Void) { reply(RouteCoordinator.shared.discover()) }
+
+    func begin(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
+        let result = RouteCoordinator.shared.begin(owner)
+        if result.state == "prepared" { reference = owner.reference }
+        reply(result)
+    }
+
+    func apply(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
+        reply(RouteCoordinator.shared.apply(reference))
+    }
+
+    func rollback(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
+        let result = RouteCoordinator.shared.rollback(reference)
+        if result.state == "idle" { self.reference = nil }
+        reply(result)
+    }
+
+    func recover(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
+        let result = RouteCoordinator.shared.recover(owner)
+        if result.errorCode == nil { reference = owner.reference }
+        reply(result)
+    }
+
+    func heartbeat(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
+        reply(RouteCoordinator.shared.heartbeat(reference))
+    }
+
+    func status(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
+        reply(RouteCoordinator.shared.status(reference))
+    }
+
+    func invalidateConnection() {
+        RouteCoordinator.shared.invalidate(reference)
+        reference = nil
     }
 }
 
@@ -250,6 +437,11 @@ private func validCIDR(_ value: String) -> Bool {
     let address = String(pieces[0])
     if inet_pton(AF_INET, address, &bytes4) == 1 { return prefix <= 32 && address != "0.0.0.0" }
     return inet_pton(AF_INET6, address, &bytes6) == 1 && prefix <= 128 && address != "::"
+}
+
+private func validInterface(_ value: String) -> Bool {
+    let suffix = value.hasPrefix("utun") ? value.dropFirst(4) : ""
+    return !suffix.isEmpty && suffix.allSatisfy(\.isNumber)
 }
 
 @main

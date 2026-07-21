@@ -465,7 +465,8 @@ bounded canonical private CIDRs, replay mismatch refusal, and no generic
 command/path/environment fields. A macOS 13 Swift LaunchDaemon now implements
 the fixed typed NSSecureCoding method surface, rejects root/unsigned or
 wrong-team app connections through the locked code requirement, owns at most
-one lease per XPC connection, and keeps mutation fail-closed as `not_ready`.
+one lease per XPC connection, and delegates mutations to a fixed journaled
+coordinator.
 Its strict plist, arm64 compile, nested signing builder, Tauri bundle placement,
 and CI checks are implemented. Every typed request and reply position now has
 an explicit NSXPC class allowlist, including the nested owner/reference and
@@ -509,8 +510,10 @@ accepted policy revision to the route boundary only after the encrypted health
 gate. The XPC production boundary constructs the exact owner tuple, begins one
 lease, requires an exact prepared reply, applies only that reference, and
 rolls it back on any embedded error, unexpected state, disconnect, or drop.
-The helper still deliberately returns `not_ready`; journaled route discovery,
-mutation, lease expiry, and restart recovery remain to be linked in the daemon.
+The helper now persists a private journal before each fixed `/sbin/route`
+mutation, tracks pending/applied CIDRs, expires leases after bounded heartbeat
+silence, and rolls back on XPC invalidation. VM mutation/restart evidence and
+injected helper failure tests remain open.
 
 Deliverables:
 
