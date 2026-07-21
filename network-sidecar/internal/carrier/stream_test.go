@@ -75,6 +75,28 @@ func TestReceiveCancellationUnblocksAndConnectionRemainsUsable(t *testing.T) {
 	}
 }
 
+func TestSendCancellationUnblocksBlockedStreamWrite(t *testing.T) {
+	leftConnection, rightConnection := net.Pipe()
+	left := NewStream(leftConnection)
+	defer left.Close()
+	defer rightConnection.Close()
+
+	// net.Pipe has no buffering.  With no reader on the other side the write
+	// must remain blocked until the operation deadline; this exercises the
+	// same cancellation path used by the WSS and TLS/TCP carriers.
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := left.Send(ctx, []byte("blocked"))
+	var networkError net.Error
+	if !errors.Is(err, context.DeadlineExceeded) && (!errors.As(err, &networkError) || !networkError.Timeout()) {
+		t.Fatalf("expected write deadline, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("blocked write was not bounded: %v", elapsed)
+	}
+}
+
 func TestReceiveRejectsReplayAndControlFrames(t *testing.T) {
 	for _, test := range []struct {
 		name   string

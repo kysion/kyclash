@@ -96,6 +96,44 @@ func TestBackendPreparesConnectsAndReconnectsExplicitCarriers(t *testing.T) {
 	}
 }
 
+func TestBackendConvergesAfterRepeatedReconnectCycles(t *testing.T) {
+	backend, err := New(make([]byte, 32), nil, "instance.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.dialer = func(_ context.Context, _ profile.Transport, _ profile.NormalizedEndpoint) (carrier.Carrier, error) {
+		return newMemoryCarrier(), nil
+	}
+	networkProfile := testProfile(t)
+	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := networkProfile.Endpoint(profile.TCP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for cycle := 0; cycle < 12; cycle++ {
+		if err := backend.Connect(context.Background(), profile.TCP, endpoint); err != nil {
+			t.Fatalf("cycle %d connect: %v", cycle, err)
+		}
+		if backend.active != profile.TCP {
+			t.Fatalf("cycle %d did not record active transport", cycle)
+		}
+		if err := backend.Disconnect(context.Background()); err != nil {
+			t.Fatalf("cycle %d disconnect: %v", cycle, err)
+		}
+		if backend.active != "" || backend.operationCancel != nil {
+			t.Fatalf("cycle %d left carrier state attached: active=%q cancel=%v", cycle, backend.active, backend.operationCancel != nil)
+		}
+	}
+	if err := backend.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBackendDialFailureDoesNotAttachCarrier(t *testing.T) {
 	backend, err := New(make([]byte, 32), nil, "instance.test")
 	if err != nil {

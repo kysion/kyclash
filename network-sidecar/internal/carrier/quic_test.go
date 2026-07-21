@@ -125,6 +125,106 @@ func TestQUICCarrierRejectsWrongIdentity(t *testing.T) {
 	}
 }
 
+func TestQUICReceiveCancellationIsBounded(t *testing.T) {
+	certificate, roots := testCertificate(t, "127.0.0.1")
+	listener, err := quicgo.ListenAddr("127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{quicALPN},
+	}, &quicgo.Config{EnableDatagrams: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan *quicgo.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		connection, err := listener.Accept(context.Background())
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- connection
+	}()
+
+	client, err := DialQUIC(context.Background(), QUICConfig{
+		Address:    listener.Addr().String(),
+		ServerName: "127.0.0.1",
+		RootCAs:    roots,
+		Timeout:    time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var serverConnection *quicgo.Conn
+	select {
+	case serverConnection = <-accepted:
+		defer serverConnection.CloseWithError(0, "")
+	case err := <-acceptErr:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("QUIC server did not accept the authenticated connection")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = client.Receive(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected receive deadline, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("receive cancellation was not bounded: %v", elapsed)
+	}
+}
+
+func TestQUICAbruptPeerCloseUnblocksReceive(t *testing.T) {
+	certificate, roots := testCertificate(t, "127.0.0.1")
+	listener, err := quicgo.ListenAddr("127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{quicALPN},
+	}, &quicgo.Config{EnableDatagrams: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan *quicgo.Conn, 1)
+	go func() {
+		connection, err := listener.Accept(context.Background())
+		if err != nil {
+			return
+		}
+		accepted <- connection
+	}()
+
+	client, err := DialQUIC(context.Background(), QUICConfig{
+		Address:    listener.Addr().String(),
+		ServerName: "127.0.0.1",
+		RootCAs:    roots,
+		Timeout:    time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	select {
+	case serverConnection := <-accepted:
+		if err := serverConnection.CloseWithError(42, "lab abort"); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("QUIC server did not accept the authenticated connection")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := client.Receive(ctx); err == nil {
+		t.Fatal("expected abrupt peer close to fail receive")
+	}
+}
+
 func TestQUICConfigAndPacketBoundsFailClosed(t *testing.T) {
 	for _, config := range []QUICConfig{
 		{},

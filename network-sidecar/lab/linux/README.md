@@ -49,3 +49,23 @@ when UDP is blocked while authenticated WSS/TCP remain usable, and a sustained
 10-second fragmented-QUIC benchmark. It does not yet prove the controller's
 automatic fallback because the production sidecar command boundary remains
 deliberately disabled pending macOS system gates.
+
+## Loopback reliability soak
+
+For a longer deterministic run, use the repository-owned in-process peers. This
+does not require root and never touches routes, DNS, credentials, or external
+endpoints:
+
+```bash
+KYCLASH_SOAK_ROUNDS=30 \
+  KYCLASH_SOAK_OUTPUT=build/reliability-soak \
+  bash lab/linux/reliability-soak.sh
+```
+
+Each round runs the authenticated carrier, userspace WireGuard, deterministic
+impairment, replay/size-boundary, cancellation, and reconnect tests. The script
+stops on the first failure and retains one log per round plus a summary. The
+default of ten rounds is intentionally bounded for a disposable VM; increase
+the round count only for an explicitly scheduled/manual soak. This evidence
+does not close macOS sleep/wake, physical network switching, or a production
+endpoint matrix.
