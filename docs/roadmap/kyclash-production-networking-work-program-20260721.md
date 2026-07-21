@@ -516,8 +516,11 @@ The helper now persists a private journal before each fixed `/sbin/route`
 mutation, tracks pending/applied CIDRs, expires leases after bounded heartbeat
 silence, and rolls back on XPC invalidation. VM mutation/restart evidence and
 rejects destinations returned by the fixed read-only `route -n get` lookup,
-while explicitly allowing the ordinary default underlay route, before writing
-the first mutation. VM mutation/restart evidence and
+while explicitly allowing the ordinary default underlay route and an absent
+IPv6 table, before writing the first mutation. A read-only VM probe confirmed
+macOS reports an uninstalled private IPv4 route as `destination: default` and
+an absent IPv6 route as `not in table`; both now pass the availability guard.
+VM mutation/restart evidence and
 injected helper failure tests remain open.
 
 Deliverables:
