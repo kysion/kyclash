@@ -135,6 +135,28 @@ protocol RouteHelperProtocol {
     func status(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void)
 }
 
+private func routeHelperInterface() -> NSXPCInterface {
+    let interface = NSXPCInterface(with: RouteHelperProtocol.self)
+    let replyClasses = NSSet(objects: HelperReply.self) as! Set<AnyHashable>
+    let ownerClasses = NSSet(objects: LeaseOwner.self, LeaseReference.self, NSArray.self, NSString.self) as! Set<AnyHashable>
+    let referenceClasses = NSSet(objects: LeaseReference.self, NSString.self) as! Set<AnyHashable>
+
+    interface.setClasses(replyClasses, for: #selector(RouteHelperProtocol.discover(reply:)), argumentIndex: 0, ofReply: true)
+    interface.setClasses(ownerClasses, for: #selector(RouteHelperProtocol.begin(_:reply:)), argumentIndex: 0, ofReply: false)
+    interface.setClasses(replyClasses, for: #selector(RouteHelperProtocol.begin(_:reply:)), argumentIndex: 0, ofReply: true)
+    interface.setClasses(referenceClasses, for: #selector(RouteHelperProtocol.apply(_:reply:)), argumentIndex: 0, ofReply: false)
+    interface.setClasses(replyClasses, for: #selector(RouteHelperProtocol.apply(_:reply:)), argumentIndex: 0, ofReply: true)
+    interface.setClasses(referenceClasses, for: #selector(RouteHelperProtocol.rollback(_:reply:)), argumentIndex: 0, ofReply: false)
+    interface.setClasses(replyClasses, for: #selector(RouteHelperProtocol.rollback(_:reply:)), argumentIndex: 0, ofReply: true)
+    interface.setClasses(ownerClasses, for: #selector(RouteHelperProtocol.recover(_:reply:)), argumentIndex: 0, ofReply: false)
+    interface.setClasses(replyClasses, for: #selector(RouteHelperProtocol.recover(_:reply:)), argumentIndex: 0, ofReply: true)
+    interface.setClasses(referenceClasses, for: #selector(RouteHelperProtocol.heartbeat(_:reply:)), argumentIndex: 0, ofReply: false)
+    interface.setClasses(replyClasses, for: #selector(RouteHelperProtocol.heartbeat(_:reply:)), argumentIndex: 0, ofReply: true)
+    interface.setClasses(referenceClasses, for: #selector(RouteHelperProtocol.status(_:reply:)), argumentIndex: 0, ofReply: false)
+    interface.setClasses(replyClasses, for: #selector(RouteHelperProtocol.status(_:reply:)), argumentIndex: 0, ofReply: true)
+    return interface
+}
+
 private final class RouteHelperService: NSObject, RouteHelperProtocol {
     private var owner: LeaseOwner?
 
@@ -184,7 +206,7 @@ private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
         guard connection.effectiveUserIdentifier != 0 else { return false }
         connection.setCodeSigningRequirement(appRequirement)
-        connection.exportedInterface = NSXPCInterface(with: RouteHelperProtocol.self)
+        connection.exportedInterface = routeHelperInterface()
         connection.exportedObject = RouteHelperService()
         connection.resume()
         return true

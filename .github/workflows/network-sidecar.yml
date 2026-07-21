@@ -73,7 +73,7 @@ jobs:
           manifest='src-tauri/resources/kyclash-network-sidecar-aarch64-apple-darwin.trust.json'
           codesign --verify --strict --verbose=2 "$binary"
           test "$(codesign -d --verbose=4 "$binary" 2>&1 | sed -n 's/^TeamIdentifier=//p')" = "$APPLE_TEAM_ID"
-          test "$(shasum -a 256 "$binary" | awk '{print $1}')" = "$(node -p "require(process.argv[1]).sha256" "$manifest")"
+          test "$(shasum -a 256 "$binary" | awk '{print $1}')" = "$(node -p "require(require('path').resolve(process.argv[1])).sha256" "$manifest")"
           file "$binary" | grep -F 'arm64'
 
       - name: Build and verify signed route helper
@@ -84,9 +84,10 @@ jobs:
         run: |
           set -euo pipefail
           pnpm route-helper:macos
-          binary='src-tauri/resources/kyclash-route-helper'
+          binary='src-tauri/helpers/kyclash-route-helper'
           codesign --verify --strict --verbose=2 "$binary"
           test "$(codesign -d --verbose=4 "$binary" 2>&1 | sed -n 's/^TeamIdentifier=//p')" = "$APPLE_TEAM_ID"
+          codesign --verify --strict --verbose=2 -R='identifier "net.kysion.kyclash.route-helper" and anchor apple generic and certificate leaf[subject.OU] = "RQUQ8Y3S9H"' "$binary"
           file "$binary" | grep -F 'arm64'
 
       - uses: actions/upload-artifact@v4
@@ -97,7 +98,7 @@ jobs:
             src-tauri/sidecar/kyclash-network-sidecar-aarch64-apple-darwin
             src-tauri/resources/kyclash-network-sidecar-aarch64-apple-darwin.trust.json
             network-sidecar/build/aarch64-apple-darwin/
-            src-tauri/resources/kyclash-route-helper
+            src-tauri/helpers/kyclash-route-helper
           if-no-files-found: error
           retention-days: 14
 
@@ -187,6 +188,7 @@ jobs:
         working-directory: .
         run: |
           plutil -lint macos/route-helper/net.kysion.kyclash.route-helper.plist
+          test "$(grep -c 'interface.setClasses' macos/route-helper/main.swift)" -eq 13
           xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
             -framework Foundation -o "${RUNNER_TEMP}/kyclash-route-helper" \
             macos/route-helper/main.swift
