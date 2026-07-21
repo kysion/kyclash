@@ -1,6 +1,6 @@
 ---
 name: kyclash-continuous-delivery
-description: Review, lock, implement, verify, commit, and push the KyClash roadmap continuously in the KyClash repository. Use whenever work under the KyClash workspace concerns architecture, networking, sidecars, routes, WireGuard, QUIC/WSS fallback, UI, packaging, releases, branding, tests, documentation, or requests to continue/finish the next batch without repeated prompting.
+description: Review, lock, implement, verify, commit, and push the KyClash roadmap continuously without stopping at partial milestones. Use whenever work under the KyClash workspace concerns architecture, networking, sidecars, routes, WireGuard, QUIC/WSS fallback, UI, packaging, releases, branding, tests, documentation, requests to continue/finish/all-complete, or any active roadmap whose safe tasks must proceed without repeated prompting.
 ---
 
 # KyClash Continuous Delivery
@@ -50,6 +50,52 @@ After the user authorizes execution through all stages:
   every safe action in this file. Do not wait for another “next step” between
   batches; keep advancing until all safe gates are complete or a defined
   authorization boundary is the only remaining work.
+
+## Enforce terminal conditions
+
+Treat continuous execution as a terminal-condition loop, not as a request to
+finish one convenient batch:
+
+```text
+load first incomplete exit criterion
+review/lock if required
+implement
+verify
+commit and push the completed reviewable unit
+update the roadmap
+immediately load the next incomplete criterion
+repeat
+```
+
+A passed test, commit, push, milestone, batch, status explanation, token cost,
+elapsed time, or a clean worktree is not a terminal condition. Do not send a
+final response merely because one of these occurred. Use commentary for
+progress and continue making tool calls.
+
+Before every final response during an authorized execution run, perform this
+stop audit:
+
+1. Read the authoritative roadmap and identify its first incomplete criterion.
+2. Check whether every remaining safe criterion is complete.
+3. If safe work remains, do not finalize; continue with that criterion.
+4. If an external boundary blocks one criterion, continue every independent
+   source, mock, test, documentation, build, CI, and isolated-VM criterion that
+   does not require crossing that boundary.
+5. Finalize only when all authorized criteria are complete, or when the only
+   remaining work requires a specific credential, external-state change, or
+   authorization that is not already granted.
+
+Do not label design work, a failing test, an implementation defect, or a need
+for another review amendment as a blocker. Resolve it locally and continue.
+Do not downgrade a user's “finish all” instruction into “finish the next
+merge unit.” If the user asks for status while execution is active, answer in
+commentary and resume execution in the same turn.
+
+If execution is forcibly interrupted by the environment rather than reaching a
+terminal condition, leave the roadmap truthful, keep completed commits pushed,
+record the exact active criterion as `in progress`, and state explicitly that
+the program is not complete. Never describe that interruption as task
+completion.
 
 ## Authorization boundary
 
@@ -115,3 +161,7 @@ release procedure.
 
 At each handoff, report completed commits, validation evidence, remaining hard
 blockers, and the exact next incomplete roadmap criterion.
+
+The handoff rule does not authorize a voluntary handoff while safe roadmap work
+remains. It applies only at an actual terminal condition or an unavoidable
+environment interruption.

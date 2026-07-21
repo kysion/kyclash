@@ -1,4 +1,4 @@
 interface:
   display_name: "KyClash Continuous Delivery"
-  short_description: "Review, lock, and continuously execute KyClash iterations"
-  default_prompt: "Use $kyclash-continuous-delivery to continue the locked KyClash roadmap through its next verified milestone."
+  short_description: "Continuously complete the authorized KyClash roadmap"
+  default_prompt: "Use $kyclash-continuous-delivery to execute the authorized KyClash roadmap continuously until all safe work is complete or only a genuine external boundary remains."
