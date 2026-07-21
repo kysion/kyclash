@@ -231,6 +231,83 @@ func TestBackendFailureNeverAdvancesSessionState(t *testing.T) {
 	}
 }
 
+func TestBackendFailureReasonCodeIsStableAndStateRemainsBounded(t *testing.T) {
+	profileData, err := os.ReadFile("../../../schemas/fixtures/network-v1.valid.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestFor := func(payloadType string, data json.RawMessage) Request {
+		return Request{ProtocolVersion: 1, RequestID: "request." + payloadType, Payload: Payload{Type: payloadType, Data: data}}
+	}
+	assertFailure := func(t *testing.T, current *session, request Request, before Status) {
+		t.Helper()
+		sameOptional := func(left, right *string) bool {
+			if left == nil || right == nil {
+				return left == nil && right == nil
+			}
+			return *left == *right
+		}
+		response, stop := current.handle(request)
+		failure, ok := response.Result["Err"].(Error)
+		if stop || !ok || failure.Code != "sidecar_unavailable" || !failure.Retryable {
+			t.Fatalf("unexpected stable backend failure: stop=%v response=%#v", stop, response)
+		}
+		after := current.status()
+		if after.State != before.State || !sameOptional(after.ActiveProfileID, before.ActiveProfileID) || !sameOptional(after.ActiveTransport, before.ActiveTransport) {
+			t.Fatalf("backend failure advanced state: before=%#v after=%#v", before, after)
+		}
+		if after.LastError == nil || *after.LastError != "sidecar_unavailable" {
+			t.Fatalf("backend failure did not retain stable status reason: %#v", after)
+		}
+	}
+
+	t.Run("prepare", func(t *testing.T) {
+		backend := &faultBackend{fail: "prepare"}
+		current := newSessionWithBackend(backend)
+		current.handle(requestFor("apply_profile", profileData))
+		before := current.status()
+		assertFailure(t, current, requestFor("prepare_tunnel", nil), before)
+	})
+
+	t.Run("connect", func(t *testing.T) {
+		backend := &faultBackend{fail: "connect"}
+		current := newSessionWithBackend(backend)
+		current.handle(requestFor("apply_profile", profileData))
+		current.handle(requestFor("prepare_tunnel", nil))
+		before := current.status()
+		assertFailure(t, current, requestFor("connect_transport", json.RawMessage(`{"transport":"quic"}`)), before)
+	})
+
+	for _, phase := range []string{"health", "disconnect", "stop"} {
+		t.Run(phase, func(t *testing.T) {
+			backend := &faultBackend{}
+			current := newSessionWithBackend(backend)
+			current.handle(requestFor("apply_profile", profileData))
+			current.handle(requestFor("prepare_tunnel", nil))
+			current.handle(requestFor("connect_transport", json.RawMessage(`{"transport":"quic"}`)))
+			if phase == "health" {
+				backend.fail = "health"
+				before := current.status()
+				assertFailure(t, current, requestFor("sample_health", nil), before)
+				return
+			}
+			if phase == "disconnect" {
+				backend.fail = "disconnect"
+				before := current.status()
+				assertFailure(t, current, requestFor("disconnect_transport", nil), before)
+				return
+			}
+			if _, stop := current.handle(requestFor("disconnect_transport", nil)); stop {
+				t.Fatal("transport disconnect unexpectedly stopped session")
+			}
+			backend.fail = "stop"
+			before := current.status()
+			assertFailure(t, current, requestFor("stop_tunnel", nil), before)
+		})
+	}
+}
+
 func TestHealthMatchesSharedFixture(t *testing.T) {
 	current := newSessionWithBackend(&faultBackend{})
 	current.tunnelPrepared = true

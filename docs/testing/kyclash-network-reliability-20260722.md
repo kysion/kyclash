@@ -21,6 +21,8 @@ easy to miss in a short happy-path run:
   cycles without leaving an active carrier or operation cancellation handle.
 - A live loopback lab cluster carries health probes through QUIC, then WSS,
   then TLS/TCP with an explicit disconnect before each next carrier.
+- Injected prepare/connect/health/disconnect/stop failures retain the stable
+  `sidecar_unavailable` reason and do not advance the IPC session state.
 - Existing deterministic loss, stepped jitter, rate limiting, duplication,
   pair reordering, UDP refusal, TLS identity refusal, replay, fragment expiry,
   packet-size bounds, IPC cancellation, and Rust break-before-make tests remain
@@ -60,6 +62,13 @@ and three times under the race detector:
 ```bash
 go test -race -count=3 -timeout=180s \
   ./internal/labserver -run TestClusterCarriesBreakBeforeMakeAcrossAllCarriers
+```
+
+The IPC reason/state matrix passed five normal and five race-enabled repeats:
+
+```bash
+go test -race -count=5 -timeout=180s \
+  ./internal/ipc -run TestBackendFailureReasonCodeIsStableAndStateRemainsBounded
 ```
 
 The Linux `tc netem`/nftables harness was inspected in non-mutating mode on the
