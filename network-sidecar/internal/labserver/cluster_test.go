@@ -53,3 +53,50 @@ func TestClusterCarriesBackendHealthProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestClusterCarriesBreakBeforeMakeAcrossAllCarriers(t *testing.T) {
+	clientPrivate, clientPublic, err := keyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster, err := StartCluster(context.Background(), clientPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cluster.Close()
+	backend, err := userspace.NewLab(clientPrivate, cluster.Roots(), netip.MustParseAddrPort(ProbeAddress), "instance.cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	networkProfile := &profile.Profile{
+		Site:   profile.Site{PrivateCIDRs: []string{"10.88.0.2/32"}},
+		Tunnel: profile.Tunnel{LocalAddresses: []string{"10.88.0.1/32"}, PeerPublicKey: cluster.PeerPublicKey(), KeepaliveSeconds: 5},
+	}
+	endpoints := cluster.Endpoints()
+	networkProfile.Transports.Endpoints = endpoints
+	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
+		endpoint, err := networkProfile.Endpoint(transport)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.Connect(ctx, transport, endpoint); err != nil {
+			t.Fatalf("%s connect: %v", transport, err)
+		}
+		health, err := backend.Health(ctx)
+		if err != nil || !health.Reachable {
+			t.Fatalf("%s health: %#v %v", transport, health, err)
+		}
+		if err := backend.Disconnect(ctx); err != nil {
+			t.Fatalf("%s disconnect: %v", transport, err)
+		}
+	}
+	if err := backend.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

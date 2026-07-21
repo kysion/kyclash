@@ -19,6 +19,8 @@ easy to miss in a short happy-path run:
   than hanging.
 - A prepared userspace backend completes twelve explicit connect/disconnect
   cycles without leaving an active carrier or operation cancellation handle.
+- A live loopback lab cluster carries health probes through QUIC, then WSS,
+  then TLS/TCP with an explicit disconnect before each next carrier.
 - Existing deterministic loss, stepped jitter, rate limiting, duplication,
   pair reordering, UDP refusal, TLS identity refusal, replay, fragment expiry,
   packet-size bounds, IPC cancellation, and Rust break-before-make tests remain
@@ -50,6 +52,14 @@ The focused cancellation/reconnect run also passed under the race detector:
 ```bash
 go test -race -count=3 -timeout=180s \
   ./internal/carrier ./internal/userspace
+```
+
+The real userspace cluster break-before-make test passed three times normally
+and three times under the race detector:
+
+```bash
+go test -race -count=3 -timeout=180s \
+  ./internal/labserver -run TestClusterCarriesBreakBeforeMakeAcrossAllCarriers
 ```
 
 The Linux `tc netem`/nftables harness was inspected in non-mutating mode on the
