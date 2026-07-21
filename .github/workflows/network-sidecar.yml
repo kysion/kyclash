@@ -244,13 +244,33 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          plutil -lint macos/route-helper/net.kysion.kyclash.route-helper.plist
           plist='macos/route-helper/net.kysion.kyclash.route-helper.plist'
-          test "$(plutil -extract Label raw -o - "$plist")" = 'net.kysion.kyclash.route-helper'
-          test "$(plutil -extract BundleProgram raw -o - "$plist")" = 'Contents/Resources/kyclash-route-helper'
-          test "$(plutil -p "$plist" | grep -F '"net.kysion.kyclash.route-helper" => true' | wc -l | tr -d ' ')" = '1'
-          ! plutil -extract ProgramArguments raw -o - "$plist" >/dev/null 2>&1
-          ! plutil -extract EnvironmentVariables raw -o - "$plist" >/dev/null 2>&1
+          plutil -lint "$plist"
+          # PlistBuddy reads the typed MachServices boolean without relying on
+          # the human-readable `plutil -p` formatting, which differs between
+          # macOS runner images. Keep each assertion diagnostic and strict.
+          plist_value() {
+            local key="$1"
+            local expected="$2"
+            local actual
+            actual="$(/usr/libexec/PlistBuddy -c "Print :${key}" "$plist" 2>/dev/null || true)"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::route-helper plist ${key}: expected '${expected}', got '${actual}'"
+              exit 1
+            fi
+          }
+          plist_absent() {
+            local key="$1"
+            if /usr/libexec/PlistBuddy -c "Print :${key}" "$plist" >/dev/null 2>&1; then
+              echo "::error::route-helper plist must not define ${key}"
+              exit 1
+            fi
+          }
+          plist_value 'Label' 'net.kysion.kyclash.route-helper'
+          plist_value 'BundleProgram' 'Contents/Resources/kyclash-route-helper'
+          plist_value 'MachServices:net.kysion.kyclash.route-helper' 'true'
+          plist_absent 'ProgramArguments'
+          plist_absent 'EnvironmentVariables'
           test "$(grep -c 'interface.setClasses' macos/route-helper/main.swift)" -eq 13
           xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
             -framework Foundation -o "${RUNNER_TEMP}/kyclash-route-helper" \
