@@ -446,7 +446,9 @@ Remaining:
 ## Production networking execution plan — 2026-07-21
 
 Production networking continuation is decomposed and ordered in
-`kyclash-production-networking-plan-20260721.md`. The first required batch is
+`kyclash-production-networking-plan-20260721.md`; its N1–N5 merge units,
+dependencies, evidence, and authorization checkpoints are locked in
+`kyclash-production-networking-work-program-20260721.md`. The first required batch is
 Rust/Go runtime contract convergence: the current Rust Unix adapter launches
 the argument-based mock protocol, while the Go production sidecar rejects all
 arguments and uses stdin/stdout. utun, route, credential, and UI production

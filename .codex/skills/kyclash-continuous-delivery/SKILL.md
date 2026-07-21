@@ -23,7 +23,10 @@ Read these files before changing scope or architecture:
 7. `docs/roadmap/kyclash-runtime-quic-order-review-20260721.md` when implementing
    QUIC receive ordering or replay protection
 8. `docs/roadmap/kyclash-implementation-plan.md`
-9. `kyclash-handoff-20260721.md` only for historical context
+9. `docs/roadmap/kyclash-production-networking-work-program-20260721.md`
+   when continuing N1 through N5; execute its first incomplete merge unit and
+   retain its evidence and authorization checkpoints
+10. `kyclash-handoff-20260721.md` only for historical context
 
 Treat the review record and architecture as locked. If they conflict with the
 handoff, follow the locked documents. Require a new review record before

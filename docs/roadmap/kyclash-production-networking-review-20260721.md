@@ -13,6 +13,7 @@ Reviewed inputs:
 - `kyclash-runtime-quic-order-review-20260721.md`
 - `kyclash-production-networking-plan-20260721.md`
 - `kyclash-sidecar-stdio-review-20260721.md`
+- `kyclash-production-networking-work-program-20260721.md`
 - current Rust networking modules, Go sidecar, tests, package configuration,
   and disposable-macOS evidence
 

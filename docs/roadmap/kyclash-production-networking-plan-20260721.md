@@ -6,6 +6,9 @@ Date: 2026-07-21
 
 Stdio protocol amendment: `kyclash-sidecar-stdio-review-20260721.md`
 
+Long-range execution backlog:
+`kyclash-production-networking-work-program-20260721.md`
+
 ## Objective
 
 Deliver the locked macOS arm64 single-site private-networking path:
