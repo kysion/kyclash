@@ -408,15 +408,15 @@ pub fn run() {
         }
     }
 
-    #[cfg(feature = "clippy")]
+    #[cfg(any(feature = "clippy", feature = "networking-system-lab"))]
     let context = tauri::test::mock_context(tauri::test::noop_assets());
-    #[cfg(feature = "clippy")]
+    #[cfg(any(feature = "clippy", feature = "networking-system-lab"))]
     let app = builder.build(context).unwrap_or_else(|e| {
         logging!(error, Type::Setup, "Failed to build Tauri application: {}", e);
         std::process::exit(1);
     });
 
-    #[cfg(not(feature = "clippy"))]
+    #[cfg(not(any(feature = "clippy", feature = "networking-system-lab")))]
     let app = builder.build(tauri::generate_context!()).unwrap_or_else(|e| {
         logging!(error, Type::Setup, "Failed to build Tauri application: {}", e);
         std::process::exit(1);

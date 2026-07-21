@@ -1,9 +1,9 @@
 fn main() {
-    #[cfg(feature = "clippy")]
+    #[cfg(any(feature = "clippy", feature = "networking-system-lab"))]
     {
-        println!("cargo:warning=Skipping tauri_build during Clippy");
+        println!("cargo:warning=Skipping tauri_build for non-application validation");
     }
 
-    #[cfg(not(feature = "clippy"))]
+    #[cfg(not(any(feature = "clippy", feature = "networking-system-lab")))]
     tauri_build::build();
 }

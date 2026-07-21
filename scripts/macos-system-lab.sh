@@ -48,7 +48,7 @@ CARGO_TARGET_DIR="${LAB_BUILD}" \
   CARGO_INCREMENTAL=0 \
   CARGO_PROFILE_DEV_DEBUG=0 \
   cargo build -p clash-verge \
-  --features networking-route-lab,networking-keychain-lab \
+  --features networking-route-lab,networking-keychain-lab,networking-system-lab \
   --bin kyclash-route-lab \
   --bin kyclash-keychain-lab \
   >"${LAB_OUTPUT}/cargo-build.log" 2>&1

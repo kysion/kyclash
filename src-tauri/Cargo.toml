@@ -28,6 +28,9 @@ networking-dev = []
 # production build.
 networking-route-lab = []
 networking-keychain-lab = []
+# Builds the fixed-scope lab binaries without packaging application resources.
+# This feature is never enabled by normal application or release builds.
+networking-system-lab = ["tauri/test"]
 updater-verifier = []
 
 [[bin]]
