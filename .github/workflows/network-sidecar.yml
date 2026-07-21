@@ -7,17 +7,77 @@ on:
       - '.github/workflows/network-sidecar.yml'
       - 'docs/architecture/kyclash-network-runtime-v1.md'
       - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
+      - 'scripts/build-network-sidecar-macos.mjs'
+      - 'src-tauri/src/networking/sidecar_trust.rs'
   push:
     branches: [main]
     paths:
       - 'network-sidecar/**'
       - '.github/workflows/network-sidecar.yml'
+      - 'scripts/build-network-sidecar-macos.mjs'
+      - 'src-tauri/src/networking/sidecar_trust.rs'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  signed-macos-bundle:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    environment: kyclash-production-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: network-sidecar/go.sum
+
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.18.0'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: apple-actions/import-codesign-certs@v6
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Build and verify signed nested sidecar
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          pnpm network-sidecar:macos aarch64-apple-darwin
+          binary='src-tauri/sidecar/kyclash-network-sidecar-aarch64-apple-darwin'
+          manifest='src-tauri/resources/kyclash-network-sidecar-aarch64-apple-darwin.trust.json'
+          codesign --verify --strict --verbose=2 "$binary"
+          test "$(codesign -d --verbose=4 "$binary" 2>&1 | sed -n 's/^TeamIdentifier=//p')" = "$APPLE_TEAM_ID"
+          test "$(shasum -a 256 "$binary" | awk '{print $1}')" = "$(node -p "require(process.argv[1]).sha256" "$manifest")"
+          file "$binary" | grep -F 'arm64'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-network-sidecar-${{ github.sha }}
+          path: |
+            src-tauri/sidecar/kyclash-network-sidecar-aarch64-apple-darwin
+            src-tauri/resources/kyclash-network-sidecar-aarch64-apple-darwin.trust.json
+            network-sidecar/build/aarch64-apple-darwin/
+          if-no-files-found: error
+          retention-days: 14
+
   linux-impaired-network:
     runs-on: ubuntu-24.04-arm
     defaults:
