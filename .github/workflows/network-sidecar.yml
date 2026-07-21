@@ -190,6 +190,12 @@ jobs:
         working-directory: .
         run: |
           plutil -lint macos/route-helper/net.kysion.kyclash.route-helper.plist
+          plist='macos/route-helper/net.kysion.kyclash.route-helper.plist'
+          test "$(plutil -extract Label raw -o - "$plist")" = 'net.kysion.kyclash.route-helper'
+          test "$(plutil -extract BundleProgram raw -o - "$plist")" = 'Contents/Resources/kyclash-route-helper'
+          test "$(plutil -extract MachServices.net.kysion.kyclash.route-helper raw -o - "$plist")" = 'true'
+          ! plutil -extract ProgramArguments raw -o - "$plist" >/dev/null 2>&1
+          ! plutil -extract EnvironmentVariables raw -o - "$plist" >/dev/null 2>&1
           test "$(grep -c 'interface.setClasses' macos/route-helper/main.swift)" -eq 13
           xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
             -framework Foundation -o "${RUNNER_TEMP}/kyclash-route-helper" \
