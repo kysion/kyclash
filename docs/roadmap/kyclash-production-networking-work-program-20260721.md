@@ -484,9 +484,11 @@ maps unknown states/errors fail-closed. Rust validates every owner/reference
 before constructing C strings and serializes the one-lease connection. The
 production UI explains the narrow private-route capability and requires an
 explicit Enable action; it exposes registration state, approval settings, and
-unregistration, and disables Connect until the helper is enabled. Registration
-and the typed round trip in the signed disposable-VM app remain open, together
-with the S1.12 executor and VM lifecycle evidence.
+unregistration, and disables Connect until the helper is enabled. The signed
+disposable-VM registration harness now registers the daemon through
+`SMAppService` and reports status `1` (enabled). The actual client/helper typed
+round trip remains open because the VM launchd job currently exits with
+`EX_CONFIG`; S1.12 executor and VM lifecycle evidence also remain open.
 
 Deliverables:
 

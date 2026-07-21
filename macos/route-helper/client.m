@@ -180,6 +180,10 @@ static int32_t KCRErrorCode(NSString *error) {
   if ([error isEqualToString:@"not_ready"]) return 1;
   if ([error isEqualToString:@"invalid_owner"]) return 2;
   if ([error isEqualToString:@"ownership_mismatch"]) return 3;
+  if ([error isEqualToString:@"journal_write_failed"]) return 4;
+  if ([error isEqualToString:@"route_apply_failed"]) return 5;
+  if ([error isEqualToString:@"rollback_failed"]) return 6;
+  if ([error isEqualToString:@"recovery_required"]) return 7;
   return -1;
 }
 
