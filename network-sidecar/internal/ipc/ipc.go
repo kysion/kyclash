@@ -4,11 +4,14 @@ package ipc
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"unicode"
+
+	"github.com/kysion/kyclash/network-sidecar/internal/profile"
 )
 
 const (
@@ -114,9 +117,23 @@ func (current *session) handle(request Request) (Response, bool) {
 		if !emptyData(request.Payload.Data) {
 			return invalidData(response)
 		}
+		if current.activeTransport != "" {
+			if err := current.backend.Disconnect(context.Background()); err != nil {
+				return current.backendFailure(response)
+			}
+		}
+		if current.tunnelPrepared {
+			if err := current.backend.Stop(context.Background()); err != nil {
+				return current.backendFailure(response)
+			}
+		}
+		if err := current.backend.Close(); err != nil {
+			return current.backendFailure(response)
+		}
 		current.activeTransport = ""
 		current.tunnelPrepared = false
 		current.profile = nil
+		current.lastError = nil
 		response.Result = success(map[string]interface{}{"type": "acknowledged"})
 		return response, true
 	case "connect_transport":
@@ -126,10 +143,19 @@ func (current *session) handle(request Request) (Response, bool) {
 		if !decodeData(request.Payload.Data, &data) || (data.Transport != "quic" && data.Transport != "wss" && data.Transport != "tcp") {
 			return invalidData(response)
 		}
-		if current.profile == nil || !current.tunnelPrepared || current.activeTransport != "" || !current.transportConfigured(data.Transport) {
+		transport := profile.Transport(data.Transport)
+		if current.profile == nil || !current.tunnelPrepared || current.activeTransport != "" || !current.profile.HasTransport(transport) {
 			return invalidState(response)
 		}
-		current.activeTransport = data.Transport
+		endpoint, err := current.profile.Endpoint(transport)
+		if err != nil {
+			return invalidData(response)
+		}
+		if err := current.backend.Connect(context.Background(), transport, endpoint); err != nil {
+			return current.backendFailure(response)
+		}
+		current.activeTransport = transport
+		current.lastError = nil
 		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
 		return response, false
 	case "cancel":
@@ -138,6 +164,9 @@ func (current *session) handle(request Request) (Response, bool) {
 		}
 		if !decodeData(request.Payload.Data, &data) || !validID(data.OperationID) {
 			return invalidData(response)
+		}
+		if err := current.backend.Cancel(data.OperationID); err != nil {
+			return current.backendFailure(response)
 		}
 		response.Result = success(map[string]interface{}{"type": "acknowledged"})
 		return response, false
@@ -150,6 +179,7 @@ func (current *session) handle(request Request) (Response, bool) {
 			return invalidState(response)
 		}
 		current.profile = decoded
+		current.lastError = nil
 		response.Result = success(map[string]interface{}{"type": "acknowledged"})
 		return response, false
 	case "prepare_tunnel":
@@ -159,7 +189,11 @@ func (current *session) handle(request Request) (Response, bool) {
 		if current.profile == nil || current.tunnelPrepared {
 			return invalidState(response)
 		}
+		if err := current.backend.Prepare(context.Background(), current.profile); err != nil {
+			return current.backendFailure(response)
+		}
 		current.tunnelPrepared = true
+		current.lastError = nil
 		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
 		return response, false
 	case "disconnect_transport":
@@ -169,7 +203,11 @@ func (current *session) handle(request Request) (Response, bool) {
 		if current.activeTransport == "" {
 			return invalidState(response)
 		}
+		if err := current.backend.Disconnect(context.Background()); err != nil {
+			return current.backendFailure(response)
+		}
 		current.activeTransport = ""
+		current.lastError = nil
 		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
 		return response, false
 	case "stop_tunnel":
@@ -179,7 +217,11 @@ func (current *session) handle(request Request) (Response, bool) {
 		if !current.tunnelPrepared || current.activeTransport != "" {
 			return invalidState(response)
 		}
+		if err := current.backend.Stop(context.Background()); err != nil {
+			return current.backendFailure(response)
+		}
 		current.tunnelPrepared = false
+		current.lastError = nil
 		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
 		return response, false
 	case "sample_health":
@@ -189,7 +231,11 @@ func (current *session) handle(request Request) (Response, bool) {
 		if current.activeTransport == "" {
 			return invalidState(response)
 		}
-		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
+		health, err := current.backend.Health(context.Background())
+		if err != nil || !health.valid() {
+			return current.backendFailure(response)
+		}
+		response.Result = success(map[string]interface{}{"type": "health", "data": health})
 		return response, false
 	case "connect":
 		if !emptyData(request.Payload.Data) {
@@ -201,21 +247,6 @@ func (current *session) handle(request Request) (Response, bool) {
 		response.Result = failure("invalid_configuration", "unknown request type", false)
 		return response, false
 	}
-}
-
-func (current *session) transportConfigured(transport string) bool {
-	if current.profile == nil {
-		return false
-	}
-	if transport == current.profile.Transports.Primary {
-		return true
-	}
-	for _, fallback := range current.profile.Transports.Fallbacks {
-		if transport == fallback {
-			return true
-		}
-	}
-	return false
 }
 
 func emptyData(data json.RawMessage) bool {

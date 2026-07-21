@@ -62,6 +62,12 @@ N1A contracts
 
 ### N1A — lock executable data-plane contracts
 
+Status (2026-07-21): complete. The reviewed amendment locks strict shared Go/
+Rust profile validation, Base64 WireGuard public keys, endpoint normalization,
+platform trust plus in-memory-only lab trust, MTU 1420, bounded health facts,
+and backend-success-before-state-transition. Shared fixtures and injected
+backend failures verify the executable contract.
+
 Deliverables:
 
 - Move the validated Go profile into a reusable, strict package with parity

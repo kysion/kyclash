@@ -3,12 +3,57 @@ package ipc
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/kysion/kyclash/network-sidecar/internal/profile"
 )
+
+type faultBackend struct {
+	fail string
+}
+
+func (backend *faultBackend) Prepare(context.Context, *profile.Profile) error {
+	if backend.fail == "prepare" {
+		return ErrBackendUnavailable
+	}
+	return nil
+}
+
+func (backend *faultBackend) Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error {
+	if backend.fail == "connect" {
+		return ErrBackendUnavailable
+	}
+	return nil
+}
+
+func (backend *faultBackend) Health(context.Context) (Health, error) {
+	if backend.fail == "health" {
+		return Health{}, ErrBackendUnavailable
+	}
+	return Health{Reachable: true, LatencyMS: 12, JitterMS: 3, LossPercent: 1}, nil
+}
+
+func (backend *faultBackend) Disconnect(context.Context) error {
+	if backend.fail == "disconnect" {
+		return ErrBackendUnavailable
+	}
+	return nil
+}
+
+func (backend *faultBackend) Stop(context.Context) error {
+	if backend.fail == "stop" {
+		return ErrBackendUnavailable
+	}
+	return nil
+}
+
+func (backend *faultBackend) Cancel(string) error { return nil }
+func (backend *faultBackend) Close() error        { return nil }
 
 func TestServeMatchesRustStatusAndDisconnectWireFormat(t *testing.T) {
 	input := strings.Join([]string{
@@ -121,5 +166,50 @@ func TestRequestValidationFailsClosed(t *testing.T) {
 		if _, err := decodeRequest(bufio.NewReader(strings.NewReader(input + "\n"))); !errors.Is(err, ErrInvalidRequest) {
 			t.Fatalf("expected invalid request for %q, got %v", input, err)
 		}
+	}
+}
+
+func TestBackendFailureNeverAdvancesSessionState(t *testing.T) {
+	profileData, err := os.ReadFile("../../../schemas/fixtures/network-v1.valid.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &faultBackend{fail: "prepare"}
+	current := newSessionWithBackend(backend)
+	current.handle(Request{ProtocolVersion: 1, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}})
+	response, _ := current.handle(Request{ProtocolVersion: 1, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}})
+	if current.tunnelPrepared || response.Result["Err"].(Error).Code != "sidecar_unavailable" {
+		t.Fatalf("prepare failure advanced state: %#v", current.status())
+	}
+
+	backend.fail = ""
+	current.handle(Request{ProtocolVersion: 1, RequestID: "request.prepare_ok", Payload: Payload{Type: "prepare_tunnel"}})
+	backend.fail = "connect"
+	response, _ = current.handle(Request{ProtocolVersion: 1, RequestID: "request.connect", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}})
+	if current.activeTransport != "" || response.Result["Err"].(Error).Code != "sidecar_unavailable" {
+		t.Fatalf("connect failure advanced state: %#v", current.status())
+	}
+}
+
+func TestHealthMatchesSharedFixture(t *testing.T) {
+	current := newSessionWithBackend(&faultBackend{})
+	current.tunnelPrepared = true
+	current.activeTransport = profile.QUIC
+	response, stop := current.handle(Request{ProtocolVersion: 1, RequestID: "request.health", Payload: Payload{Type: "sample_health"}})
+	if stop {
+		t.Fatal("health stopped session")
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile("../../../schemas/fixtures/network-ipc-v1.health.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actualValue interface{}
+	var fixtureValue interface{}
+	if json.Unmarshal(encoded, &actualValue) != nil || json.Unmarshal(fixture, &fixtureValue) != nil || !deepEqualJSON(actualValue, fixtureValue) {
+		t.Fatalf("Go health response diverged from shared fixture: %s", encoded)
 	}
 }

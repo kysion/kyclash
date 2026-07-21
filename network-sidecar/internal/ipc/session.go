@@ -1,49 +1,64 @@
 package ipc
 
 import (
+	"context"
 	"encoding/json"
-	"net/netip"
-	"net/url"
+	"errors"
+
+	"github.com/kysion/kyclash/network-sidecar/internal/profile"
 )
 
-type profile struct {
-	SchemaVersion uint8  `json:"schema_version"`
-	ProfileID     string `json:"profile_id"`
-	ControlPlane  string `json:"control_plane"`
-	IdentityRef   string `json:"identity_ref"`
-	Site          struct {
-		ID           string   `json:"id"`
-		DisplayName  string   `json:"display_name"`
-		PrivateCIDRs []string `json:"private_cidrs"`
-	} `json:"site"`
-	Tunnel struct {
-		LocalAddresses   []string `json:"local_addresses"`
-		PeerPublicKey    string   `json:"peer_public_key"`
-		KeepaliveSeconds uint16   `json:"keepalive_seconds"`
-	} `json:"tunnel"`
-	Transports struct {
-		Primary   string   `json:"primary"`
-		Fallbacks []string `json:"fallbacks"`
-		Endpoints []struct {
-			Transport string `json:"transport"`
-			URL       string `json:"url"`
-		} `json:"endpoints"`
-	} `json:"transports"`
-	Policy struct {
-		ConnectTimeoutSeconds uint16 `json:"connect_timeout_seconds"`
-		HealthIntervalSeconds uint16 `json:"health_interval_seconds"`
-		FallbackThreshold     uint8  `json:"fallback_threshold"`
-	} `json:"policy"`
+var ErrBackendUnavailable = errors.New("data-plane backend unavailable")
+
+type Health struct {
+	Reachable   bool   `json:"reachable"`
+	LatencyMS   uint32 `json:"latency_ms"`
+	JitterMS    uint32 `json:"jitter_ms"`
+	LossPercent uint8  `json:"loss_percent"`
 }
 
+func (health Health) valid() bool {
+	return health.LossPercent <= 100
+}
+
+type Backend interface {
+	Prepare(context.Context, *profile.Profile) error
+	Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error
+	Health(context.Context) (Health, error)
+	Disconnect(context.Context) error
+	Stop(context.Context) error
+	Cancel(string) error
+	Close() error
+}
+
+type contractBackend struct{}
+
+func (contractBackend) Prepare(context.Context, *profile.Profile) error { return nil }
+func (contractBackend) Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error {
+	return nil
+}
+func (contractBackend) Health(context.Context) (Health, error) {
+	return Health{Reachable: true}, nil
+}
+func (contractBackend) Disconnect(context.Context) error { return nil }
+func (contractBackend) Stop(context.Context) error       { return nil }
+func (contractBackend) Cancel(string) error              { return nil }
+func (contractBackend) Close() error                     { return nil }
+
 type session struct {
-	profile         *profile
+	profile         *profile.Profile
+	backend         Backend
 	tunnelPrepared  bool
-	activeTransport string
+	activeTransport profile.Transport
+	lastError       *string
 }
 
 func newSession() *session {
-	return &session{}
+	return newSessionWithBackend(contractBackend{})
+}
+
+func newSessionWithBackend(backend Backend) *session {
+	return &session{backend: backend}
 }
 
 func (current *session) status() Status {
@@ -51,7 +66,7 @@ func (current *session) status() Status {
 	if current.tunnelPrepared {
 		state = "preparing_tunnel"
 	}
-	if current.activeTransport == "quic" {
+	if current.activeTransport == profile.QUIC {
 		state = "connected_primary"
 	} else if current.activeTransport != "" {
 		state = "degraded_fallback"
@@ -63,93 +78,20 @@ func (current *session) status() Status {
 	}
 	var transport *string
 	if current.activeTransport != "" {
-		value := current.activeTransport
+		value := string(current.activeTransport)
 		transport = &value
 	}
-	return Status{State: state, ActiveProfileID: profileID, ActiveTransport: transport}
+	return Status{State: state, ActiveProfileID: profileID, ActiveTransport: transport, LastError: current.lastError}
 }
 
-func decodeProfile(data json.RawMessage) (*profile, bool) {
-	var decoded profile
-	if !decodeData(data, &decoded) || !decoded.valid() {
-		return nil, false
-	}
-	return &decoded, true
+func decodeProfile(data json.RawMessage) (*profile.Profile, bool) {
+	decoded, err := profile.Decode(data)
+	return decoded, err == nil
 }
 
-func (candidate profile) valid() bool {
-	controlPlane, controlErr := url.Parse(candidate.ControlPlane)
-	if candidate.SchemaVersion != 1 || !validProfileID(candidate.ProfileID) || controlErr != nil || controlPlane.Scheme != "https" || controlPlane.Host == "" {
-		return false
-	}
-	if candidate.IdentityRef == "" || candidate.Site.ID == "" || candidate.Site.DisplayName == "" || candidate.Tunnel.PeerPublicKey == "" {
-		return false
-	}
-	if !validPrefixes(candidate.Site.PrivateCIDRs) || !validPrefixes(candidate.Tunnel.LocalAddresses) {
-		return false
-	}
-	if candidate.Transports.Primary != "quic" || len(candidate.Transports.Endpoints) == 0 || candidate.Policy.ConnectTimeoutSeconds == 0 || candidate.Policy.HealthIntervalSeconds == 0 || candidate.Policy.FallbackThreshold == 0 {
-		return false
-	}
-	configured := map[string]bool{"quic": true}
-	for _, fallback := range candidate.Transports.Fallbacks {
-		if fallback != "wss" && fallback != "tcp" || configured[fallback] {
-			return false
-		}
-		configured[fallback] = true
-	}
-	seenEndpoints := make(map[string]bool)
-	for _, endpoint := range candidate.Transports.Endpoints {
-		parsed, err := url.Parse(endpoint.URL)
-		if err != nil || !configured[endpoint.Transport] || seenEndpoints[endpoint.Transport] || !endpointScheme(endpoint.Transport, parsed.Scheme) || parsed.Host == "" || parsed.User != nil {
-			return false
-		}
-		seenEndpoints[endpoint.Transport] = true
-	}
-	for transport := range configured {
-		if !seenEndpoints[transport] {
-			return false
-		}
-	}
-	return true
-}
-
-func validProfileID(value string) bool {
-	if value == "" || len(value) > 128 {
-		return false
-	}
-	for index, character := range value {
-		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9') && (index == 0 || character != '.' && character != '_' && character != ':' && character != '-') {
-			return false
-		}
-	}
-	return true
-}
-
-func validPrefixes(values []string) bool {
-	if len(values) == 0 {
-		return false
-	}
-	seen := make(map[netip.Prefix]bool)
-	for _, value := range values {
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil || seen[prefix] {
-			return false
-		}
-		seen[prefix] = true
-	}
-	return true
-}
-
-func endpointScheme(transport, scheme string) bool {
-	switch transport {
-	case "quic":
-		return scheme == "https" || scheme == "quic"
-	case "wss":
-		return scheme == "wss"
-	case "tcp":
-		return scheme == "tcp"
-	default:
-		return false
-	}
+func (current *session) backendFailure(response Response) (Response, bool) {
+	code := "sidecar_unavailable"
+	current.lastError = &code
+	response.Result = failure(code, "data-plane operation failed", true)
+	return response, false
 }

@@ -10,7 +10,7 @@
   },
   "tunnel": {
     "local_addresses": ["10.64.0.2/32", "fd00:64::2/128"],
-    "peer_public_key": "test-public-key-not-a-secret",
+    "peer_public_key": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
     "keepalive_seconds": 25
   },
   "transports": {

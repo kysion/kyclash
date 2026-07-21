@@ -45,6 +45,26 @@ pub struct IpcResponse {
 pub enum IpcResponsePayload {
     Acknowledged,
     Status(NetworkStatus),
+    Health(NetworkHealth),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkHealth {
+    pub reachable: bool,
+    pub latency_ms: u32,
+    pub jitter_ms: u32,
+    pub loss_percent: u8,
+}
+
+impl NetworkHealth {
+    pub const fn validate(&self) -> Result<(), NetworkErrorCode> {
+        if self.loss_percent <= 100 {
+            Ok(())
+        } else {
+            Err(NetworkErrorCode::InvalidConfiguration)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +139,24 @@ mod tests {
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v1.status.json"))?;
         assert_eq!(serde_json::to_value(&response)?, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn health_wire_format_matches_shared_fixture() -> anyhow::Result<()> {
+        let response = IpcResponse {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.health".into(),
+            result: Ok(IpcResponsePayload::Health(NetworkHealth {
+                reachable: true,
+                latency_ms: 12,
+                jitter_ms: 3,
+                loss_percent: 1,
+            })),
+        };
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v1.health.json"))?;
+        assert_eq!(serde_json::to_value(response)?, fixture);
         Ok(())
     }
 }
