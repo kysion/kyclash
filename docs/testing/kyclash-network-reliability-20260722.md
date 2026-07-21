@@ -45,7 +45,7 @@ Both commands passed on Apple Silicon macOS 25.5.0 with Go 1.26.5. The retained
 ignored evidence log is:
 
 ```text
-target/s114-reliability-20260722/go-reliability.log
+network-sidecar/target/s114-reliability-20260722/go-reliability.log
 SHA-256: 2e89467b36f4e9b8ac287d9252878c5ba4ba5bc4b847b2f96380e99991a855ae
 ```
 
