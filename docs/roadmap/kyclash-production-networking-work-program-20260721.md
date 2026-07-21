@@ -8,9 +8,12 @@ Parent plan: `kyclash-production-networking-plan-20260721.md`
 
 Review record: `kyclash-production-networking-review-20260721.md`
 
+Stage-consolidation review:
+`kyclash-production-networking-single-stage-review-20260721.md`
+
 ## Outcome
 
-Complete N1 through N5 as one dependency-ordered program that ends with a
+Complete one indivisible stage, S1, as a dependency-ordered program that ends with a
 Developer ID-signed macOS arm64 candidate proving single-site private
 networking, QUIC -> WSS -> TCP fallback, transactional private routes, Mihomo
 TUN coexistence, crash recovery, and redacted operational evidence.
@@ -28,7 +31,7 @@ separate release-activation transaction.
    `origin/main` before the next unit starts.
 3. A later work package cannot compensate for a failed earlier exit gate.
 4. Host mutation is forbidden outside the confirmed disposable macOS VM.
-   Physical-Mac tests are limited to N5 cases that virtualization cannot model
+   Physical-Mac tests are limited to S1.16 cases that virtualization cannot model
    and require explicit execution authorization at that point.
 5. Tests use synthetic credentials, loopback endpoints, TEST-NET/private test
    addresses, and allowlisted evidence. Passwords, tokens, private keys, raw
@@ -37,30 +40,52 @@ separate release-activation transaction.
    of owned child, carrier, utun, route, journal lease, and synthetic Keychain
    entry before work continues.
 
-## Program dependency chain
+## Single stage S1 — production networking delivery
+
+Stage status: in progress. Completed work packages are evidence only; S1 is
+not complete until every package and the final aggregate gate pass against one
+exact signed candidate.
+
+Historical N1–N5 labels below are evidence aliases only and are not stages or
+stopping points.
+
+### Current S1 status
+
+| Work packages | Scope | Evidence status |
+| --- | --- | --- |
+| S1.01–S1.04 | contracts, carriers, lab server, actual child | complete |
+| S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
+| S1.08 | reproducible signed nested sidecar and launch trust | in progress; run 29837451828 failed at certificate import, evidence pending |
+| S1.09–S1.10 | owned real utun and disposable-VM termination matrix | pending |
+| S1.11–S1.13 | signed helper, route lease/recovery, Mihomo coexistence | pending |
+| S1.14–S1.16 | impairment, performance/package lifecycle, physical/staging gates | pending |
+
+First incomplete criterion: S1.08. Overall S1 status: in progress.
+
+### Work-package dependency chain
 
 ```text
-N1A contracts
- -> N1B carrier/device runtime
- -> N1C lab server
- -> N1D actual-child matrix
- -> N2A production gate/controller
- -> N2B policy v2/credential boundary
- -> N2C Tauri/UI/lifecycle order
- -> N3A reproducible trusted bundle
- -> N3B real utun
- -> N3C VM termination matrix
- -> N4A signed helper/XPC
- -> N4B route lease transaction
- -> N4C Mihomo coexistence VM matrix
- -> N5A impairment/reliability
- -> N5B performance/lifecycle
- -> N5C physical/staging approval gates
+S1.01 contracts (formerly N1A)
+ -> S1.02 carrier/device runtime (formerly N1B)
+ -> S1.03 lab server (formerly N1C)
+ -> S1.04 actual-child matrix (formerly N1D)
+ -> S1.05 production gate/controller (formerly N2A)
+ -> S1.06 policy v2/credential boundary (formerly N2B)
+ -> S1.07 Tauri/UI/lifecycle order (formerly N2C)
+ -> S1.08 reproducible trusted bundle (formerly N3A)
+ -> S1.09 real utun (formerly N3B)
+ -> S1.10 VM termination matrix (formerly N3C)
+ -> S1.11 signed helper/XPC (formerly N4A)
+ -> S1.12 route lease transaction (formerly N4B)
+ -> S1.13 Mihomo coexistence VM matrix (formerly N4C)
+ -> S1.14 impairment/reliability (formerly N5A)
+ -> S1.15 performance/lifecycle (formerly N5B)
+ -> S1.16 physical/staging approval gates (formerly N5C)
 ```
 
-## N1: real userspace data plane
+### S1 work packages: real userspace data plane
 
-### N1A — lock executable data-plane contracts
+#### S1.01 — lock executable data-plane contracts (formerly N1A)
 
 Status (2026-07-21): complete. The reviewed amendment locks strict shared Go/
 Rust profile validation, Base64 WireGuard public keys, endpoint normalization,
@@ -86,7 +111,7 @@ Tests and evidence:
 
 Merge unit: `networking(n1a): lock data-plane session contracts`.
 
-### N1B — bind WireGuard to explicit carriers
+#### S1.02 — bind WireGuard to explicit carriers (formerly N1B)
 
 Status (2026-07-21): complete. A reusable switchboard keeps one wireguard-go
 Bind stable while refusing make-before-break and never choosing fallback. The
@@ -116,7 +141,7 @@ Tests and evidence:
 
 Merge unit: `feat(networking): bind userspace WireGuard to named carriers`.
 
-### N1C — compatible loopback lab server
+#### S1.03 — compatible loopback lab server (formerly N1C)
 
 Status (2026-07-21): complete. The repository-owned in-process lab peer binds
 only explicit loopback addresses and ephemeral ports, generates a fresh TLS
@@ -147,7 +172,7 @@ Tests and evidence:
 
 Merge unit: `test(networking): add compatible loopback lab server`.
 
-### N1D — actual-child end-to-end matrix
+#### S1.04 — actual-child end-to-end matrix (formerly N1D)
 
 Review amendment: `kyclash-actual-child-lab-review-20260721.md` locks a
 `networking-dev`-only lab executable that shares the production data plane but
@@ -181,11 +206,11 @@ Exit evidence:
 
 Merge unit: `test(networking): close actual-child userspace data-plane gate`.
 
-N1 status: complete. N1A–N1D pass together.
+S1.01–S1.04 evidence status: complete. S1 remains in progress.
 
-## N2: production Rust controller and credential path
+### S1 work packages: production Rust controller and credential path
 
-### N2A — default-off production controller
+#### S1.05 — default-off production controller (formerly N2A)
 
 Status (2026-07-21): complete. `networking-production` is default-off and
 separate from `networking-dev`. A single bounded Tokio actor exclusively owns
@@ -201,7 +226,7 @@ No production Tauri command is exposed before N2C.
 Deliverables:
 
 - Add `networking-production`, absent from default and release feature sets
-  until N4 closes.
+  until S1.11–S1.13 close.
 - Add one async controller task that exclusively owns the child and serializes
   requests, deadlines, cancellation, health polling, restart, and crash-loop
   state.
@@ -216,7 +241,7 @@ Tests and evidence:
 
 Merge unit: `feat(networking): add gated production controller`.
 
-### N2B — signed policy v2 and Keychain boundary
+#### S1.06 — signed policy v2 and Keychain boundary (formerly N2B)
 
 Status (2026-07-21): complete. Envelope v2 signs the domain separator, key ID,
 algorithm, and strict payload containing `issued_at`, `expires_at`, monotonic
@@ -254,7 +279,7 @@ Tests and evidence:
 
 Merge unit: `feat(networking): enforce policy v2 and credential boundary`.
 
-### N2C — production API, UI, and lifecycle transaction
+#### S1.07 — production API, UI, and lifecycle transaction (formerly N2C)
 
 Status (2026-07-21): complete. The default-off production command module now
 exposes only typed site summaries, redacted status, connect/cancel/disconnect,
@@ -271,7 +296,7 @@ the same IPC/runtime boundary, while the production service uses injected fake
 route adapters to prove mutation order. Production-feature Rust and web builds
 pass; ordinary builds register neither the production Tauri commands nor its
 navigation entry. Runtime configuration remains intentionally uninstalled
-until the N3 trusted bundle and N4 route-helper gates close.
+until the S1.08 trusted-bundle and S1.11–S1.13 route-helper gates close.
 
 Deliverables:
 
@@ -291,13 +316,12 @@ Exit evidence:
 
 Merge unit: `feat(networking): wire gated production UI and lifecycle`.
 
-N2 is complete only after N2A–N2C pass together.
+S1.05–S1.07 evidence status: complete; the feature remains default-off. S1
+remains in progress.
 
-N2 status: complete. N2A–N2C pass together; the feature remains default-off.
+### S1 work packages: trusted bundle and real macOS utun
 
-## N3: trusted bundle and real macOS utun
-
-### N3A — reproducible nested sidecar and launch trust
+#### S1.08 — reproducible nested sidecar and launch trust (formerly N3A)
 
 Status (2026-07-21): implementation complete, signed-run evidence pending. A
 macOS-only builder now produces a thin target-specific Go executable with
@@ -327,7 +351,7 @@ Deliverables:
 
 Merge unit: `build(macos): bundle and verify signed network sidecar`.
 
-### N3B — real utun device lifecycle
+#### S1.09 — real utun device lifecycle (formerly N3B)
 
 Deliverables:
 
@@ -345,7 +369,7 @@ Tests and evidence:
 
 Merge unit: `feat(macos): add owned WireGuard utun lifecycle`.
 
-### N3C — disposable-VM termination matrix
+#### S1.10 — disposable-VM termination matrix (formerly N3C)
 
 Scenarios:
 
@@ -363,11 +387,9 @@ Exit evidence:
 
 Merge unit: `test(macos): close signed sidecar and utun VM gate`.
 
-N3 is complete only after N3A–N3C pass together.
+### S1 work packages: privileged routes and Mihomo coexistence
 
-## N4: privileged routes and Mihomo coexistence
-
-### N4A — signed SMAppService helper and typed XPC
+#### S1.11 — signed SMAppService helper and typed XPC (formerly N4A)
 
 Deliverables:
 
@@ -383,7 +405,7 @@ Deliverables:
 
 Merge unit: `feat(macos): add authenticated typed route helper`.
 
-### N4B — route transaction lease and crash recovery
+#### S1.12 — route transaction lease and crash recovery (formerly N4B)
 
 Deliverables:
 
@@ -405,7 +427,7 @@ Tests and evidence:
 
 Merge unit: `feat(macos): lease transactional private routes`.
 
-### N4C — disposable-VM system and Mihomo matrix
+#### S1.13 — disposable-VM system and Mihomo matrix (formerly N4C)
 
 Scenarios:
 
@@ -423,12 +445,12 @@ Exit evidence:
 
 Merge unit: `test(macos): close route and Mihomo coexistence VM gate`.
 
-N4 is complete only after N4A–N4C pass together. Only then may a separately
+Only after S1.11–S1.13 pass may a separately
 reviewed candidate include the production feature in normal builds.
 
-## N5: reliability, lifecycle, and staged endpoint readiness
+### S1 work packages: reliability, lifecycle, and staged endpoint readiness
 
-### N5A — deterministic impairment and recovery matrix
+#### S1.14 — deterministic impairment and recovery matrix (formerly N5A)
 
 Matrix:
 
@@ -447,7 +469,7 @@ Acceptance:
 
 Merge unit: `test(networking): add deterministic reliability matrix`.
 
-### N5B — performance and package lifecycle
+#### S1.15 — performance and package lifecycle (formerly N5B)
 
 Deliverables:
 
@@ -461,7 +483,7 @@ Deliverables:
 
 Merge unit: `test(release): close networking performance and PKG lifecycle`.
 
-### N5C — physical-Mac and staging authorization gates
+#### S1.16 — physical-Mac and staging authorization gates (formerly N5C)
 
 Physical-Mac-only cases:
 
@@ -482,8 +504,6 @@ Exit evidence:
 - The client returns to a clean disconnected state after every scenario.
 
 Merge unit: `docs(networking): lock staged endpoint readiness evidence`.
-
-N5 is complete only after N5A–N5C pass together.
 
 ## Common merge gates
 
@@ -511,7 +531,7 @@ Fresh authorization is required before:
 
 ## Program completion definition
 
-N1–N5 are complete only when the exact signed candidate proves, from one clean
+The single S1 stage is complete only when the exact signed candidate proves, from one clean
 commit, that the production UI can establish one-site encrypted private
 networking over QUIC with WSS/TCP fallback, apply only owned private routes,
 coexist with Mihomo TUN, recover from every tested failure, expose only redacted

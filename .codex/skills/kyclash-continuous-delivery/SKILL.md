@@ -24,8 +24,8 @@ Read these files before changing scope or architecture:
    QUIC receive ordering or replay protection
 8. `docs/roadmap/kyclash-implementation-plan.md`
 9. `docs/roadmap/kyclash-production-networking-work-program-20260721.md`
-   when continuing N1 through N5; execute its first incomplete merge unit and
-   retain its evidence and authorization checkpoints
+   when continuing the single S1 delivery stage; execute its first incomplete
+   work package and retain its evidence and authorization checkpoints
 10. `kyclash-handoff-20260721.md` only for historical context
 
 Treat the review record and architecture as locked. If they conflict with the
@@ -35,7 +35,7 @@ ordering, or single-site scope.
 
 ## Continue without repeated prompts
 
-After the user authorizes execution through all stages:
+After the user authorizes execution through the complete delivery stage:
 
 - Continue from the first incomplete roadmap exit criterion.
 - Break work into reviewable commits and push each commit to `origin/main` only
@@ -46,7 +46,7 @@ After the user authorizes execution through all stages:
 - Stop only for a genuine hard blocker, a required credential or external
   dependency, or an action outside the authorization boundary below.
 - Keep the working tree clean between completed milestones.
-- Treat requests such as “continue through all stages” as standing authority for
+- Treat requests such as “continue through all stages” or “complete S1” as standing authority for
   every safe action in this file. Do not wait for another “next step” between
   batches; keep advancing until all safe gates are complete or a defined
   authorization boundary is the only remaining work.
@@ -71,6 +71,11 @@ A passed test, commit, push, milestone, batch, status explanation, token cost,
 elapsed time, or a clean worktree is not a terminal condition. Do not send a
 final response merely because one of these occurred. Use commentary for
 progress and continue making tool calls.
+
+The production-networking roadmap has exactly one delivery stage, S1. Its work
+packages and historical N1–N5 aliases are evidence units only. Never describe
+one work package, one former N-group, or one CI matrix as a completed stage.
+Only the aggregate S1 completion definition is a stage terminal condition.
 
 Before every final response during an authorized execution run, perform this
 stop audit:

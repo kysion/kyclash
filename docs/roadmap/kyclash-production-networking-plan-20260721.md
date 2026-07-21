@@ -2,6 +2,11 @@
 
 Status: approved and locked after production-networking review
 
+Planning amendment: the former Batch N1–N5 headings are historical workstream
+groupings inside the single S1 production-networking delivery stage defined by
+`kyclash-production-networking-single-stage-review-20260721.md`. They are not
+independent stages or stopping points.
+
 Date: 2026-07-21
 
 Stdio protocol amendment: `kyclash-sidecar-stdio-review-20260721.md`
@@ -105,7 +110,7 @@ Exit gate:
 - Rust launches the real Go sidecar and completes authenticated status and
   shutdown round trips with no socket, route, Keychain, utun, or external I/O.
 
-## Batch N1: Stateful sidecar and compatible lab server
+## S1 workstream: Stateful sidecar and compatible lab server (formerly Batch N1)
 
 Goal: turn the Go process from a protocol stub into a real userspace data plane.
 
@@ -148,7 +153,7 @@ Exit gate:
   QUIC and both ordered fallbacks, while all host interfaces and routes remain
   unchanged.
 
-## Batch N2: Production Rust controller and credential path
+## S1 workstream: Production Rust controller and credential path (formerly Batch N2)
 
 Goal: replace the in-process mock behind a still-default-off production API.
 
@@ -182,7 +187,7 @@ Exit gate:
 - A production-gated app build controls the real userspace sidecar and lab
   server end to end, while route and utun adapters remain fake and test-asserted.
 
-## Batch N3: Bundling, binary trust, and macOS utun
+## S1 workstream: Bundling, binary trust, and macOS utun (formerly Batch N3)
 
 Goal: create and supervise a real macOS tunnel without applying private routes.
 
@@ -207,7 +212,7 @@ Exit gate:
   traffic through a real utun, and leaves no owned device after every tested
   termination path. No private route is installed yet.
 
-## Batch N4: Privileged transactional routes and Mihomo coexistence
+## S1 workstream: Privileged transactional routes and Mihomo coexistence (formerly Batch N4)
 
 Goal: route configured private CIDRs through the owned utun and always restore
 the previous system state.
@@ -241,7 +246,7 @@ Exit gate:
   journal entry, utun, child process, and synthetic credential state is absent
   after disconnect or recovery, including with Mihomo TUN active.
 
-## Batch N5: Reliability and staged endpoint gate
+## S1 workstream: Reliability and staged endpoint gate (formerly Batch N5)
 
 Goal: close production-quality client behavior before enabling it by default.
 

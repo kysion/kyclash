@@ -2,6 +2,10 @@
 
 Status: approved and locked
 
+Planning amendment: execution-stage semantics are superseded by
+`kyclash-production-networking-single-stage-review-20260721.md`. The N1–N5
+labels below remain historical evidence groupings inside one S1 stage.
+
 Date: 2026-07-21
 
 Reviewed inputs:

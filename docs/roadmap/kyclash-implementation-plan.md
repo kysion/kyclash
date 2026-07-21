@@ -440,15 +440,16 @@ Remaining:
   that injects the KyClash public verification key, publishes signed immutable
   GitHub assets and rollback metadata, enables permissions and runtime gates,
   and passes lifecycle tests. Current builds remain disabled.
-- Execute the production networking batches below before replacing the mock or
+- Execute the production networking work packages below as one stage before replacing the mock or
   enabling a release build.
 
-## Production networking execution plan — 2026-07-21
+## Single-stage production networking execution plan — 2026-07-21
 
 Production networking continuation is decomposed and ordered in
-`kyclash-production-networking-plan-20260721.md`; its N1–N5 merge units,
+`kyclash-production-networking-plan-20260721.md`; its single S1 stage and
+dependency-ordered work packages (historically labelled N1–N5),
 dependencies, evidence, and authorization checkpoints are locked in
-`kyclash-production-networking-work-program-20260721.md`. The first required batch is
+`kyclash-production-networking-work-program-20260721.md`. The first required work package is
 Rust/Go runtime contract convergence: the current Rust Unix adapter launches
 the argument-based mock protocol, while the Go production sidecar rejects all
 arguments and uses stdin/stdout. utun, route, credential, and UI production
