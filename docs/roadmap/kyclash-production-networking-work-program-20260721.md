@@ -421,9 +421,12 @@ the fixed typed NSSecureCoding method surface, rejects root/unsigned or
 wrong-team app connections through the locked code requirement, owns at most
 one lease per XPC connection, and keeps mutation fail-closed as `not_ready`.
 Its strict plist, arm64 compile, nested signing builder, Tauri bundle placement,
-and CI checks are implemented. The app registration/client, explicit XPC class
-allowlist assertions, S1.12 executor, signed-bundle evidence, and VM lifecycle
-evidence remain open.
+and CI checks are implemented. A production-feature-only Objective-C bridge now
+links Apple's ServiceManagement framework and exposes only fixed status,
+register, unregister, and open-settings operations to Rust; unsupported
+platforms fail closed. Explicit XPC class allowlist assertions, the typed app
+XPC client, S1.12 executor, signed-bundle evidence, and VM lifecycle evidence
+remain open.
 
 Deliverables:
 
