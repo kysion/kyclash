@@ -49,6 +49,10 @@ network-sidecar/target/s114-reliability-20260722/go-reliability.log
 SHA-256: 2e89467b36f4e9b8ac287d9252878c5ba4ba5bc4b847b2f96380e99991a855ae
 ```
 
+The CI-equivalent race gate (`-count=5`, 300-second package timeout) also
+passed after the live-carrier and IPC matrices were added; the slowest
+`internal/labserver` package completed in 150.76 seconds.
+
 The focused cancellation/reconnect run also passed under the race detector:
 
 ```bash
