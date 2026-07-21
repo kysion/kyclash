@@ -152,6 +152,20 @@ new KyClash process, a child `verge-mihomo`, and the singleton listener again.
 The redacted command/output record is retained at
 `target/macos-vm-lab/evidence/app-launch-20260722/lifecycle-login-relaunch.txt`.
 
+An additional controller-boundary run used the signed Go executable
+`kyclash-network-sidecar` copied into the same disposable guest. An isolated
+controller generated ephemeral in-memory bootstrap material, read the sidecar
+handshake, and kept its stdin pipe open. After exact command-path validation,
+the controller alone was SIGKILLed. The sidecar disappeared within the 10
+second poll window when stdin closed; no bootstrap material was written to the
+evidence record. The redacted result is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/production-sidecar-controller-kill.txt`.
+
+This closes the signed Go sidecar's controller/EOF process-boundary
+observation. It does not claim that the privileged utun or route cleanup gate
+is closed; that portion still requires the authorized disposable privileged
+run.
+
 The same pass sent the System Events and `loginwindow` logout actions. After
 logout, `who` had no `console` session and independent checks found no KyClash
 process, no Mihomo child, and no singleton listener. Restarting only the
@@ -164,8 +178,9 @@ with SHA-256
 
 This closes the observed GUI logout/re-login path, but it does not close S1.10:
 an ordinary Mihomo child surviving an app SIGKILL is a separate cleanup
-limitation, and the production sidecar/controller termination boundary still
-needs its own exact child-absence observation. S1.10 remains in progress.
+limitation. The signed Go sidecar controller/EOF boundary is observed, while
+privileged utun child absence after controller kill still needs its exact VM
+observation. S1.10 remains in progress.
 
 ## Disposable test cycle
 

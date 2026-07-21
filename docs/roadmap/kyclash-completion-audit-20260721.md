@@ -79,6 +79,13 @@ public-distribution enhancement rather than a current development blocker.
   `verge-mihomo` proxy core surviving as an adopted process. That binary is not
   the production Go sidecar, so the observation remains a cleanup limitation
   and the S1.10 production-sidecar child-absence gate is still open.
+- A signed `kyclash-network-sidecar` controller-boundary run in the same
+  disposable guest generated only ephemeral in-memory bootstrap material,
+  read the handshake, and then SIGKILLed the exact controller PID. The Go
+  sidecar disappeared within the 10-second poll window after stdin EOF; the
+  redacted result is retained in the VM evidence directory. This closes the
+  signed Go process-boundary observation, but not privileged utun child absence
+  after controller kill.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
   localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module
