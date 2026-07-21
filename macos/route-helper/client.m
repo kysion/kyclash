@@ -185,6 +185,7 @@ static int32_t KCRErrorCode(NSString *error) {
   if ([error isEqualToString:@"rollback_failed"]) return 6;
   if ([error isEqualToString:@"recovery_required"]) return 7;
   if ([error isEqualToString:@"journal_corrupt"]) return 8;
+  if ([error isEqualToString:@"route_conflict"]) return 9;
   return -1;
 }
 

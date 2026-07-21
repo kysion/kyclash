@@ -310,7 +310,7 @@ fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<Rou
         2 => Some(NetworkErrorCode::InvalidConfiguration),
         3 => Some(NetworkErrorCode::PermissionDenied),
         4..=6 => Some(NetworkErrorCode::PermissionDenied),
-        7..=8 => Some(NetworkErrorCode::InvalidStateTransition),
+        7..=9 => Some(NetworkErrorCode::InvalidStateTransition),
         _ => return Err(NetworkErrorCode::UnsupportedProtocolVersion),
     };
     Ok(RouteHelperStatus {

@@ -187,10 +187,27 @@ private struct RouteJournal: Codable {
 }
 
 private protocol RouteExecuting {
+    func canAdd(cidr: String, interfaceName: String) -> Bool
     func mutate(action: String, cidr: String, interfaceName: String) -> Bool
 }
 
 private struct SystemRouteExecutor: RouteExecuting {
+    func canAdd(cidr: String, interfaceName: String) -> Bool {
+        guard validCIDR(cidr), validInterface(interfaceName) else { return false }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/sbin/route")
+        var arguments = ["-n", "get"]
+        if cidr.contains(":") { arguments.append("-inet6") }
+        arguments += ["-net", cidr]
+        task.arguments = arguments
+        task.standardInput = FileHandle.nullDevice
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        do { try task.run(); task.waitUntilExit() } catch { return false }
+        // A successful lookup means some route already owns this destination.
+        return task.terminationStatus != 0
+    }
+
     func mutate(action: String, cidr: String, interfaceName: String) -> Bool {
         guard action == "add" || action == "delete", validCIDR(cidr), validInterface(interfaceName) else { return false }
         let task = Process()
@@ -250,6 +267,9 @@ private final class RouteCoordinator {
         lock.withLock {
             guard !journalCorrupt, owner.isValid(), journal == nil else { return HelperReply(state: "failed_closed", errorCode: "invalid_owner") }
             let candidate = RouteJournal(version: 1, owner: JournalOwner(owner), pendingCIDR: nil, appliedCIDRs: [])
+            guard owner.privateCIDRs.allSatisfy({ executor.canAdd(cidr: $0, interfaceName: owner.interfaceName) }) else {
+                return HelperReply(state: "failed_closed", errorCode: "route_conflict")
+            }
             guard persist(candidate) else { return HelperReply(state: "failed_closed", errorCode: "journal_write_failed") }
             journal = candidate
             heartbeatDeadline = Date().addingTimeInterval(15)
