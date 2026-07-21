@@ -439,16 +439,28 @@ pub fn run() {
         }
     }
 
-    #[cfg(any(feature = "clippy", feature = "networking-system-lab"))]
+    #[cfg(any(
+        feature = "clippy",
+        feature = "networking-system-lab",
+        all(test, feature = "networking-dev")
+    ))]
     let context = tauri::test::mock_context(tauri::test::noop_assets());
-    #[cfg(any(feature = "clippy", feature = "networking-system-lab"))]
+    #[cfg(any(
+        feature = "clippy",
+        feature = "networking-system-lab",
+        all(test, feature = "networking-dev")
+    ))]
     let app = builder.build(context).unwrap_or_else(|e| {
         eprintln!("[KyClash] failed to build Tauri application: {e}");
         logging!(error, Type::Setup, "Failed to build Tauri application: {}", e);
         std::process::exit(1);
     });
 
-    #[cfg(not(any(feature = "clippy", feature = "networking-system-lab")))]
+    #[cfg(not(any(
+        feature = "clippy",
+        feature = "networking-system-lab",
+        all(test, feature = "networking-dev")
+    )))]
     let app = builder.build(tauri::generate_context!()).unwrap_or_else(|e| {
         eprintln!("[KyClash] failed to build Tauri application: {e}");
         logging!(error, Type::Setup, "Failed to build Tauri application: {}", e);
