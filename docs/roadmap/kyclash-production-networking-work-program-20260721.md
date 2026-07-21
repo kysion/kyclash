@@ -591,6 +591,13 @@ Merge unit: `test(networking): add deterministic reliability matrix`.
 
 #### S1.15 — performance and package lifecycle (formerly N5B)
 
+Status (2026-07-22): in progress. The release workflow now calls the shared
+`scripts/verify-macos-package.mjs` audit, which checks the exact app bundle,
+Developer ID signatures, Team ID, helper plist, sidecar trust hash, duplicate
+helper absence, PKG signature, and emits a byte hash. Performance baselines,
+fresh-install/upgrade/rollback/uninstall evidence, and current-byte VM package
+evidence remain open.
+
 Deliverables:
 
 - Record CPU, resident memory, battery/energy, latency, throughput, loss, utun
