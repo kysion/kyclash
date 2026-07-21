@@ -149,10 +149,25 @@ jobs:
           test -z "$(gofmt -l .)"
 
       - name: Test race safety
-        run: go test -race -count=5 -timeout=180s ./...
+        run: |
+          set -o pipefail
+          mkdir -p build/race
+          go test -race -count=5 -timeout=180s ./... 2>&1 | tee build/race/run.log
+
+      - name: Upload race-test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-sidecar-race-${{ runner.arch }}-${{ github.sha }}
+          path: network-sidecar/build/race/run.log
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Vet source
         run: go vet ./...
+
+      - name: Compile owned macOS utun adapter
+        run: go test -run '^$' -tags=kyclash_utun ./internal/userspace ./cmd/kyclash-network-sidecar
 
       - name: Test actual child data plane
         run: |

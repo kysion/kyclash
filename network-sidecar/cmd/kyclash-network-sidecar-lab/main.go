@@ -61,7 +61,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	if err := networkProfile.Validate(); err != nil {
 		return err
 	}
-	backend, err := userspace.NewLab(config.PrivateKey, cluster.Roots(), netip.MustParseAddrPort(labserver.ProbeAddress))
+	backend, err := userspace.NewLab(config.PrivateKey, cluster.Roots(), netip.MustParseAddrPort(labserver.ProbeAddress), config.InstanceID)
 	if err != nil {
 		return err
 	}

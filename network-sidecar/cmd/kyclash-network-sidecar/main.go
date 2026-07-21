@@ -29,7 +29,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	proof := bootstrap.AuthProof(config)
-	backend, err := userspace.New(config.PrivateKey, nil)
+	backend, err := userspace.New(config.PrivateKey, nil, config.InstanceID)
 	config.Clear()
 	if err != nil {
 		return err

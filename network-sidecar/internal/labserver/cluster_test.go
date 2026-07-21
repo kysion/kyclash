@@ -20,7 +20,7 @@ func TestClusterCarriesBackendHealthProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cluster.Close()
-	backend, err := userspace.NewLab(clientPrivate, cluster.Roots(), netip.MustParseAddrPort(ProbeAddress))
+	backend, err := userspace.NewLab(clientPrivate, cluster.Roots(), netip.MustParseAddrPort(ProbeAddress), "instance.cluster")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestClusterCarriesBackendHealthProbe(t *testing.T) {
 		Site:   profile.Site{PrivateCIDRs: []string{"10.88.0.2/32"}},
 		Tunnel: profile.Tunnel{LocalAddresses: []string{"10.88.0.1/32"}, PeerPublicKey: cluster.PeerPublicKey(), KeepaliveSeconds: 5},
 	}
-	if err := backend.Prepare(context.Background(), networkProfile); err != nil {
+	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
 		t.Fatal(err)
 	}
 	endpoint := cluster.Endpoints()[0]

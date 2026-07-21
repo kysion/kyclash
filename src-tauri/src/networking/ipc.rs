@@ -46,6 +46,33 @@ pub enum IpcResponsePayload {
     Acknowledged,
     Status(NetworkStatus),
     Health(NetworkHealth),
+    TunnelPrepared(TunnelDeviceFacts),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TunnelDeviceFacts {
+    pub interface_name: String,
+    pub mtu: u16,
+    pub has_ipv4: bool,
+    pub has_ipv6: bool,
+    pub instance_id: String,
+    pub operation_id: String,
+}
+
+impl TunnelDeviceFacts {
+    pub fn validate(&self, instance_id: &str, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        let suffix = self.interface_name.strip_prefix("utun").unwrap_or_default();
+        if self.mtu != 1420
+            || suffix.is_empty()
+            || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+            || self.instance_id != instance_id
+            || self.operation_id != operation_id
+        {
+            return Err(NetworkErrorCode::AuthenticationFailed);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,5 +185,34 @@ mod tests {
             serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v1.health.json"))?;
         assert_eq!(serde_json::to_value(response)?, fixture);
         Ok(())
+    }
+
+    #[test]
+    fn tunnel_facts_require_exact_owner_and_utun_name() {
+        let facts = TunnelDeviceFacts {
+            interface_name: "utun12".into(),
+            mtu: 1420,
+            has_ipv4: true,
+            has_ipv6: true,
+            instance_id: "instance.test".into(),
+            operation_id: "request.prepare".into(),
+        };
+        assert_eq!(facts.validate("instance.test", "request.prepare"), Ok(()));
+        let mut invalid_name = facts.clone();
+        invalid_name.interface_name = "utun-owned-by-name".into();
+        let mut invalid_mtu = facts.clone();
+        invalid_mtu.mtu = 1280;
+        let mut invalid_operation = facts.clone();
+        invalid_operation.operation_id = "request.other".into();
+        for invalid in [invalid_name, invalid_mtu, invalid_operation] {
+            assert_eq!(
+                invalid.validate("instance.test", "request.prepare"),
+                Err(NetworkErrorCode::AuthenticationFailed)
+            );
+        }
+        assert_eq!(
+            facts.validate("instance.other", "request.prepare"),
+            Err(NetworkErrorCode::AuthenticationFailed)
+        );
     }
 }

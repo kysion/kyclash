@@ -39,6 +39,7 @@ execFileSync(
     'build',
     '-trimpath',
     '-buildvcs=false',
+    '-tags=kyclash_utun',
     '-ldflags=-buildid=',
     '-o',
     output,

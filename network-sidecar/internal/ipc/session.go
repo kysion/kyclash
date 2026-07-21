@@ -17,12 +17,21 @@ type Health struct {
 	LossPercent uint8  `json:"loss_percent"`
 }
 
+type TunnelDeviceFacts struct {
+	InterfaceName string `json:"interface_name"`
+	MTU           int    `json:"mtu"`
+	HasIPv4       bool   `json:"has_ipv4"`
+	HasIPv6       bool   `json:"has_ipv6"`
+	InstanceID    string `json:"instance_id"`
+	OperationID   string `json:"operation_id"`
+}
+
 func (health Health) valid() bool {
 	return health.LossPercent <= 100
 }
 
 type Backend interface {
-	Prepare(context.Context, *profile.Profile) error
+	Prepare(context.Context, *profile.Profile, string) (TunnelDeviceFacts, error)
 	Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error
 	Health(context.Context) (Health, error)
 	Disconnect(context.Context) error
@@ -33,7 +42,16 @@ type Backend interface {
 
 type contractBackend struct{}
 
-func (contractBackend) Prepare(context.Context, *profile.Profile) error { return nil }
+func (contractBackend) Prepare(_ context.Context, networkProfile *profile.Profile, operationID string) (TunnelDeviceFacts, error) {
+	return TunnelDeviceFacts{
+		InterfaceName: "utun0",
+		MTU:           profile.TunnelMTU,
+		HasIPv4:       true,
+		HasIPv6:       true,
+		InstanceID:    "contract.instance",
+		OperationID:   operationID,
+	}, nil
+}
 func (contractBackend) Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error {
 	return nil
 }

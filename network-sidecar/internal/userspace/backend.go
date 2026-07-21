@@ -1,5 +1,6 @@
-// Package userspace binds the IPC data-plane contract to wireguard-go's
-// unprivileged netstack and explicit KyClash packet carriers.
+// Package userspace binds the IPC data-plane contract to wireguard-go and
+// explicit KyClash packet carriers. Default and lab builds use its unprivileged
+// netstack; the reviewed macOS production build uses an owned utun device.
 package userspace
 
 import (
@@ -39,21 +40,24 @@ type Backend struct {
 	operationCancel context.CancelFunc
 	cancelRequested bool
 	probeAddress    netip.AddrPort
+	instanceID      string
+	interfaceName   string
+	ownerOperation  string
 }
 
-func New(privateKey []byte, labRoots *x509.CertPool) (*Backend, error) {
-	if len(privateKey) != 32 {
+func New(privateKey []byte, labRoots *x509.CertPool, instanceID string) (*Backend, error) {
+	if len(privateKey) != 32 || !validOwnerID(instanceID) {
 		return nil, ErrInvalidState
 	}
-	backend := &Backend{privateKey: append([]byte(nil), privateKey...), roots: labRoots}
+	backend := &Backend{privateKey: append([]byte(nil), privateKey...), roots: labRoots, instanceID: instanceID}
 	backend.dialer = backend.dialCarrier
 	return backend, nil
 }
 
 // NewLab enables a bounded payload probe over the userspace WireGuard
 // netstack. It is used only by the networking-dev lab executable.
-func NewLab(privateKey []byte, labRoots *x509.CertPool, probeAddress netip.AddrPort) (*Backend, error) {
-	backend, err := New(privateKey, labRoots)
+func NewLab(privateKey []byte, labRoots *x509.CertPool, probeAddress netip.AddrPort, instanceID string) (*Backend, error) {
+	backend, err := New(privateKey, labRoots, instanceID)
 	if err != nil || !probeAddress.IsValid() {
 		return nil, ErrInvalidState
 	}
@@ -61,29 +65,29 @@ func NewLab(privateKey []byte, labRoots *x509.CertPool, probeAddress netip.AddrP
 	return backend, nil
 }
 
-func (backend *Backend) Prepare(_ context.Context, networkProfile *profile.Profile) error {
+func (backend *Backend) Prepare(_ context.Context, networkProfile *profile.Profile, operationID string) (ipc.TunnelDeviceFacts, error) {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if backend.closed || backend.wireGuard != nil || networkProfile == nil || len(backend.privateKey) != 32 {
-		return ErrInvalidState
+	if backend.closed || backend.wireGuard != nil || networkProfile == nil || len(backend.privateKey) != 32 || !validOwnerID(operationID) {
+		return ipc.TunnelDeviceFacts{}, ErrInvalidState
 	}
-	addresses := make([]netip.Addr, 0, len(networkProfile.Tunnel.LocalAddresses))
+	prefixes := make([]netip.Prefix, 0, len(networkProfile.Tunnel.LocalAddresses))
 	for _, value := range networkProfile.Tunnel.LocalAddresses {
 		prefix, err := netip.ParsePrefix(value)
-		if err != nil {
-			return ErrInvalidState
+		if err != nil || !prefix.IsValid() || prefix.Addr().IsUnspecified() || prefix.Addr().IsMulticast() {
+			return ipc.TunnelDeviceFacts{}, ErrInvalidState
 		}
-		addresses = append(addresses, prefix.Addr())
+		prefixes = append(prefixes, prefix)
 	}
-	tunnel, network, err := netstack.CreateNetTUN(addresses, nil, profile.TunnelMTU)
+	tunnel, network, interfaceName, err := createTunnel(prefixes, profile.TunnelMTU)
 	if err != nil {
-		return fmt.Errorf("create userspace tunnel: %w", err)
+		return ipc.TunnelDeviceFacts{}, fmt.Errorf("create WireGuard tunnel: %w", err)
 	}
 	board := wgcarrier.NewSwitchboard()
 	bind, err := wgcarrier.NewBind(board, "kyclash-peer")
 	if err != nil {
 		_ = tunnel.Close()
-		return err
+		return ipc.TunnelDeviceFacts{}, err
 	}
 	wireGuard := device.NewDevice(tunnel, bind, device.NewLogger(device.LogLevelSilent, ""))
 	// netstack reports its TUN as immediately up. Quiesce the empty device
@@ -91,26 +95,29 @@ func (backend *Backend) Prepare(_ context.Context, networkProfile *profile.Profi
 	if err := wireGuard.Down(); err != nil {
 		wireGuard.Close()
 		_ = board.Shutdown()
-		return fmt.Errorf("quiesce empty userspace WireGuard: %w", err)
+		return ipc.TunnelDeviceFacts{}, fmt.Errorf("quiesce empty userspace WireGuard: %w", err)
 	}
 	if err := configure(wireGuard, backend.privateKey, networkProfile); err != nil {
 		wireGuard.Close()
 		_ = board.Shutdown()
-		return err
+		return ipc.TunnelDeviceFacts{}, err
 	}
 	// netstack TUN starts wireguard-go during configuration. Keep the prepared
 	// device down until Rust explicitly selects and attaches one carrier.
 	if err := wireGuard.Down(); err != nil {
 		wireGuard.Close()
 		_ = board.Shutdown()
-		return fmt.Errorf("quiesce prepared userspace WireGuard: %w", err)
+		return ipc.TunnelDeviceFacts{}, fmt.Errorf("quiesce prepared userspace WireGuard: %w", err)
 	}
 	clear(backend.privateKey)
 	backend.privateKey = nil
 	backend.switchboard = board
 	backend.wireGuard = wireGuard
 	backend.network = network
-	return nil
+	backend.interfaceName = interfaceName
+	backend.ownerOperation = operationID
+	hasIPv4, hasIPv6 := addressFamilies(networkProfile)
+	return ipc.TunnelDeviceFacts{InterfaceName: backend.interfaceName, MTU: profile.TunnelMTU, HasIPv4: hasIPv4, HasIPv6: hasIPv6, InstanceID: backend.instanceID, OperationID: operationID}, nil
 }
 
 func (backend *Backend) Connect(ctx context.Context, transport profile.Transport, endpoint profile.NormalizedEndpoint) error {
@@ -148,7 +155,7 @@ func (backend *Backend) Connect(ctx context.Context, transport profile.Transport
 	}
 	if err := backend.wireGuard.Up(); err != nil {
 		_ = backend.switchboard.Close()
-		return fmt.Errorf("start userspace WireGuard: %w", err)
+		return fmt.Errorf("start WireGuard device: %w", err)
 	}
 	backend.active = transport
 	backend.connectDelay = time.Since(started)
@@ -208,7 +215,7 @@ func (backend *Backend) Disconnect(context.Context) error {
 		return ErrInvalidState
 	}
 	if err := backend.wireGuard.Down(); err != nil {
-		return fmt.Errorf("stop userspace WireGuard: %w", err)
+		return fmt.Errorf("stop WireGuard device: %w", err)
 	}
 	// wireguard-go closes the Bind while going down, which detaches and closes
 	// the active switchboard carrier.
@@ -229,6 +236,8 @@ func (backend *Backend) Stop(context.Context) error {
 	backend.wireGuard = nil
 	backend.network = nil
 	backend.switchboard = nil
+	backend.interfaceName = ""
+	backend.ownerOperation = ""
 	return nil
 }
 
@@ -272,7 +281,31 @@ func (backend *Backend) Close() error {
 	backend.switchboard = nil
 	backend.active = ""
 	backend.cancelRequested = false
+	backend.interfaceName = ""
+	backend.ownerOperation = ""
 	return nil
+}
+
+func validOwnerID(value string) bool {
+	if len(value) < 8 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if character > 127 || !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+func addressFamilies(networkProfile *profile.Profile) (bool, bool) {
+	var hasIPv4, hasIPv6 bool
+	for _, value := range networkProfile.Tunnel.LocalAddresses {
+		prefix, _ := netip.ParsePrefix(value)
+		hasIPv4 = hasIPv4 || prefix.Addr().Is4()
+		hasIPv6 = hasIPv6 || prefix.Addr().Is6()
+	}
+	return hasIPv4, hasIPv6
 }
 
 func (backend *Backend) dialCarrier(ctx context.Context, transport profile.Transport, endpoint profile.NormalizedEndpoint) (carrier.Carrier, error) {

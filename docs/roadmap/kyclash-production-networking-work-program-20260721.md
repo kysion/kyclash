@@ -56,7 +56,7 @@ stopping points.
 | S1.01–S1.04 | contracts, carriers, lab server, actual child | complete |
 | S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
 | S1.08 | reproducible signed nested sidecar and launch trust | in progress; run 29837451828 proved the protected environment lacks `APPLE_CERTIFICATE`, signed evidence pending |
-| S1.09–S1.10 | owned real utun and disposable-VM termination matrix | pending |
+| S1.09–S1.10 | owned real utun and disposable-VM termination matrix | S1.09 source in progress; signed disposable-VM evidence pending |
 | S1.11–S1.13 | signed helper, route lease/recovery, Mihomo coexistence | pending |
 | S1.14–S1.16 | impairment, performance/package lifecycle, physical/staging gates | pending |
 
@@ -352,6 +352,18 @@ Deliverables:
 Merge unit: `build(macos): bundle and verify signed network sidecar`.
 
 #### S1.09 — real utun device lifecycle (formerly N3B)
+
+Contract amendment: `kyclash-utun-contract-review-20260721.md` locks the
+instance/request ownership record and redacted `tunnel_prepared` response.
+
+Status (2026-07-21): in progress. The contract and source implementation are
+complete: the production-only macOS build tag creates the device, validates
+its returned name, configures only local addresses and MTU, retains the exact
+device object, and reports the bootstrap/request owner tuple. Default and lab
+builds remain on netstack. Go unit, tagged macOS compile, vet, Rust contract,
+production-controller, frontend, and repository gates pass locally. Signed
+create/traffic/down and final-absence evidence in the disposable VM remains
+open, so this work package and S1 are not complete.
 
 Deliverables:
 

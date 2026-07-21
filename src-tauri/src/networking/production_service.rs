@@ -37,6 +37,7 @@ pub struct ProductionNetworkingService {
     routes: Arc<Mutex<Box<dyn ProductionRouteBoundary>>>,
     status: Arc<Mutex<ProductionNetworkStatus>>,
     timeout: Duration,
+    instance_id: String,
 }
 
 impl ProductionNetworkingService {
@@ -44,6 +45,7 @@ impl ProductionNetworkingService {
         controller: ProductionControllerHandle,
         profile: NetworkProfile,
         routes: Box<dyn ProductionRouteBoundary>,
+        instance_id: String,
     ) -> Result<Self, NetworkErrorCode> {
         profile.validate()?;
         let site = ProductionSiteSummary {
@@ -56,6 +58,7 @@ impl ProductionNetworkingService {
             timeout: Duration::from_secs(profile.policy.connect_timeout_seconds.into()),
             profile,
             routes: Arc::new(Mutex::new(routes)),
+            instance_id,
             status: Arc::new(Mutex::new(ProductionNetworkStatus {
                 state: NetworkState::Disconnected,
                 sidecar_state: SidecarLifecycleState::Stopped,
@@ -115,7 +118,7 @@ impl ProductionNetworkingService {
             None,
             None,
         );
-        self.request(operation_id, IpcRequestPayload::PrepareTunnel).await?;
+        self.prepare_tunnel(operation_id).await?;
         self.set_status(
             NetworkState::ConnectingPrimary,
             Some(operation_id.into()),
@@ -174,6 +177,22 @@ impl ProductionNetworkingService {
             return Err(NetworkErrorCode::PrimaryTransportUnavailable);
         }
         Ok(health)
+    }
+
+    async fn prepare_tunnel(&self, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        let request_id = format!("{operation_id}.prepare");
+        let response = self
+            .controller
+            .request(
+                operation_id.into(),
+                request(request_id.clone(), IpcRequestPayload::PrepareTunnel),
+                self.timeout,
+            )
+            .await?;
+        let IpcResponsePayload::TunnelPrepared(facts) = response.result.map_err(|error| error.code)? else {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        };
+        facts.validate(&self.instance_id, &request_id)
     }
 
     pub async fn disconnect(&self, operation_id: String) -> Result<ProductionNetworkStatus, NetworkErrorCode> {
@@ -285,7 +304,19 @@ mod tests {
             }
             let (name, result) = match request.payload {
                 IpcRequestPayload::ApplyProfile(_) => ("validate", Ok(IpcResponsePayload::Acknowledged)),
-                IpcRequestPayload::PrepareTunnel => ("tunnel:prepare", Ok(IpcResponsePayload::Acknowledged)),
+                IpcRequestPayload::PrepareTunnel => (
+                    "tunnel:prepare",
+                    Ok(IpcResponsePayload::TunnelPrepared(
+                        crate::networking::TunnelDeviceFacts {
+                            interface_name: "utun42".into(),
+                            mtu: 1420,
+                            has_ipv4: true,
+                            has_ipv6: true,
+                            instance_id: "instance.test".into(),
+                            operation_id: request.request_id.clone(),
+                        },
+                    )),
+                ),
                 IpcRequestPayload::ConnectTransport { transport } => {
                     let result = if transport == TransportKind::Quic && self.fail_quic {
                         Err(IpcError {
@@ -361,8 +392,13 @@ mod tests {
             "proof".into(),
         );
         let profile: NetworkProfile = serde_json::from_str(PROFILE)?;
-        let service = ProductionNetworkingService::new(controller, profile, Box::new(Routes(Arc::clone(&events))))
-            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let service = ProductionNetworkingService::new(
+            controller,
+            profile,
+            Box::new(Routes(Arc::clone(&events))),
+            "instance.test".into(),
+        )
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         assert_eq!(
             service
                 .connect("operation.connect".into())
@@ -398,12 +434,17 @@ mod tests {
                 events: Arc::clone(&events),
                 fail_quic: true,
             },
-            SidecarLaunchContext::new("instance.fallback".into(), vec![1; 32]).with_private_key(vec![2; 32]),
+            SidecarLaunchContext::new("instance.test".into(), vec![1; 32]).with_private_key(vec![2; 32]),
             "proof".into(),
         );
         let profile: NetworkProfile = serde_json::from_str(PROFILE)?;
-        let service = ProductionNetworkingService::new(controller, profile, Box::new(Routes(Arc::clone(&events))))
-            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let service = ProductionNetworkingService::new(
+            controller,
+            profile,
+            Box::new(Routes(Arc::clone(&events))),
+            "instance.test".into(),
+        )
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         assert_eq!(
             service
                 .connect("operation.fallback".into())

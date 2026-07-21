@@ -50,7 +50,7 @@ func testProfile(t *testing.T) *profile.Profile {
 }
 
 func TestBackendPreparesConnectsAndReconnectsExplicitCarriers(t *testing.T) {
-	backend, err := New(make([]byte, 32), nil)
+	backend, err := New(make([]byte, 32), nil, "instance.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +59,12 @@ func TestBackendPreparesConnectsAndReconnectsExplicitCarriers(t *testing.T) {
 		selected = append(selected, transport)
 		return newMemoryCarrier(), nil
 	}
-	if err := backend.Prepare(context.Background(), testProfile(t)); err != nil {
+	facts, err := backend.Prepare(context.Background(), testProfile(t), "request.prepare")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if facts.InterfaceName != "userspace" || facts.MTU != profile.TunnelMTU || facts.InstanceID != "instance.test" || facts.OperationID != "request.prepare" || !facts.HasIPv4 || !facts.HasIPv6 {
+		t.Fatalf("unexpected redacted device facts: %#v", facts)
 	}
 	if backend.privateKey != nil {
 		t.Fatal("private key remained owned after WireGuard configuration")
@@ -93,7 +97,7 @@ func TestBackendPreparesConnectsAndReconnectsExplicitCarriers(t *testing.T) {
 }
 
 func TestBackendDialFailureDoesNotAttachCarrier(t *testing.T) {
-	backend, err := New(make([]byte, 32), nil)
+	backend, err := New(make([]byte, 32), nil, "instance.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +105,7 @@ func TestBackendDialFailureDoesNotAttachCarrier(t *testing.T) {
 		return nil, errors.New("injected dial failure")
 	}
 	networkProfile := testProfile(t)
-	if err := backend.Prepare(context.Background(), networkProfile); err != nil {
+	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
 		t.Fatal(err)
 	}
 	endpoint, err := networkProfile.Endpoint(profile.QUIC)
@@ -115,7 +119,7 @@ func TestBackendDialFailureDoesNotAttachCarrier(t *testing.T) {
 }
 
 func TestBackendCancellationInterruptsDialWithoutActivatingCarrier(t *testing.T) {
-	backend, err := New(make([]byte, 32), nil)
+	backend, err := New(make([]byte, 32), nil, "instance.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +130,7 @@ func TestBackendCancellationInterruptsDialWithoutActivatingCarrier(t *testing.T)
 		return nil, ctx.Err()
 	}
 	networkProfile := testProfile(t)
-	if err := backend.Prepare(context.Background(), networkProfile); err != nil {
+	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
 		t.Fatal(err)
 	}
 	endpoint, err := networkProfile.Endpoint(profile.QUIC)

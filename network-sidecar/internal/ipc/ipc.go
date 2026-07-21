@@ -247,12 +247,13 @@ func (current *session) handle(request Request) (Response, bool) {
 		if current.profile == nil || current.tunnelPrepared {
 			return invalidState(response)
 		}
-		if err := current.backend.Prepare(context.Background(), current.profile); err != nil {
+		facts, err := current.backend.Prepare(context.Background(), current.profile, request.RequestID)
+		if err != nil {
 			return current.backendFailure(response)
 		}
 		current.tunnelPrepared = true
 		current.lastError = nil
-		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
+		response.Result = success(map[string]interface{}{"type": "tunnel_prepared", "data": facts})
 		return response, false
 	case "disconnect_transport":
 		if !emptyData(request.Payload.Data) {

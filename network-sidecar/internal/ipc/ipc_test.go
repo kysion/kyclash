@@ -40,11 +40,18 @@ func (backend *cancellableBackend) Cancel(string) error {
 	return nil
 }
 
-func (backend *faultBackend) Prepare(context.Context, *profile.Profile) error {
+func (backend *faultBackend) Prepare(_ context.Context, _ *profile.Profile, operationID string) (TunnelDeviceFacts, error) {
 	if backend.fail == "prepare" {
-		return ErrBackendUnavailable
+		return TunnelDeviceFacts{}, ErrBackendUnavailable
 	}
-	return nil
+	return TunnelDeviceFacts{
+		InterfaceName: "userspace",
+		MTU:           profile.TunnelMTU,
+		HasIPv4:       true,
+		HasIPv6:       true,
+		InstanceID:    "fault.instance",
+		OperationID:   operationID,
+	}, nil
 }
 
 func (backend *faultBackend) Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error {
@@ -155,6 +162,13 @@ func TestSessionEnforcesExplicitBreakBeforeMakeLifecycle(t *testing.T) {
 		if stop || response.Result["Err"] != nil {
 			t.Fatalf("request %s failed: %#v", request.Payload.Type, response)
 		}
+		if request.Payload.Type == "prepare_tunnel" {
+			prepared := response.Result["Ok"].(map[string]interface{})
+			facts := prepared["data"].(TunnelDeviceFacts)
+			if prepared["type"] != "tunnel_prepared" || facts.InstanceID != "contract.instance" || facts.OperationID != request.RequestID || facts.MTU != profile.TunnelMTU {
+				t.Fatalf("prepare response lost exact tunnel ownership: %#v", prepared)
+			}
+		}
 	}
 	if status := current.status(); status.State != "disconnected" || status.ActiveProfileID == nil || status.ActiveTransport != nil {
 		t.Fatalf("unexpected final status: %#v", status)
@@ -255,6 +269,10 @@ func TestServeReadsCancelWhileConnectIsInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var compactProfile bytes.Buffer
+	if err := json.Compact(&compactProfile, profileData); err != nil {
+		t.Fatal(err)
+	}
 	backend := &cancellableBackend{started: make(chan struct{}), canceled: make(chan struct{})}
 	inputReader, inputWriter := io.Pipe()
 	var output bytes.Buffer
@@ -266,7 +284,7 @@ func TestServeReadsCancelWhileConnectIsInFlight(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(fmt.Sprintf(`{"protocol_version":1,"request_id":"request.profile","payload":{"type":"apply_profile","data":%s}}`, profileData))
+	write(fmt.Sprintf(`{"protocol_version":1,"request_id":"request.profile","payload":{"type":"apply_profile","data":%s}}`, compactProfile.Bytes()))
 	write(`{"protocol_version":1,"request_id":"request.prepare","payload":{"type":"prepare_tunnel"}}`)
 	write(`{"protocol_version":1,"request_id":"request.connect","payload":{"type":"connect_transport","data":{"transport":"quic"}}}`)
 	select {

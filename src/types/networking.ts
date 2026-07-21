@@ -145,6 +145,17 @@ export interface NetworkIpcRequest {
 export type NetworkIpcResponsePayload =
   | { type: 'acknowledged' }
   | { type: 'status'; data: NetworkStatus }
+  | {
+      type: 'tunnel_prepared'
+      data: {
+        interface_name: string
+        mtu: 1420
+        has_ipv4: boolean
+        has_ipv6: boolean
+        instance_id: string
+        operation_id: string
+      }
+    }
 
 export interface NetworkIpcError {
   code: NetworkErrorCode
