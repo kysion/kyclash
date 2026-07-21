@@ -1121,6 +1121,7 @@ dependencies = [
  "rustls",
  "scopeguard",
  "security-framework",
+ "semver 1.0.28",
  "serde",
  "serde-xml-rs",
  "serde_json",

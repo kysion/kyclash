@@ -1,10 +1,11 @@
 use crate::{config::Config, singleton, utils::dirs};
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use chrono::Utc;
 use clash_verge_logging::{Type, logging};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -14,6 +15,106 @@ use tauri_plugin_updater::{Update, UpdaterExt as _};
 /// signing key, and rollback procedure. Keep this gate in addition to the
 /// empty endpoint list so previously cached upstream releases are not installed.
 pub const APP_UPDATES_ENABLED: bool = false;
+
+const OWNED_PLATFORM: &str = "darwin-aarch64-app";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedUpdateManifest {
+    version: String,
+    notes: String,
+    pub_date: String,
+    platforms: BTreeMap<String, OwnedUpdateArtifact>,
+    kyclash: OwnedUpdatePolicy,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedUpdateArtifact {
+    url: String,
+    signature: String,
+    sha256: String,
+    size: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedUpdatePolicy {
+    schema_version: u8,
+    source_commit: String,
+    rollback_version: String,
+    channel: OwnedUpdateChannel,
+    sample: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum OwnedUpdateChannel {
+    Stable,
+    Candidate,
+    Internal,
+}
+
+fn validate_owned_update_metadata(
+    raw_json: &serde_json::Value,
+    announced_version: &str,
+    announced_url: &str,
+    announced_signature: &str,
+) -> Result<()> {
+    let manifest: OwnedUpdateManifest = serde_json::from_value(raw_json.clone())?;
+    ensure!(manifest.version == announced_version, "update version mismatch");
+    ensure!(!manifest.notes.trim().is_empty(), "update notes are empty");
+    ensure!(!manifest.pub_date.trim().is_empty(), "update publication date is empty");
+    ensure!(manifest.platforms.len() == 1, "unexpected update platforms");
+
+    let artifact = manifest
+        .platforms
+        .get(OWNED_PLATFORM)
+        .ok_or_else(|| anyhow::anyhow!("owned update platform is missing"))?;
+    let expected_url = format!(
+        "https://github.com/kysion/kyclash/releases/download/v{}/KyClash_{}_aarch64.app.tar.gz",
+        manifest.version, manifest.version
+    );
+    ensure!(artifact.url == expected_url, "update URL is not KyClash-owned");
+    ensure!(artifact.url == announced_url, "update URL mismatch");
+    ensure!(artifact.signature == announced_signature, "update signature mismatch");
+    ensure!(artifact.size > 0, "update artifact size is invalid");
+    ensure!(
+        artifact.sha256.len() == 64
+            && artifact
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "update artifact SHA-256 is invalid"
+    );
+
+    ensure!(manifest.kyclash.schema_version == 1, "unknown update schema");
+    ensure!(!manifest.kyclash.sample, "sample update metadata is forbidden");
+    ensure!(
+        manifest.kyclash.source_commit.len() == 40
+            && manifest
+                .kyclash
+                .source_commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && manifest.kyclash.source_commit.bytes().any(|byte| byte != b'0'),
+        "update source commit is invalid"
+    );
+    let version = semver::Version::parse(&manifest.version)?;
+    let rollback_version = semver::Version::parse(&manifest.kyclash.rollback_version)?;
+    ensure!(rollback_version < version, "rollback version must be older");
+    let _channel = manifest.kyclash.channel;
+    Ok(())
+}
+
+fn validate_owned_update(update: &Update) -> Result<()> {
+    validate_owned_update_metadata(
+        &update.raw_json,
+        &update.version,
+        update.download_url.as_str(),
+        &update.signature,
+    )
+}
 
 pub struct SilentUpdater {
     update_ready: AtomicBool,
@@ -221,6 +322,12 @@ impl SilentUpdater {
                 return false;
             }
         };
+
+        if validate_owned_update(&update).is_err() {
+            logging!(warn, Type::System, "Rejected non-KyClash update metadata");
+            Self::delete_cache();
+            return false;
+        }
 
         // Verify the server's version matches the cached version.
         // If server now has a newer version, our cached bytes are stale.
@@ -441,6 +548,11 @@ impl SilentUpdater {
             }
         };
 
+        if validate_owned_update(&update).is_err() {
+            logging!(warn, Type::System, "Rejected non-KyClash update metadata");
+            return Err(anyhow::anyhow!("owned update metadata rejected"));
+        }
+
         let version = update.version.clone();
         logging!(info, Type::System, "Silent updater: update available: v{version}");
 
@@ -511,6 +623,78 @@ impl SilentUpdater {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    type MetadataMutation = Box<dyn Fn(&mut serde_json::Value)>;
+
+    fn owned_metadata() -> serde_json::Value {
+        serde_json::json!({
+            "version": "2.5.4",
+            "notes": "KyClash 2.5.4",
+            "pub_date": "2026-07-21T00:00:00Z",
+            "platforms": {
+                "darwin-aarch64-app": {
+                    "url": "https://github.com/kysion/kyclash/releases/download/v2.5.4/KyClash_2.5.4_aarch64.app.tar.gz",
+                    "signature": "owned-signature",
+                    "sha256": "1".repeat(64),
+                    "size": 1024
+                }
+            },
+            "kyclash": {
+                "schema_version": 1,
+                "source_commit": "2".repeat(40),
+                "rollback_version": "2.5.3",
+                "channel": "internal",
+                "sample": false
+            }
+        })
+    }
+
+    fn validate_fixture(metadata: &serde_json::Value) -> Result<()> {
+        validate_owned_update_metadata(
+            metadata,
+            "2.5.4",
+            "https://github.com/kysion/kyclash/releases/download/v2.5.4/KyClash_2.5.4_aarch64.app.tar.gz",
+            "owned-signature",
+        )
+    }
+
+    #[test]
+    fn owned_update_metadata_accepts_only_the_locked_contract() {
+        assert!(validate_fixture(&owned_metadata()).is_ok());
+
+        let mutations: Vec<MetadataMutation> = vec![
+            Box::new(|value| value["kyclash"]["sample"] = true.into()),
+            Box::new(|value| value["kyclash"]["source_commit"] = "0".repeat(40).into()),
+            Box::new(|value| value["kyclash"]["rollback_version"] = "2.5.4".into()),
+            Box::new(|value| value["kyclash"]["schema_version"] = 2.into()),
+            Box::new(|value| value["platforms"][OWNED_PLATFORM]["sha256"] = "A".repeat(64).into()),
+            Box::new(|value| value["unexpected"] = true.into()),
+        ];
+        for mutate in mutations {
+            let mut metadata = owned_metadata();
+            mutate(&mut metadata);
+            assert!(validate_fixture(&metadata).is_err());
+        }
+
+        assert!(
+            validate_owned_update_metadata(
+                &owned_metadata(),
+                "2.5.4",
+                "https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.4/KyClash_2.5.4_aarch64.app.tar.gz",
+                "owned-signature",
+            )
+            .is_err()
+        );
+        assert!(
+            validate_owned_update_metadata(
+                &owned_metadata(),
+                "2.5.4",
+                "https://github.com/kysion/kyclash/releases/download/v2.5.4/KyClash_2.5.4_aarch64.app.tar.gz",
+                "foreign-signature",
+            )
+            .is_err()
+        );
+    }
 
     // ─── version_lte tests ──────────────────────────────────────────────────
 

@@ -415,6 +415,10 @@ Completed in the current workspace:
   deterministic metadata builder, streaming minisign verifier, rollback policy,
   and CI variable/secret contract. Base builds and runtime update gates remain
   disabled; no Release or endpoint activation is performed by this preparation.
+- Added a fail-closed runtime metadata policy ahead of any future activation.
+  Both background download and cached-install refresh reject non-KyClash URLs,
+  unknown/extra fields, sample or invalid source metadata, mismatched
+  version/URL/signature, invalid artifact facts, and non-older rollback targets.
 
 Remaining:
 

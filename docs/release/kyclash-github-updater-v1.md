@@ -67,6 +67,13 @@ The signature embedded in `latest.json` is the base64 encoding of the complete
 `.sig` file, matching Tauri updater v2. HTTPS, SHA-256, and GitHub artifact
 attestation are defense in depth; none replaces this signature verification.
 
+The dormant Rust updater also validates the complete KyClash extension before
+download and again before installing cached bytes. It rejects unknown fields,
+sample metadata, unknown schema/channel, non-KyClash URLs, mismatched announced
+version/URL/signature, invalid commit or SHA-256 shapes, zero sizes, additional
+platforms, and rollback versions that are not older than the candidate. Error
+logging is constant and does not echo rejected metadata.
+
 ## CI configuration names
 
 Repository/environment variables (not secrets):
