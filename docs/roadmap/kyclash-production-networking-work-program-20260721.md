@@ -516,6 +516,16 @@ reviewed candidate include the production feature in normal builds.
 
 #### S1.14 — deterministic impairment and recovery matrix (formerly N5A)
 
+Status (2026-07-21): in progress. The loopback lab carrier now provides
+deterministic latency, stepped jitter, byte-rate limiting, nth-packet loss,
+nth-packet duplication, pair reordering, UDP refusal, and bounded forced
+disconnect. Unit and race tests assert exact delivery order and cancellation-
+aware delays without external networking. TLS identity refusal, frame bounds,
+fragment expiry, replay refusal, abrupt server close, and Rust-commanded
+QUIC/WSS/TCP fallback already have focused coverage. The consolidated short CI
+matrix, stable reason-code assertions for every impairment, extended soak, and
+network-change recovery evidence remain open.
+
 Matrix:
 
 - Loss, duplication, reordering, jitter, latency, rate limit, UDP refusal,

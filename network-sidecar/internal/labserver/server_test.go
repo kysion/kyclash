@@ -116,6 +116,34 @@ func TestDeterministicLossDisconnectAndAbort(t *testing.T) {
 	}
 }
 
+func TestDeterministicDuplicateReorderJitterAndRateLimit(t *testing.T) {
+	base := &recordingCarrier{}
+	impaired := &impairedCarrier{Carrier: base, impairment: Impairment{
+		DuplicateEvery:          2,
+		ReorderPairs:            true,
+		JitterStep:              time.Millisecond,
+		RateLimitBytesPerSecond: 10_000,
+	}}
+	started := time.Now()
+	for index := 1; index <= 4; index++ {
+		if err := impaired.Send(context.Background(), []byte{byte(index)}); err != nil {
+			t.Fatalf("packet %d: %v", index, err)
+		}
+	}
+	want := []byte{2, 1, 2, 4, 3, 4}
+	if len(base.sent) != len(want) {
+		t.Fatalf("delivery count = %d, want %d: %v", len(base.sent), len(want), base.sent)
+	}
+	for index, packet := range base.sent {
+		if len(packet) != 1 || packet[0] != want[index] {
+			t.Fatalf("delivery %d = %v, want %d", index, packet, want[index])
+		}
+	}
+	if elapsed := time.Since(started); elapsed < 3*time.Millisecond {
+		t.Fatalf("deterministic jitter/rate delay was not applied: %v", elapsed)
+	}
+}
+
 func TestBidirectionalWireGuardTrafficAcrossCarriers(t *testing.T) {
 	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
 		t.Run(string(transport), func(t *testing.T) { proveTunnel(t, transport) })

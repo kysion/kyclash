@@ -39,10 +39,14 @@ var (
 )
 
 type Impairment struct {
-	RefuseUDP       bool
-	PacketDelay     time.Duration
-	DropEvery       uint64
-	DisconnectAfter uint64
+	RefuseUDP               bool
+	PacketDelay             time.Duration
+	JitterStep              time.Duration
+	RateLimitBytesPerSecond uint64
+	DropEvery               uint64
+	DuplicateEvery          uint64
+	ReorderPairs            bool
+	DisconnectAfter         uint64
 }
 
 type Config struct {
@@ -81,7 +85,7 @@ func Start(parent context.Context, config Config) (*Server, error) {
 	if host == nil || !host.IsLoopback() {
 		return nil, ErrNonLoopback
 	}
-	if len(config.ClientPublicKey) != 32 || config.Impairment.PacketDelay < 0 {
+	if len(config.ClientPublicKey) != 32 || config.Impairment.PacketDelay < 0 || config.Impairment.JitterStep < 0 {
 		return nil, ErrInvalid
 	}
 	if config.Transport == profile.QUIC && config.Impairment.RefuseUDP {
@@ -303,19 +307,27 @@ type impairedCarrier struct {
 	impairment Impairment
 	mu         sync.Mutex
 	packets    uint64
+	held       []byte
 }
 
 func (value *impairedCarrier) Send(ctx context.Context, packet []byte) error {
 	value.mu.Lock()
+	defer value.mu.Unlock()
 	value.packets++
 	count := value.packets
-	value.mu.Unlock()
 	if value.impairment.DisconnectAfter != 0 && count > value.impairment.DisconnectAfter {
 		_ = value.Close()
 		return net.ErrClosed
 	}
-	if value.impairment.PacketDelay != 0 {
-		timer := time.NewTimer(value.impairment.PacketDelay)
+	delay := value.impairment.PacketDelay
+	if value.impairment.JitterStep != 0 {
+		delay += time.Duration((count-1)%3) * value.impairment.JitterStep
+	}
+	if value.impairment.RateLimitBytesPerSecond != 0 {
+		delay += time.Duration((uint64(len(packet))*uint64(time.Second) + value.impairment.RateLimitBytesPerSecond - 1) / value.impairment.RateLimitBytesPerSecond)
+	}
+	if delay != 0 {
+		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-timer.C:
@@ -326,7 +338,29 @@ func (value *impairedCarrier) Send(ctx context.Context, packet []byte) error {
 	if value.impairment.DropEvery != 0 && count%value.impairment.DropEvery == 0 {
 		return nil
 	}
-	return value.Carrier.Send(ctx, packet)
+	if value.impairment.ReorderPairs {
+		if count%2 == 1 {
+			value.held = append(value.held[:0], packet...)
+			return nil
+		}
+		if err := value.Carrier.Send(ctx, packet); err != nil {
+			return err
+		}
+		if len(value.held) != 0 {
+			held := append([]byte(nil), value.held...)
+			clear(value.held)
+			value.held = nil
+			if err := value.Carrier.Send(ctx, held); err != nil {
+				return err
+			}
+		}
+	} else if err := value.Carrier.Send(ctx, packet); err != nil {
+		return err
+	}
+	if value.impairment.DuplicateEvery != 0 && count%value.impairment.DuplicateEvery == 0 {
+		return value.Carrier.Send(ctx, packet)
+	}
+	return nil
 }
 
 func acceptContext(ctx context.Context, listener net.Listener) (net.Conn, error) {
