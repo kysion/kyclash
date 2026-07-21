@@ -147,7 +147,11 @@ endpoints or credentials. The harness refuses non-Linux hosts, requires root
 only inside the disposable VM, defaults to loopback, and removes its isolated
 traffic-control state on exit.
 
-Execution evidence remains pending because no Fusion Linux VM exists on the
-current host. This is now an environment-provisioning dependency, not a missing
-source asset. Linux execution cannot close the macOS utun, route, lifecycle,
-sleep/wake, or network-switch gates.
+The matrix passed on the isolated GitHub-hosted Ubuntu ARM64 runner in workflow
+run `29802494990` for commit `f73f822b6025e36d4af63e3578bbeab2d4aa337f`.
+Both `linux-impaired-network` and the ordinary sidecar verification job
+succeeded, and the Linux evidence artifact is retained through 2026-08-04.
+This closes the reproducible isolated Linux server/network subset without
+requiring a local Fusion VM. Linux execution cannot close the macOS utun,
+route, lifecycle, sleep/wake, or network-switch gates, and a separately reviewed
+compatible server remains necessary before production-endpoint claims.

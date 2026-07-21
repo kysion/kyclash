@@ -67,8 +67,14 @@ cleans its `tc` and nftables state on exit, needs no endpoint credential, and
 covers baseline transports, controlled delay/jitter/loss/rate, UDP blocking
 with WSS/TCP availability, and sustained QUIC benchmarking.
 
-Its dry-run and source tests pass on the development Mac. Measured impaired-link
-results remain pending until the harness is copied into a disposable Fusion
-Linux VM and executed there. Those results will close only the isolated
-server/network portion; macOS utun, routes, sleep/wake, network switching, and
-installation lifecycle remain macOS-host gates.
+Its dry-run and source tests pass on the development Mac. The same matrix passed
+on GitHub Actions run `29802494990`, job `linux-impaired-network`, using the
+`ubuntu-24.04-arm` runner for commit `f73f822b6025e36d4af63e3578bbeab2d4aa337f`.
+The impairment job completed in 1 minute 50 seconds and retained artifact
+`network-sidecar-linux-netem-ARM64` (artifact `8484258177`, archive digest
+`sha256:3179b7f99e5ae0f00ab5f1fab0586c4cdfc9cd5586fa31bb1ea3e68cb577b7d8`)
+through 2026-08-04.
+
+This closes the reproducible isolated Linux server/network subset. It does not
+close macOS utun, routes, sleep/wake, network switching, installation lifecycle,
+or testing against a separately reviewed KyClash server implementation.
