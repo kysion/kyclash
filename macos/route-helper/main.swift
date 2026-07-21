@@ -201,11 +201,16 @@ private struct SystemRouteExecutor: RouteExecuting {
         arguments += ["-net", cidr]
         task.arguments = arguments
         task.standardInput = FileHandle.nullDevice
-        task.standardOutput = FileHandle.nullDevice
+        let output = Pipe()
+        task.standardOutput = output
         task.standardError = FileHandle.nullDevice
         do { try task.run(); task.waitUntilExit() } catch { return false }
-        // A successful lookup means some route already owns this destination.
-        return task.terminationStatus != 0
+        if task.terminationStatus != 0 { return true }
+        // The system default underlay is expected and does not conflict. Any
+        // more-specific route returned by the kernel is owned by another
+        // subsystem until this transaction has recorded it.
+        let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return text.contains("route to: default") || text.contains("route to: ::/0")
     }
 
     func mutate(action: String, cidr: String, interfaceName: String) -> Bool {
