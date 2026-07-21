@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   signed-macos-bundle:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: macos-15
     environment: kyclash-production-release
     permissions:
