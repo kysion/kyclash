@@ -87,6 +87,11 @@ impl MockNetworkSidecar {
                 self.state.transition_to(NetworkState::Disconnected)?;
                 Ok(IpcResponsePayload::Status(self.status()))
             }
+            IpcRequestPayload::PrepareTunnel
+            | IpcRequestPayload::StopTunnel
+            | IpcRequestPayload::ConnectTransport { .. }
+            | IpcRequestPayload::DisconnectTransport
+            | IpcRequestPayload::SampleHealth => Err(NetworkErrorCode::SidecarUnavailable),
         }
     }
 

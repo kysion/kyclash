@@ -170,3 +170,42 @@ lifecycle plus normal and forced-exit route recovery sub-gates. Redacted
 artifact `8484981045` is retained through 2026-08-04. PKG lifecycle, Mihomo
 coexistence, utun, sleep/wake, and physical network switching remain outside
 this initial gate.
+
+## Local Apple Virtualization.framework lab — 2026-07-21
+
+The local disposable-host route is now locked to Apple Virtualization.framework
+on the Apple Silicon development Mac. The repository uses Tart as a thin CLI
+over that framework, pins the last host-compatible release (`2.32.1`), and
+creates the base guest from Apple's latest supported IPSW rather than a prepared
+third-party image. Tart `2.33.0` was signature-valid but exited with status 137
+before command dispatch on this M5/macOS 26.5.1 host, so it is not accepted
+until its compatibility is re-evaluated.
+
+The controller and runbook are `scripts/macos-vm-lab.sh` and
+`../testing/kyclash-macos-virtualization-lab.md`. The existing system lab now
+accepts either its established GitHub-hosted runner or a confirmed local guest,
+and independently requires a `VirtualMac*` hardware model in local mode. A
+physical Mac therefore remains protected even if its caller copies all lab
+environment variables. Setup Assistant has been completed, the base was stopped
+cleanly, and a `kyclash-macos-lab-work` clone was created and booted. The guest
+obtained a NAT address, while SSH automation remains pending until Remote Login
+is explicitly enabled for the dedicated guest account. No guest password is
+stored or passed to host automation.
+
+Remote Login and a VM-only SSH public key were subsequently configured. The
+local fixed Keychain lifecycle and route normal/forced-exit recovery lab passed,
+and independent cleanup checks found no synthetic Keychain item, TEST-NET
+route, or journal. The signed, unnotarized PKG then passed guest-side hash,
+Installer signature, strict app signature, identity, architecture, and fresh
+installation checks. Gatekeeper rejection as `Unnotarized Developer ID` was
+confirmed; user-visible launch override and the remaining lifecycle checks are
+still pending, without weakening Gatekeeper globally.
+
+The operator then selected notarization for direct GitHub distribution and
+configured a local `notarytool` Keychain profile. Submission
+`e568f45f-5b55-4dac-b068-89096d9949c1` was accepted with no issues, the ticket
+was stapled and validated, and the final PKG hash became
+`760cd22bb2fcaf1062417d88cb2fa4e0989176e6f873bece5bada01f008ad38e`.
+Host and guest Gatekeeper now accept the PKG and installed app as `Notarized
+Developer ID`; guest upgrade installation passed. This was notarization only:
+no App Store record, GitHub Release, or updater activation was created.

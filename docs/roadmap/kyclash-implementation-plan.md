@@ -168,8 +168,10 @@ Exit criteria:
 Goal: safely apply and roll back private CIDRs in an isolated lab.
 
 Progress (2026-07-21): transaction persistence, macOS read-only discovery, and
-a feature-gated fixed-scope route lab executor are complete. No route mutation
-has been executed because the available Mac is not a disposable lab host.
+a feature-gated fixed-scope route lab executor are complete. Its fixed TEST-NET
+normal and forced-exit recovery cycles passed on a disposable GitHub-hosted
+macOS runner. A local Apple Virtualization.framework lab is being prepared for
+package lifecycle and broader isolated coexistence work.
 
 - Implement platform route discovery and conflict detection.
 - Add an ownership journal and idempotent transaction API.
@@ -226,9 +228,9 @@ Completed in the current workspace:
 
 Remaining authorization-dependent validation:
 
-- Execute the planned route mutations and forced-exit cleanup in a disposable
-  macOS lab host after explicit system-route authorization. Until then the
-  production adapter remains read-only and Iteration 3 is not release-closed.
+- Execute Mihomo coexistence scenarios in the local disposable macOS VM. The
+  production adapter remains read-only and Iteration 3 is not release-closed
+  until that separate integration evidence exists.
 
 Exit criteria:
 
@@ -432,15 +434,40 @@ Remaining:
 - Replace the mock command boundary only after the real sidecar, route lab,
   and system credential adapters pass their isolated validation gates.
 - Complete GitHub updater ownership and macOS installation lifecycle validation
-  with authorized hosts. Notarization/stapling remain optional
-  public-distribution hardening.
+  with authorized hosts. The current arm64 candidate is notarized and stapled;
+  every later release candidate must repeat that gate for its exact bytes.
 - Re-enable updater capabilities only in the same separately authorized change
   that injects the KyClash public verification key, publishes signed immutable
   GitHub assets and rollback metadata, enables permissions and runtime gates,
   and passes lifecycle tests. Current builds remain disabled.
-- Execute the authorization-dependent host, server, credential, signing, and
-  lifecycle gates enumerated in `kyclash-completion-audit-20260721.md`. No other
-  safe autonomous source-level milestone remains before those gates.
+- Execute the production networking batches below before replacing the mock or
+  enabling a release build.
+
+## Production networking execution plan — 2026-07-21
+
+Production networking continuation is decomposed and ordered in
+`kyclash-production-networking-plan-20260721.md`. The first required batch is
+Rust/Go runtime contract convergence: the current Rust Unix adapter launches
+the argument-based mock protocol, while the Go production sidecar rejects all
+arguments and uses stdin/stdout. utun, route, credential, and UI production
+wiring must not proceed until the real child protocol gate passes.
+
+N0 progress (2026-07-21): complete. The locked stdio amendment now defines a
+64-KiB-bounded, single-flight bootstrap/handshake/request/response contract,
+EOF and shutdown semantics, and Rust-owned granular transport selection. The
+production `StdioSidecarRuntime` launches the actual Go executable with empty
+argv and inherited environment, supplies zeroizing byte secrets through stdin,
+checks the canonical HMAC proof, correlates request IDs, terminates ambiguous
+or unauthenticated sessions, and performs graceful disconnect. A shared
+bootstrap fixture is decoded by both languages. Actual-child tests prove
+authenticated status/shutdown and proof-mismatch termination without socket,
+route, Keychain, utun, or external network I/O. N1 is now the first incomplete
+production-networking batch.
+
+The plan then advances through a stateful userspace sidecar and compatible lab
+server, the production Rust/Keychain controller, signed sidecar bundling and
+real macOS utun, privileged transactional routes plus Mihomo coexistence,
+reliability/staging validation, and a separately reviewed release activation.
 
 ## Later platform order
 

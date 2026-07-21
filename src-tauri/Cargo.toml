@@ -102,6 +102,7 @@ reqwest = { version = "0.13.4", features = [
 ] }
 regex = "1.12.4"
 ring = "0.17.14"
+zeroize = "1.8.2"
 sysproxy = { git = "https://github.com/clash-verge-rev/sysproxy-rs", features = [
   "guard",
 ] }

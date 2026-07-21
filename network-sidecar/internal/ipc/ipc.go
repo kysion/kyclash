@@ -98,27 +98,74 @@ func decodeRequest(reader *bufio.Reader) (Request, error) {
 
 func handle(request Request) (Response, bool) {
 	response := Response{ProtocolVersion: ProtocolVersion, RequestID: request.RequestID}
-	if len(request.Payload.Data) != 0 && string(request.Payload.Data) != "null" {
-		response.Result = failure("invalid_configuration", "request payload data is not accepted", false)
-		return response, false
-	}
 	switch request.Payload.Type {
 	case "get_status":
+		if !emptyData(request.Payload.Data) {
+			return invalidData(response)
+		}
 		response.Result = success(map[string]interface{}{
 			"type": "status",
 			"data": Status{State: "disconnected"},
 		})
 		return response, false
 	case "disconnect":
+		if !emptyData(request.Payload.Data) {
+			return invalidData(response)
+		}
 		response.Result = success(map[string]interface{}{"type": "acknowledged"})
 		return response, true
-	case "apply_profile", "connect", "cancel":
+	case "connect_transport":
+		var data struct {
+			Transport string `json:"transport"`
+		}
+		if !decodeData(request.Payload.Data, &data) || (data.Transport != "quic" && data.Transport != "wss" && data.Transport != "tcp") {
+			return invalidData(response)
+		}
+		response.Result = failure("sidecar_unavailable", "real networking remains disabled", true)
+		return response, false
+	case "cancel":
+		var data struct {
+			OperationID string `json:"operation_id"`
+		}
+		if !decodeData(request.Payload.Data, &data) || !validID(data.OperationID) {
+			return invalidData(response)
+		}
+		response.Result = failure("sidecar_unavailable", "real networking remains disabled", true)
+		return response, false
+	case "apply_profile":
+		if emptyData(request.Payload.Data) {
+			return invalidData(response)
+		}
+		response.Result = failure("sidecar_unavailable", "real networking remains disabled", true)
+		return response, false
+	case "prepare_tunnel", "stop_tunnel", "disconnect_transport", "sample_health", "connect":
+		if !emptyData(request.Payload.Data) {
+			return invalidData(response)
+		}
 		response.Result = failure("sidecar_unavailable", "real networking remains disabled", true)
 		return response, false
 	default:
 		response.Result = failure("invalid_configuration", "unknown request type", false)
 		return response, false
 	}
+}
+
+func emptyData(data json.RawMessage) bool {
+	return len(data) == 0 || string(data) == "null"
+}
+
+func decodeData(data json.RawMessage, target interface{}) bool {
+	if emptyData(data) {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target) == nil && decoder.Decode(&struct{}{}) == io.EOF
+}
+
+func invalidData(response Response) (Response, bool) {
+	response.Result = failure("invalid_configuration", "invalid request payload", false)
+	return response, false
 }
 
 func success(payload interface{}) map[string]interface{} {

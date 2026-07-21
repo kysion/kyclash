@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize as _;
 
 use super::{NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode};
 
@@ -14,10 +15,11 @@ pub enum SidecarLifecycleState {
     CrashLoop,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct SidecarLaunchContext {
     pub instance_id: String,
-    auth_token: String,
+    auth_token: Vec<u8>,
+    private_key: Vec<u8>,
 }
 
 impl std::fmt::Debug for SidecarLaunchContext {
@@ -26,20 +28,38 @@ impl std::fmt::Debug for SidecarLaunchContext {
             .debug_struct("SidecarLaunchContext")
             .field("instance_id", &self.instance_id)
             .field("auth_token", &"<redacted>")
+            .field("private_key", &"<redacted>")
             .finish()
     }
 }
 
 impl SidecarLaunchContext {
-    pub const fn new(instance_id: String, auth_token: String) -> Self {
+    pub const fn new(instance_id: String, auth_token: Vec<u8>) -> Self {
         Self {
             instance_id,
             auth_token,
+            private_key: Vec::new(),
         }
     }
 
-    pub fn auth_token(&self) -> &str {
+    pub fn with_private_key(mut self, private_key: Vec<u8>) -> Self {
+        self.private_key = private_key;
+        self
+    }
+
+    pub fn auth_token(&self) -> &[u8] {
         &self.auth_token
+    }
+
+    pub fn private_key(&self) -> &[u8] {
+        &self.private_key
+    }
+}
+
+impl Drop for SidecarLaunchContext {
+    fn drop(&mut self) {
+        self.auth_token.zeroize();
+        self.private_key.zeroize();
     }
 }
 
@@ -261,7 +281,7 @@ mod tests {
                 initial_backoff_ms: 100,
                 max_backoff_ms: 400,
             },
-            SidecarLaunchContext::new("instance.test".into(), "token-not-logged".into()),
+            SidecarLaunchContext::new("instance.test".into(), b"token-not-logged".to_vec()),
             "proof.test".into(),
         )
     }

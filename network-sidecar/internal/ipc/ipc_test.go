@@ -64,8 +64,17 @@ func deepEqualJSON(left, right interface{}) bool {
 }
 
 func TestDisabledNetworkingRequestsReturnStructuredErrors(t *testing.T) {
-	for _, requestType := range []string{"apply_profile", "connect", "cancel"} {
-		request := Request{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: requestType}}
+	requests := []Request{
+		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "apply_profile", Data: json.RawMessage(`{}`)}},
+		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "connect"}},
+		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "prepare_tunnel"}},
+		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "stop_tunnel"}},
+		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}},
+		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "disconnect_transport"}},
+		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "sample_health"}},
+		{ProtocolVersion: 1, RequestID: "request.test", Payload: Payload{Type: "cancel", Data: json.RawMessage(`{"operation_id":"operation.test"}`)}},
+	}
+	for _, request := range requests {
 		response, stop := handle(request)
 		if stop {
 			t.Fatal("disabled request stopped sidecar")

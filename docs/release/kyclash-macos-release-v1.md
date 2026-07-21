@@ -18,6 +18,15 @@ recommended public-distribution hardening, not a blocker for signed internal
 test packages or preparation of the GitHub Releases updater path. Every
 unnotarized package must retain an explicit Gatekeeper warning.
 
+For the planned direct GitHub distribution, the operator selected notarization
+and stapling so users do not need the Privacy & Security override. This choice
+does not create an App Store listing or enter App Review. Local notarization may
+use a validated `notarytool` Keychain profile through
+`APPLE_NOTARY_KEYCHAIN_PROFILE`; CI continues to use its protected App Store
+Connect API-key secrets. Exactly one credential mode is permitted. Apple ID
+mode requires an app-specific password entered at `notarytool`'s secure prompt,
+never the ordinary Apple Account password and never a repository variable.
+
 ## Required ownership
 
 Before the first release, the operator must provide and explicitly authorize:
@@ -115,3 +124,5 @@ disabled and recovery is manual from documented backups.
 Signing, publication, updater activation, or external-host testing requires
 explicit user authorization even though this procedure is locked. Notarization
 is optional public-distribution hardening and requires credentials when chosen.
+It has now been selected for the direct GitHub distribution candidate, while
+remaining non-blocking for clearly labelled internal test packages.

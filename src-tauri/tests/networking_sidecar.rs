@@ -20,7 +20,7 @@ fn real_mock_process_authenticates_runs_and_stops() -> anyhow::Result<()> {
     let mut controller = SidecarController::new(
         runtime,
         RestartPolicy::default(),
-        SidecarLaunchContext::new("integration.test".into(), token.clone()),
+        SidecarLaunchContext::new("integration.test".into(), token.clone().into_bytes()),
         token,
     );
 
@@ -45,7 +45,7 @@ fn stale_socket_is_recovered_but_regular_file_is_never_removed() -> anyhow::Resu
     let mut controller = SidecarController::new(
         runtime,
         RestartPolicy::default(),
-        SidecarLaunchContext::new("stale.test".into(), token.clone()),
+        SidecarLaunchContext::new("stale.test".into(), token.clone().into_bytes()),
         token,
     );
     controller.start(0).map_err(|error| anyhow::anyhow!("{error:?}"))?;
@@ -58,7 +58,7 @@ fn stale_socket_is_recovered_but_regular_file_is_never_removed() -> anyhow::Resu
     let mut controller = SidecarController::new(
         runtime,
         RestartPolicy::default(),
-        SidecarLaunchContext::new("protected.test".into(), token.clone()),
+        SidecarLaunchContext::new("protected.test".into(), token.clone().into_bytes()),
         token,
     );
     assert_eq!(controller.start(0), Err(NetworkErrorCode::PermissionDenied));

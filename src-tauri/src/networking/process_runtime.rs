@@ -100,7 +100,10 @@ mod unix {
                 .spawn()
                 .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
             let mut stdin = child.stdin.take().ok_or(NetworkErrorCode::SidecarUnavailable)?;
-            writeln!(stdin, "{}", context.auth_token()).map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            stdin
+                .write_all(context.auth_token())
+                .and_then(|()| stdin.write_all(b"\n"))
+                .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
             drop(stdin);
             self.child = Some(child);
 

@@ -17,9 +17,19 @@ pub struct IpcRequest {
 pub enum IpcRequestPayload {
     GetStatus,
     ApplyProfile(Box<NetworkProfile>),
+    PrepareTunnel,
+    StopTunnel,
+    ConnectTransport {
+        transport: super::TransportKind,
+    },
+    DisconnectTransport,
+    SampleHealth,
+    /// Legacy POC request. Production controllers use `ConnectTransport`.
     Connect,
     Disconnect,
-    Cancel { operation_id: String },
+    Cancel {
+        operation_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

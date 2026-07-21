@@ -60,18 +60,23 @@ const installerIdentity = process.env.APPLE_INSTALLER_SIGNING_IDENTITY
 const notaryKeyPath = process.env.APPLE_NOTARY_KEY_PATH
 const notaryKeyId = process.env.APPLE_NOTARY_KEY_ID
 const notaryIssuer = process.env.APPLE_NOTARY_ISSUER
+const notaryKeychainProfile = process.env.APPLE_NOTARY_KEYCHAIN_PROFILE
 const hasNotaryCredentials = Boolean(
   notaryKeyPath && notaryKeyId && notaryIssuer,
 )
+const hasNotaryKeychainProfile = Boolean(notaryKeychainProfile)
 const notarizationEnabled = process.env.KYCLASH_NOTARIZATION_ENABLED === 'true'
 if (process.env.CI && !installerIdentity) {
   throw new Error(
     'APPLE_INSTALLER_SIGNING_IDENTITY is required for CI release packages',
   )
 }
-if (notarizationEnabled && (!installerIdentity || !hasNotaryCredentials)) {
+if (
+  notarizationEnabled &&
+  (!installerIdentity || hasNotaryCredentials === hasNotaryKeychainProfile)
+) {
   throw new Error(
-    'Installer identity and Apple notary API key settings are required when KYCLASH_NOTARIZATION_ENABLED=true',
+    'Installer identity and exactly one Apple notary credential mode (API key or Keychain profile) are required when KYCLASH_NOTARIZATION_ENABLED=true',
   )
 }
 if (installerIdentity) {
@@ -85,20 +90,19 @@ if (installerIdentity) {
     stdio: 'inherit',
   })
   if (notarizationEnabled) {
+    const submitCredentials = hasNotaryKeychainProfile
+      ? ['--keychain-profile', notaryKeychainProfile]
+      : [
+          '--key',
+          notaryKeyPath,
+          '--key-id',
+          notaryKeyId,
+          '--issuer',
+          notaryIssuer,
+        ]
     execFileSync(
       'xcrun',
-      [
-        'notarytool',
-        'submit',
-        outputPath,
-        '--key',
-        notaryKeyPath,
-        '--key-id',
-        notaryKeyId,
-        '--issuer',
-        notaryIssuer,
-        '--wait',
-      ],
+      ['notarytool', 'submit', outputPath, ...submitCredentials, '--wait'],
       { stdio: 'inherit' },
     )
     execFileSync('xcrun', ['stapler', 'staple', outputPath], {

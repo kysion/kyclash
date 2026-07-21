@@ -1,6 +1,6 @@
 # KyClash macOS arm64 PKG Evidence 2026-07-21
 
-Status: Locally signed, unnotarized development artifact
+Status: Developer ID signed, Apple-notarized and stapled internal candidate
 
 Source commit: `30ef92f1`
 
@@ -17,14 +17,19 @@ Verification result:
 - `CFBundleIdentifier`: `net.kysion.kyclash`
 - main executable: Mach-O 64-bit arm64
 - package size: 60,709,550 bytes
-- SHA-256: `d98d082ca344ac7ff13a3e4c0cc5d6f2429675e7a46a9bf304cce4dc91c22aa3`
+- Pre-staple SHA-256:
+  `d98d082ca344ac7ff13a3e4c0cc5d6f2429675e7a46a9bf304cce4dc91c22aa3`
+- Final stapled SHA-256:
+  `760cd22bb2fcaf1062417d88cb2fa4e0989176e6f873bece5bada01f008ad38e`
 - App signature: valid Developer ID Application signature with hardened runtime
 - Installer signature: valid Developer ID Installer signature with trusted
   timestamp
 - `codesign --verify --deep --strict`: passed
 - `pkgutil --check-signature`: signed by an Apple-issued developer certificate
-- App and PKG Gatekeeper assessment: rejected as `Unnotarized Developer ID`
-- `xcrun stapler validate`: no stapled ticket, as expected
+- Apple submission: `e568f45f-5b55-4dac-b068-89096d9949c1`, `Accepted`
+- Notary log: `Ready for distribution`, no issues
+- `xcrun stapler validate`: passed
+- App and PKG Gatekeeper assessment: accepted as `Notarized Developer ID`
 
 Build commands:
 
@@ -51,7 +56,11 @@ On macOS 26, `pkgbuild --component` exposes protected
 `xattr -cr`, and `COPYFILE_DISABLE=1` were each checked and did not remove the
 system-protected provenance representation. It is not a source-tree `._*` file.
 
-No installation, system service change, notarization, stapling, upload, or
-release action was performed. The only credential operation was the explicitly
-authorized use of existing Application and Installer signing identities; no
-certificate or private key was exported.
+Later on 2026-07-21, this package passed fresh installation and signature checks
+in the disposable Virtualization.framework guest. After the operator selected
+notarization for direct GitHub distribution, the signed PKG was submitted with
+a local Keychain profile, accepted without issues, stapled, re-hashed, copied
+back to the guest, and accepted there by Gatekeeper. Reinstalling the stapled
+package over the internal build succeeded. No certificate, private key,
+Apple-account password, or app-specific password was exported or stored in the
+repository. No App Store record or GitHub Release was created.

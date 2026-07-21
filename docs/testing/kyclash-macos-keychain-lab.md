@@ -67,3 +67,12 @@ run `29804311056`, job `88551634740`, on the `macos-15` ARM64 runner for commit
 `bdb0feeae4e3a0c93924cb64b6fe2dec86192dd2`. The shared redacted evidence is
 artifact `8484981045`, retained through 2026-08-04. No Keychain contents or
 credential values were captured.
+
+Local repetition is permitted only in the disposable Apple
+Virtualization.framework guest described in
+`docs/testing/kyclash-macos-virtualization-lab.md`. It continues to use only the
+fixed `net.kysion.kyclash.test` service and synthetic account.
+
+The local disposable guest cycle passed on 2026-07-21 after explicitly
+unlocking only its dedicated login Keychain. An independent final lookup
+confirmed the synthetic item was absent.

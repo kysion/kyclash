@@ -5,9 +5,25 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestSharedBootstrapFixture(t *testing.T) {
+	fixture, err := os.ReadFile("../../../schemas/fixtures/network-sidecar-bootstrap-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := DecodeLine(bufio.NewReader(strings.NewReader(string(fixture))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer config.Clear()
+	if config.ProtocolVersion != ProtocolVersion || config.InstanceID != "fixture_instance" || len(config.AuthToken) != 32 || len(config.PrivateKey) != 32 {
+		t.Fatalf("unexpected shared fixture: %s", config)
+	}
+}
 
 func validMessage() string {
 	secret := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))

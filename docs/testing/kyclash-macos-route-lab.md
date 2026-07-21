@@ -108,3 +108,12 @@ apply, fixed-route observation, journal recovery, and final route absence all
 passed. Evidence artifact `8484981045` has archive digest
 `sha256:714881e9985440db636fb38589b5c3e32bb5665144047443f13e0b84bba5b043`
 and is retained through 2026-08-04.
+
+The same fixed-scope lab may also run in the confirmed local Apple
+Virtualization.framework guest described in
+`docs/testing/kyclash-macos-virtualization-lab.md`. The script verifies the
+`VirtualMac` hardware model and refuses the physical development Mac.
+
+This local guest cycle passed on 2026-07-21 on macOS 26.5.2 arm64. Normal
+apply/rollback, expected exit 134 after durable apply, journal recovery, and
+independent final route/journal absence all passed.
