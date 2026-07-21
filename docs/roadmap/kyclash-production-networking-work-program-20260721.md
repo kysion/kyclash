@@ -560,9 +560,10 @@ and after each IPv4/IPv6 mutation) and each route mutation, asserting that no
 owned route remains. `kyclash-route-helper --route-coordinator-self-test`
 uses an in-memory executor and temporary private journal to cover dual-stack
 normal/duplicate/replay/invalidation, exact conflict refusal, add failure,
-rollback failure and retry, helper restart reconciliation, and corrupt-journal
-fail-closed behavior; it never invokes `/sbin/route`. The CI compile gate runs
-both the read-only route probe and this injected coordinator matrix. The
+rollback failure and retry, heartbeat/lease expiry, helper restart
+reconciliation, and corrupt-journal fail-closed behavior; it never invokes
+`/sbin/route`. The CI compile gate runs both the read-only route probe and this
+injected coordinator matrix. The
 privileged VM's complete IPv4/IPv6/conflict/journal-corruption/restart matrix
 and packaged Mihomo coexistence scenarios remain open for S1.13.
 
@@ -611,15 +612,23 @@ reviewed candidate include the production feature in normal builds.
 
 #### S1.14 — deterministic impairment and recovery matrix (formerly N5A)
 
-Status (2026-07-21): in progress. The loopback lab carrier now provides
+Status (2026-07-22): in progress. The loopback lab carrier now provides
 deterministic latency, stepped jitter, byte-rate limiting, nth-packet loss,
 nth-packet duplication, pair reordering, UDP refusal, and bounded forced
 disconnect. Unit and race tests assert exact delivery order and cancellation-
 aware delays without external networking. TLS identity refusal, frame bounds,
 fragment expiry, replay refusal, abrupt server close, and Rust-commanded
-QUIC/WSS/TCP fallback already have focused coverage. The consolidated short CI
-matrix, stable reason-code assertions for every impairment, extended soak, and
-network-change recovery evidence remain open.
+QUIC/WSS/TCP fallback already have focused coverage. Additional bounded tests
+now cover blocked stream writes, cancelled QUIC receives, abrupt authenticated
+QUIC peer close, and twelve repeated userspace connect/disconnect cycles. The
+full Go suite and race suite both pass at `-count=3`; a loopback soak driver is
+available at `network-sidecar/lab/linux/reliability-soak.sh` and has passed a
+two-round smoke run. Evidence is recorded in
+`docs/testing/kyclash-network-reliability-20260722.md`.
+
+The consolidated short CI matrix, stable reason-code assertions for every
+impairment, extended Linux VM soak, and network-change recovery evidence remain
+open. No fallback is introduced implicitly inside Go.
 
 The Linux isolated-network workflow now runs the netem matrix on every change,
 retains environment and command logs as artifacts, and the macOS verification

@@ -132,7 +132,8 @@ xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
 
 It uses an in-memory executor and a temporary private journal to cover normal
 IPv4/IPv6 apply and cleanup, duplicate/replayed lease messages, exact route
-conflicts, injected add and rollback failures, connection invalidation, helper
-restart reconciliation, and corrupt-journal fail-closed behavior. The
+conflicts, injected add and rollback failures, heartbeat/lease expiry,
+connection invalidation, helper restart reconciliation, and corrupt-journal
+fail-closed behavior. The
 privileged VM's complete route/conflict/restart matrix and Mihomo coexistence
 remain separate gates.

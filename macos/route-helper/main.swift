@@ -344,6 +344,14 @@ private final class RouteCoordinator {
         }
     }
 
+    // Test-only trigger used by the no-privilege coordinator matrix.  It
+    // drives the same lease-expiry path as the timer without sleeping for the
+    // production 15-second heartbeat window.
+    func expireLeaseForSelfTest() {
+        lock.withLock { heartbeatDeadline = .distantPast }
+        expireLease()
+    }
+
     private func statusLocked() -> HelperReply {
         guard let journal else { return HelperReply(state: "idle") }
         return HelperReply(state: journal.appliedCIDRs.count == journal.owner.privateCIDRs.count ? "applied" : "prepared")
@@ -576,8 +584,17 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         try requireSelfTest(normal.begin(owner).state == "prepared", "normal begin must prepare")
         try requireSelfTest(normal.apply(owner.reference).state == "applied", "normal apply must apply both families")
         try requireSelfTest(normal.apply(owner.reference).state == "applied", "duplicate apply must be idempotent")
+        try requireSelfTest(normal.heartbeat(owner.reference).state == "applied", "heartbeat must refresh an active lease")
         let replay = LeaseReference(version: protocolVersion, leaseID: "lease.replayed.v1", operationID: owner.reference.operationID)
         try requireSelfTest(normal.status(replay).errorCode == "ownership_mismatch", "replayed lease must be rejected")
+        normal.expireLeaseForSelfTest()
+        try requireSelfTest(normal.discover().state == "idle" && normalExecutor.added.isEmpty,
+                            "lease expiry must remove owned routes")
+
+        // A second cycle exercises the XPC invalidation cleanup boundary
+        // independently from heartbeat expiry.
+        try requireSelfTest(normal.begin(owner).state == "prepared", "invalidation cycle must prepare")
+        try requireSelfTest(normal.apply(owner.reference).state == "applied", "invalidation cycle must apply")
         normal.invalidate(owner.reference)
         try requireSelfTest(normal.discover().state == "idle" && normalExecutor.added.isEmpty,
                             "connection invalidation must remove owned routes")
