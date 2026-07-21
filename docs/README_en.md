@@ -40,10 +40,11 @@ Repository: [kysion/kyclash](https://github.com/kysion/kyclash)
 ## Release status
 
 KyClash does not yet have an official public release for end users. The current
-repository can build a macOS arm64 PKG, but the local artifact is unsigned,
-not notarized, and not stapled. It is a development artifact, not a trusted
-release package. Application updates are disabled and do not use Clash Verge
-Rev endpoints or signing keys.
+repository can build a macOS arm64 PKG. The latest local evidence has valid
+Developer ID Application and Installer signatures, but it is not notarized or
+stapled and Gatekeeper rejects it. It remains a development artifact, not a
+trusted release package. Application updates are disabled and do not use Clash
+Verge Rev endpoints or signing keys.
 
 The first public release must pass KyClash-owned application and installer
 signing, notarization, stapling, installation lifecycle, rollback, and release

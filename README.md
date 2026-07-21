@@ -38,8 +38,9 @@
 ## Release status
 
 KyClash 尚未发布可供普通用户安装的正式版本。当前仓库能够构建 macOS arm64
-PKG，但本地产物未签名、未公证、未 stapling，只能作为开发验证，不能视为可信
-发行包。应用自动更新也保持禁用，不会使用 Clash Verge Rev 的更新源或密钥。
+PKG；最新本地证据已通过 Developer ID Application 与 Installer 签名，但尚未公证、
+未 stapling，Gatekeeper 会拒绝，因此仍只能作为开发验证，不能视为可信发行包。
+应用自动更新也保持禁用，不会使用 Clash Verge Rev 的更新源或密钥。
 
 首个公开版本必须通过 KyClash 自有签名、公证、安装生命周期、回滚和更新源审阅。
 发布后，安装包只会出现在

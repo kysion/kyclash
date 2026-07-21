@@ -5,7 +5,8 @@
 All work permitted by the KyClash continuous-delivery authorization boundary is
 complete. The locked architecture, isolated runtime proof, development UI,
 credential boundary, release procedure, branding, documentation, CI, and
-unsigned arm64 development PKG have passed their applicable source-level gates.
+signed-but-unnotarized arm64 development PKG have passed their applicable
+source-level gates.
 
 This is not a production-release declaration. The remaining gates require host
 mutation, external infrastructure, or private signing credentials and therefore
@@ -47,15 +48,16 @@ need separate explicit authorization.
   attribution, and no longer advertise upstream packages, AutoBuild channels,
   funding, Telegram, or third-party promotions as KyClash resources.
 - The current arm64 development PKG evidence is recorded in
-  `docs/testing/kyclash-macos-arm64-pkg-20260721.md`. It is unsigned and must not
-  be represented as a release artifact.
+  `docs/testing/kyclash-macos-arm64-pkg-20260721.md`. Its Application and
+  Installer signatures are valid, but it is unnotarized, unstapled, rejected by
+  Gatekeeper, and must not be represented as a release artifact.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
-  localization and dead-code checks; 136 Rust library tests; two process-level
+  localization and dead-code checks; 140 Rust all-feature library tests; two process-level
   sidecar tests; Clippy with all features and warnings denied; Go module
   verification, formatting, repeated race tests, and vet.
 - The network-sidecar GitHub Actions run for security-hardening commit
   `eaf37d8d` completed successfully, superseding the four earlier successful
-  runs through `f7cb07ad`.
+  runs through `7ae8d4a3`.
 
 ## Authorization-dependent release gates
 

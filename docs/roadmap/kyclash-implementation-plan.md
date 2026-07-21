@@ -14,8 +14,9 @@ Goal: produce a reproducible KyClash build that cannot replace itself with an
 upstream Clash Verge Rev release.
 
 Progress (2026-07-21): development baseline complete. The locally reproducible
-PKG is an unsigned development artifact; signing, notarization, stapling, and
-installation lifecycle tests remain release gates.
+PKG now has valid Developer ID Application and Installer signatures after
+explicit authorization, but notarization, stapling, and installation lifecycle
+tests remain release gates.
 
 - Disable application update endpoints until KyClash signing is available.
 - Correct portable archive branding without renaming compatibility binaries.
@@ -64,10 +65,12 @@ Completed in the current workspace:
 - `KyClash_2.5.3_aarch64.pkg` is the macOS installation artifact, built from
   the Tauri application bundle with bundle identifier
   `net.kysion.kyclash`.
-- Rebuilt the unsigned arm64 PKG from commit `f7cb07ad` after the updater and
-  networking changes. The evidence record confirms KyClash display identity,
-  arm64 architecture, no installer signature, size, SHA-256, and that no
-  install/sign/notary/upload action occurred.
+- Rebuilt the arm64 App and PKG from commit `7ae8d4a3` after explicit signing
+  authorization. The evidence record confirms KyClash display identity, arm64
+  architecture, valid Application and Installer signatures, trusted timestamp,
+  size, SHA-256, and the expected Gatekeeper/stapler refusal while notarization
+  credentials remain unavailable. No install, notary, upload, or release action
+  occurred.
 
 Exit criteria:
 
