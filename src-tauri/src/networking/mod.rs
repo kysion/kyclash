@@ -15,6 +15,7 @@ mod production_controller;
 #[cfg(feature = "networking-production")]
 mod production_service;
 mod route;
+mod route_helper;
 mod sidecar;
 mod sidecar_trust;
 mod state;
@@ -28,5 +29,5 @@ pub use self::production_controller::*;
 pub use self::production_service::*;
 pub use self::{
     config::*, credentials::*, data_plane::*, diagnostics::*, ipc::*, macos_route::*, mock::*, mock_control::*,
-    operation::*, policy::*, route::*, sidecar::*, sidecar_trust::*, state::*, stdio_runtime::*,
+    operation::*, policy::*, route::*, route_helper::*, sidecar::*, sidecar_trust::*, state::*, stdio_runtime::*,
 };

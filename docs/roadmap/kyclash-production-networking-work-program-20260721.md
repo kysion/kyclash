@@ -409,6 +409,17 @@ Merge unit: `test(macos): close signed sidecar and utun VM gate`.
 
 #### S1.11 — signed SMAppService helper and typed XPC (formerly N4A)
 
+Contract review: `kyclash-route-helper-contract-review-20260721.md` locks the
+bundle layout, fixed identities, code requirement, typed method surface,
+single-connection lease, and fail-closed S1.11/S1.12 boundary.
+
+Status (2026-07-21): in progress. The cross-platform route-owner and lease
+contract is implemented with strict serialization, exact utun owner matching,
+bounded canonical private CIDRs, replay mismatch refusal, and no generic
+command/path/environment fields. The macOS NSSecureCoding/XPC implementation,
+nested helper build/signing, app registration client, and VM evidence remain
+open.
+
 Deliverables:
 
 - Add a dedicated least-privilege helper target registered through
