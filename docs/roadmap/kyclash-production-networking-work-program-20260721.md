@@ -58,7 +58,8 @@ stopping points.
 | S1.08 | reproducible signed nested sidecar and launch trust | complete; local authorized Developer ID evidence; notarization remains optional hardening |
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
 | S1.10 | disposable-VM termination matrix | in progress; distinct killed app/controller and GUI login/logout observations remain |
-| S1.11–S1.12 | signed helper, typed XPC, route lease/recovery | in progress; source and static gates complete, VM launchd/XPC evidence remains |
+| S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
+| S1.12 | route lease/recovery | in progress; source and scoped route lab pass, privileged XPC mutation/restart evidence remains |
 | S1.13 | Mihomo coexistence VM matrix | pending; depends on real helper/XPC route execution |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
@@ -462,7 +463,7 @@ Contract review: `kyclash-route-helper-contract-review-20260721.md` locks the
 bundle layout, fixed identities, code requirement, typed method surface,
 single-connection lease, and fail-closed S1.11/S1.12 boundary.
 
-Status (2026-07-21): in progress. The cross-platform route-owner and lease
+Status (2026-07-22): complete. The cross-platform route-owner and lease
 contract is implemented with strict serialization, exact utun owner matching,
 bounded canonical private CIDRs, replay mismatch refusal, and no generic
 command/path/environment fields. A macOS 13 Swift LaunchDaemon now implements
@@ -488,10 +489,14 @@ before constructing C strings and serializes the one-lease connection. The
 production UI explains the narrow private-route capability and requires an
 explicit Enable action; it exposes registration state, approval settings, and
 unregistration, and disables Connect until the helper is enabled. The signed
-disposable-VM registration harness now registers the daemon through
-`SMAppService` and reports status `1` (enabled). The actual client/helper typed
-round trip remains open because the VM launchd job currently exits with
-`EX_CONFIG`; S1.12 executor and VM lifecycle evidence also remain open.
+disposable-VM registration harness registers the daemon through `SMAppService`
+and reports status `1` (enabled). After removing a stale legacy test plist and
+resetting the disposable guest's Background Task Management database through
+its interactive administrator session, launchd submitted the bundle-owned job.
+A Developer ID-signed lab client then completed the real privileged Mach-
+service `discover` round trip with idle state and no error; launchd reported
+the helper running with one successful exec. S1.12 executor and VM lifecycle
+evidence remain open.
 
 Deliverables:
 
