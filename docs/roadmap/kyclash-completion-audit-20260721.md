@@ -127,7 +127,7 @@ The following work is intentionally not executed under the current authority:
 | Apple notarization and stapling | Optional enhancement | No | Notary credentials only if selected |
 | Keychain destructive lifecycle | Complete on disposable GitHub macOS runner; scoped to `net.kysion.kyclash.test` | No | None |
 | Real route mutation and crash recovery | Fixed TEST-NET transaction and crash recovery passed; Mihomo coexistence pending | Yes, for production route adapter | Isolated Mihomo coexistence evidence |
-| Impaired-network and sustained transport validation | Isolated POC complete; external matrix pending | Yes, for production data plane | Compatible isolated server and disposable client host |
+| Impaired-network and sustained transport validation | Deterministic loopback + race count=5 + ten-round soak passed; Linux netem CI evidence retained; external matrix pending | Yes, for production data plane | Compatible isolated server and disposable client host |
 | Install/upgrade/rollback/uninstall cleanup | Procedure prepared; signed GUI smoke passed; full installed-byte matrix pending | Yes, for general distribution | Disposable macOS lifecycle host and retained candidate/rollback artifacts |
 | macOS x64 and later platforms | Deferred by locked platform order | Yes, for those platforms only | macOS arm64 MVP gates closed |
 
@@ -173,6 +173,18 @@ This closes the reproducible isolated Linux server/network subset without
 requiring a local Fusion VM. Linux execution cannot close the macOS utun,
 route, lifecycle, sleep/wake, or network-switch gates, and a separately reviewed
 compatible server remains necessary before production-endpoint claims.
+
+## Deterministic reliability continuation — 2026-07-22
+
+The sidecar reliability suite now records bounded cancellation and recovery
+edges in addition to the existing impairment, framing, replay, and fallback
+tests. The full Go suite and the CI-equivalent race gate passed at `-count=5`;
+a repository-owned loopback soak driver completed ten rounds and retains one
+log per round for longer disposable-VM runs. The exact commands, scope, and
+remaining production boundary are recorded in
+`../testing/kyclash-network-reliability-20260722.md`. This advances the
+reproducible source/loopback subset but does not close external sustained-load,
+sleep/wake, or physical network-change gates.
 
 ## GitHub-hosted macOS system gate preparation — 2026-07-21
 
