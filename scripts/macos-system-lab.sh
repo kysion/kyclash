@@ -2,10 +2,11 @@
 set -euo pipefail
 
 readonly LAB_OUTPUT="${KYCLASH_MACOS_LAB_OUTPUT:-target/macos-system-lab}"
+readonly LAB_BUILD="${KYCLASH_MACOS_LAB_BUILD:-target/macos-system-build}"
 readonly ROUTE_CONFIRM="authorized-disposable-macos-host"
 readonly KEYCHAIN_CONFIRM="authorized-disposable-macos-account"
-readonly ROUTE_LAB="target/debug/kyclash-route-lab"
-readonly KEYCHAIN_LAB="target/debug/kyclash-keychain-lab"
+readonly ROUTE_LAB="${LAB_BUILD}/debug/kyclash-route-lab"
+readonly KEYCHAIN_LAB="${LAB_BUILD}/debug/kyclash-keychain-lab"
 readonly JOURNAL_DIR="/var/tmp/net.kysion.kyclash-route-lab"
 readonly TEST_SERVICE="net.kysion.kyclash.test"
 readonly TEST_ACCOUNT="kyclash.test.synthetic.v1"
@@ -35,10 +36,30 @@ if ! sudo -n true; then
 fi
 
 mkdir -p "${LAB_OUTPUT}"
-cargo build -p clash-verge \
+{
+  sw_vers
+  uname -m
+  rustc --version
+  df -h .
+} >"${LAB_OUTPUT}/environment-before-build.txt"
+
+set +e
+CARGO_TARGET_DIR="${LAB_BUILD}" \
+  CARGO_INCREMENTAL=0 \
+  CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo build -p clash-verge \
   --features networking-route-lab,networking-keychain-lab \
   --bin kyclash-route-lab \
-  --bin kyclash-keychain-lab
+  --bin kyclash-keychain-lab \
+  >"${LAB_OUTPUT}/cargo-build.log" 2>&1
+build_status=$?
+set -e
+if [[ "${build_status}" -ne 0 ]]; then
+  tail -n 80 "${LAB_OUTPUT}/cargo-build.log" >&2
+  summary=$(tail -n 12 "${LAB_OUTPUT}/cargo-build.log" | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+  echo "::error title=macOS system lab Cargo build failed::${summary}"
+  exit "${build_status}"
+fi
 test -x "${ROUTE_LAB}"
 test -x "${KEYCHAIN_LAB}"
 trap cleanup EXIT INT TERM
@@ -47,6 +68,7 @@ trap cleanup EXIT INT TERM
   sw_vers
   uname -m
   rustc --version
+  df -h .
 } >"${LAB_OUTPUT}/environment.txt"
 
 KYCLASH_KEYCHAIN_LAB_CONFIRM="${KEYCHAIN_CONFIRM}" "${KEYCHAIN_LAB}" cleanup

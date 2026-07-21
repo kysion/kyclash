@@ -40,13 +40,6 @@ jobs:
         with:
           toolchain: '1.96.1'
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: 'v1-macos-system-lab'
-          key: 'macos-15-arm64'
-          workspaces: |
-            . -> target
-
       - name: Run fixed-scope route and Keychain lifecycle
         shell: bash
         env:
