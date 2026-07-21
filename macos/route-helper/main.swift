@@ -362,7 +362,8 @@ private final class RouteCoordinator {
         for cidr in owned.reversed() {
             current.pendingCIDR = cidr
             if !persist(current) { succeeded = false; continue }
-            if executor.mutate(action: "delete", cidr: cidr, interfaceName: current.owner.interfaceName) {
+            let alreadyAbsent = executor.canAdd(cidr: cidr, interfaceName: current.owner.interfaceName)
+            if alreadyAbsent || executor.mutate(action: "delete", cidr: cidr, interfaceName: current.owner.interfaceName) {
                 current.appliedCIDRs.removeAll { $0 == cidr }
                 current.pendingCIDR = nil
                 journal = current
