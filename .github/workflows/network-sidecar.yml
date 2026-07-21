@@ -241,8 +241,9 @@ jobs:
           go test -run '^$' -tags='kyclash_utun kyclash_utun_lab' ./internal/userspace ./cmd/kyclash-network-sidecar
 
       - name: Compile typed macOS route helper
-        working-directory: .
+        working-directory: ${{ github.workspace }}
         run: |
+          set -euo pipefail
           plutil -lint macos/route-helper/net.kysion.kyclash.route-helper.plist
           plist='macos/route-helper/net.kysion.kyclash.route-helper.plist'
           test "$(plutil -extract Label raw -o - "$plist")" = 'net.kysion.kyclash.route-helper'
