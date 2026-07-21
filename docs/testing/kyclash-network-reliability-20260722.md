@@ -23,6 +23,8 @@ easy to miss in a short happy-path run:
   then TLS/TCP with an explicit disconnect before each next carrier.
 - Injected prepare/connect/health/disconnect/stop failures retain the stable
   `sidecar_unavailable` reason and do not advance the IPC session state.
+- An impairment delay honors cancellation and never delivers the cancelled
+  packet.
 - Existing deterministic loss, stepped jitter, rate limiting, duplication,
   pair reordering, UDP refusal, TLS identity refusal, replay, fragment expiry,
   packet-size bounds, IPC cancellation, and Rust break-before-make tests remain

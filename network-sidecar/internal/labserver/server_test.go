@@ -144,6 +144,23 @@ func TestDeterministicDuplicateReorderJitterAndRateLimit(t *testing.T) {
 	}
 }
 
+func TestImpairmentDelayHonorsCancellation(t *testing.T) {
+	base := &recordingCarrier{}
+	impaired := &impairedCarrier{Carrier: base, impairment: Impairment{PacketDelay: time.Second}}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if err := impaired.Send(ctx, []byte("delayed")); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected cancellation-aware delay, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("impairment delay was not bounded: %v", elapsed)
+	}
+	if len(base.sent) != 0 {
+		t.Fatalf("cancelled packet was delivered: %v", base.sent)
+	}
+}
+
 func TestBidirectionalWireGuardTrafficAcrossCarriers(t *testing.T) {
 	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
 		t.Run(string(transport), func(t *testing.T) { proveTunnel(t, transport) })
