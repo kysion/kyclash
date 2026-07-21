@@ -1,6 +1,6 @@
 # KyClash macOS Keychain lab
 
-Status: GitHub-hosted disposable account gate prepared; execution pending
+Status: lifecycle passed on a GitHub-hosted disposable macOS account
 
 The `networking-keychain-lab` executable validates the real Security Framework
 adapter without accepting a credential, service, account, or value from the
@@ -61,3 +61,9 @@ account.
 cycle, and an independent absence check in the ephemeral `macos-15` runner
 account. No secret or item contents are captured; retained evidence records only
 the OS/toolchain versions and pass/fail outcome.
+
+The fixed cleanup/create/read/compare/delete/absence sequence passed in workflow
+run `29804311056`, job `88551634740`, on the `macos-15` ARM64 runner for commit
+`bdb0feeae4e3a0c93924cb64b6fe2dec86192dd2`. The shared redacted evidence is
+artifact `8484981045`, retained through 2026-08-04. No Keychain contents or
+credential values were captured.

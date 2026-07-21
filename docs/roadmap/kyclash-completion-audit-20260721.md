@@ -107,8 +107,8 @@ The following work is intentionally not executed under the current authority:
 | GitHub updater activation and first metadata publication | Prepared, not authorized or enabled | Yes, for live updates only | Generated public key, protected private signing secret, retained rollback artifact, lifecycle evidence, and explicit publication/activation authorization |
 | Developer ID internal arm64 PKG | Signed; unnotarized with Gatekeeper warning | No | None |
 | Apple notarization and stapling | Optional enhancement | No | Notary credentials only if selected |
-| Keychain destructive lifecycle | Manual/ignored and scoped to `net.kysion.kyclash.test` | No | Disposable macOS account when release evidence is desired |
-| Real route mutation and crash recovery | Harness complete; execution pending | Yes, for production route adapter | Disposable macOS host with authorized elevation and recovery console |
+| Keychain destructive lifecycle | Complete on disposable GitHub macOS runner; scoped to `net.kysion.kyclash.test` | No | None |
+| Real route mutation and crash recovery | Fixed TEST-NET transaction and crash recovery passed; Mihomo coexistence pending | Yes, for production route adapter | Isolated Mihomo coexistence evidence |
 | Impaired-network and sustained transport validation | Isolated POC complete; external matrix pending | Yes, for production data plane | Compatible isolated server and disposable client host |
 | Install/upgrade/rollback/uninstall cleanup | Procedure prepared; execution pending | Yes, for general distribution | Disposable macOS lifecycle host and retained candidate/rollback artifacts |
 | macOS x64 and later platforms | Deferred by locked platform order | Yes, for those platforms only | macOS arm64 MVP gates closed |
@@ -162,6 +162,11 @@ The fixed-scope Keychain lifecycle and TEST-NET route transaction now have a
 dedicated `macos-15` workflow. It runs only on GitHub-hosted disposable VMs,
 requires passwordless elevation, captures redacted fixed-scope evidence, and
 uses an exit trap to recover the route journal, delete the synthetic Keychain
-item, and remove only the dedicated lab files. Execution is pending the first
-workflow run. PKG lifecycle, Mihomo coexistence, utun, sleep/wake, and physical
-network switching remain outside this initial gate.
+item, and remove only the dedicated lab files.
+
+Workflow run `29804311056` passed on `macos-15` ARM64 for commit
+`bdb0feeae4e3a0c93924cb64b6fe2dec86192dd2`. It closes the fixed Keychain
+lifecycle plus normal and forced-exit route recovery sub-gates. Redacted
+artifact `8484981045` is retained through 2026-08-04. PKG lifecycle, Mihomo
+coexistence, utun, sleep/wake, and physical network switching remain outside
+this initial gate.

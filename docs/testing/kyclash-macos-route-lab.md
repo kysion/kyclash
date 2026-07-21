@@ -1,6 +1,6 @@
 # KyClash macOS route lab
 
-Status: GitHub-hosted disposable runner gate prepared; execution pending
+Status: normal transaction and crash recovery passed on GitHub-hosted macOS
 
 This runbook validates the real `/sbin/route` boundary added behind the
 `networking-route-lab` feature. It must not be run on a daily-use workstation,
@@ -99,3 +99,12 @@ and installs an exit trap that recovers the transaction and removes only the
 fixed lab files. This gate can close route mutation and crash-recovery evidence;
 Mihomo coexistence remains separate because the production integration is not
 enabled.
+
+The gate passed in workflow run `29804311056`, job `88551634740`, on the
+`macos-15` ARM64 runner for commit
+`bdb0feeae4e3a0c93924cb64b6fe2dec86192dd2`. The job completed in 5 minutes 7
+seconds. Normal apply/rollback, expected abnormal termination after durable
+apply, fixed-route observation, journal recovery, and final route absence all
+passed. Evidence artifact `8484981045` has archive digest
+`sha256:714881e9985440db636fb38589b5c3e32bb5665144047443f13e0b84bba5b043`
+and is retained through 2026-08-04.
