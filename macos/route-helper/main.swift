@@ -213,13 +213,24 @@ private final class RouteCoordinator {
     private let executor: RouteExecuting
     private let journalURL: URL
     private var journal: RouteJournal?
+    private var journalCorrupt = false
     private var heartbeatDeadline = Date.distantPast
     private var timer: DispatchSourceTimer?
 
     init(executor: RouteExecuting = SystemRouteExecutor(), journalURL: URL = URL(fileURLWithPath: "/Library/Application Support/KyClash/route-lease-v1.plist")) {
         self.executor = executor
         self.journalURL = journalURL
-        journal = loadJournal()
+        if FileManager.default.fileExists(atPath: journalURL.path) {
+            do {
+                let data = try Data(contentsOf: journalURL)
+                let decoded = try PropertyListDecoder().decode(RouteJournal.self, from: data)
+                guard decoded.version == 1 else { throw CocoaError(.fileReadCorruptFile) }
+                journal = decoded
+            } catch {
+                journalCorrupt = true
+                journal = nil
+            }
+        }
         if journal != nil { _ = rollbackLocked() }
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + 5, repeating: 5)
@@ -229,12 +240,15 @@ private final class RouteCoordinator {
     }
 
     func discover() -> HelperReply {
-        lock.withLock { journal == nil ? HelperReply(state: "idle") : HelperReply(state: "failed_closed", errorCode: "recovery_required") }
+        lock.withLock {
+            if journalCorrupt { return HelperReply(state: "failed_closed", errorCode: "journal_corrupt") }
+            return journal == nil ? HelperReply(state: "idle") : HelperReply(state: "failed_closed", errorCode: "recovery_required")
+        }
     }
 
     func begin(_ owner: LeaseOwner) -> HelperReply {
         lock.withLock {
-            guard owner.isValid(), journal == nil else { return HelperReply(state: "failed_closed", errorCode: "invalid_owner") }
+            guard !journalCorrupt, owner.isValid(), journal == nil else { return HelperReply(state: "failed_closed", errorCode: "invalid_owner") }
             let candidate = RouteJournal(version: 1, owner: JournalOwner(owner), pendingCIDR: nil, appliedCIDRs: [])
             guard persist(candidate) else { return HelperReply(state: "failed_closed", errorCode: "journal_write_failed") }
             journal = candidate
@@ -339,11 +353,6 @@ private final class RouteCoordinator {
             }
         } else { journal = current }
         return succeeded
-    }
-
-    private func loadJournal() -> RouteJournal? {
-        guard let data = try? Data(contentsOf: journalURL), let decoded = try? PropertyListDecoder().decode(RouteJournal.self, from: data), decoded.version == 1 else { return nil }
-        return decoded
     }
 
     private func persist(_ value: RouteJournal) -> Bool {
