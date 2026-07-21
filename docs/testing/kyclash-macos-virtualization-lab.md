@@ -134,6 +134,39 @@ GitHub-updater/no-store gate and keeping current application updates disabled.
 The bundle used for this GUI smoke was an isolated user-directory copy; the
 installed `/Applications` package lifecycle remains a separate S1.15 gate.
 
+## GUI termination and session lifecycle evidence — 2026-07-22
+
+A second pass exercised the signed bundle's process and user-session boundary
+in the same disposable guest. The exact app executable was validated before a
+SIGKILL. The app process and `127.0.0.1:33331` singleton listener disappeared,
+but the ordinary bundled `verge-mihomo` proxy core remained as an orphan with
+PPID 1. Its full command line used the normal Mihomo config and
+`/tmp/verge/verge-mihomo.sock`; it was not the production Go executable
+`kyclash-network-sidecar`. The default GUI build does not enable the
+`networking-production` feature, so this observation is not counted as a
+production network-sidecar result.
+
+The orphan was then checked against its complete expected path and terminated
+by its exact PID in the disposable guest. A LaunchServices relaunch produced a
+new KyClash process, a child `verge-mihomo`, and the singleton listener again.
+The redacted command/output record is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/lifecycle-login-relaunch.txt`.
+
+The same pass sent the System Events and `loginwindow` logout actions. After
+logout, `who` had no `console` session and independent checks found no KyClash
+process, no Mihomo child, and no singleton listener. Restarting only the
+disposable Tart guest returned the `supen` console session; its login item
+auto-started the signed bundle and restored the listener. A clean GUI capture
+is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/kyclash-login-relaunch.png`
+with SHA-256
+`491c86a8be8900fca41608ba595100e2ad06271ea0cbd93bf7f841c4d6ab48e4`.
+
+This closes the observed GUI logout/re-login path, but it does not close S1.10:
+an ordinary Mihomo child surviving an app SIGKILL is a separate cleanup
+limitation, and the production sidecar/controller termination boundary still
+needs its own exact child-absence observation. S1.10 remains in progress.
+
 ## Disposable test cycle
 
 ```bash

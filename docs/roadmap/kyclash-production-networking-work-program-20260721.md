@@ -57,7 +57,7 @@ stopping points.
 | S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
 | S1.08 | reproducible signed nested sidecar and launch trust | complete; local authorized Developer ID evidence; notarization remains optional hardening |
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
-| S1.10 | disposable-VM termination matrix | in progress; signed GUI launch now passes; distinct killed app/controller and GUI login/logout observations remain |
+| S1.10 | disposable-VM termination matrix | in progress; signed GUI launch and GUI logout/re-login now observed; production sidecar/controller kill and exact child-absence evidence remain |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
 | S1.12 | route lease/recovery | in progress; injected failure matrix passes, signed VM begin/apply/status/rollback and helper restart pass, privileged full matrix remains |
 | S1.13 | Mihomo coexistence VM matrix | pending; depends on real helper/XPC route execution |
@@ -441,7 +441,18 @@ are covered but do not replace those two VM observations. A freshly rebuilt
 signed arm64 KyClash bundle has since launched through LaunchServices in the
 same disposable guest and kept its GUI process, Mihomo child, and singleton
 listener alive; the redacted window evidence is recorded in
-`docs/testing/kyclash-macos-virtualization-lab.md`.
+`docs/testing/kyclash-macos-virtualization-lab.md`. A fresh exact-PID SIGKILL
+observation then showed the app and singleton listener disappearing while the
+ordinary bundled `verge-mihomo` proxy core was adopted by PID 1. That process
+is not the production Go `kyclash-network-sidecar` (the default GUI build keeps
+`networking-production` disabled), so it is recorded as a separate cleanup
+limitation rather than a production-sidecar pass. The exact orphan was cleaned
+only in the disposable guest and a signed relaunch restored the listener.
+System Events/loginwindow logout removed the console session and all three
+observed KyClash/Mihomo/listener processes; a Tart guest restart auto-logged the
+test user back in and auto-started the signed bundle. GUI logout/re-login is
+therefore observed, while the production sidecar/controller termination
+boundary and child-absence criterion remain open.
 
 Scenarios:
 

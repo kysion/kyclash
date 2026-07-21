@@ -72,6 +72,13 @@ public-distribution enhancement rather than a current development blocker.
   disposable macOS VM. The GUI smoke proved a live KyClash window, bundled
   Mihomo child, and singleton listener; evidence and the updater-plugin startup
   fix are recorded in `docs/testing/kyclash-macos-virtualization-lab.md`.
+- The same disposable guest then recorded a real GUI logout/re-login cycle:
+  logout removed the console session, KyClash process, bundled Mihomo process,
+  and singleton listener; a Tart guest restart restored the console and the
+  signed login-item launch. An exact app SIGKILL also showed the ordinary
+  `verge-mihomo` proxy core surviving as an adopted process. That binary is not
+  the production Go sidecar, so the observation remains a cleanup limitation
+  and the S1.10 production-sidecar child-absence gate is still open.
 - The complete local gate passed on 2026-07-21: frontend typecheck/build/lint,
   localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module
