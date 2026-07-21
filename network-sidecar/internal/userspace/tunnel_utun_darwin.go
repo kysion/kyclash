@@ -5,6 +5,7 @@ package userspace
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"os/exec"
 	"strconv"
@@ -44,7 +45,8 @@ func configureLocalAddresses(ctx context.Context, name string, prefixes []netip.
 		address := prefix.Addr().String()
 		var arguments []string
 		if prefix.Addr().Is4() {
-			arguments = []string{name, "inet", address, address, "netmask", "255.255.255.255", "alias"}
+			mask := net.CIDRMask(prefix.Bits(), 32)
+			arguments = []string{name, "inet", address, address, "netmask", net.IP(mask).String(), "alias"}
 		} else {
 			arguments = []string{name, "inet6", address, "prefixlen", strconv.Itoa(prefix.Bits()), "alias"}
 		}

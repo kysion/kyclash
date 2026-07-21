@@ -56,6 +56,22 @@ func (cluster *Cluster) Endpoints() []profile.Endpoint {
 }
 func (cluster *Cluster) Roots() *x509.CertPool { return cluster.roots.Clone() }
 func (cluster *Cluster) PeerPublicKey() string { return cluster.peerKey }
+func (cluster *Cluster) WaitReady(ctx context.Context, transport profile.Transport) error {
+	server := cluster.servers[transport]
+	if server == nil {
+		return ErrInvalid
+	}
+	return server.WaitReady(ctx)
+}
+func (cluster *Cluster) Done(transport profile.Transport) <-chan error {
+	server := cluster.servers[transport]
+	if server == nil {
+		closed := make(chan error)
+		close(closed)
+		return closed
+	}
+	return server.Done()
+}
 func (cluster *Cluster) Close() error {
 	cluster.once.Do(func() {
 		for _, server := range cluster.servers {

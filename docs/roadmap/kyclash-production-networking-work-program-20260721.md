@@ -361,14 +361,19 @@ Merge unit: `build(macos): bundle and verify signed network sidecar`.
 Contract amendment: `kyclash-utun-contract-review-20260721.md` locks the
 instance/request ownership record and redacted `tunnel_prepared` response.
 
-Status (2026-07-21): in progress. The contract and source implementation are
+Status (2026-07-22): complete. The contract and source implementation are
 complete: the production-only macOS build tag creates the device, validates
 its returned name, configures only local addresses and MTU, retains the exact
 device object, and reports the bootstrap/request owner tuple. Default and lab
 builds remain on netstack. Go unit, tagged macOS compile, vet, Rust contract,
-production-controller, frontend, and repository gates pass locally. Signed
-create/traffic/down and final-absence evidence in the disposable VM remains
-open, so this work package and S1 are not complete.
+production-controller, frontend, and repository gates pass locally. A
+Developer ID-signed, VM-confirmation-gated arm64 test executable ran inside the
+authorized `VirtualMac2,1` guest. Three repeated create/ownership/stop cycles,
+direct backend-close cleanup, and real QUIC-carried WireGuard handshake plus
+bidirectional encrypted-byte counters passed. Each case independently verified
+the exact returned `utunN` disappeared, with no retained 10.88/10.89 address,
+route, or lab process. The redacted lifecycle evidence SHA-256 is
+`de2fafe5a5e1b012caa56ad82b9d9835f2752646ba59b4ec81025b10f7556c26`.
 
 CI note: run `29840092883` captured the previously invisible race log and
 proved the failure was the fixed eight-second loopback handshake budget under
@@ -413,6 +418,14 @@ Tests and evidence:
 Merge unit: `feat(macos): add owned WireGuard utun lifecycle`.
 
 #### S1.10 — disposable-VM termination matrix (formerly N3C)
+
+Status (2026-07-22): in progress. A separately gated hold fixture created an
+owned real utun in the disposable guest, published only its validated name to
+a fixed `/var/tmp/kyclash-utun-lab-*` evidence path, and was then killed with
+SIGKILL. The kernel released the exact device and an independent `ifconfig`
+poll proved final absence. Normal repeated close and backend-close paths are
+also covered by S1.09. Carrier-failure, stdin EOF, app/controller kill,
+login/logout, guest reboot, and stale-unowned-interface refusal remain open.
 
 Scenarios:
 
