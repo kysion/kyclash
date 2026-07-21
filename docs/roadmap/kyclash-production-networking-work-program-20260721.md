@@ -118,6 +118,16 @@ Merge unit: `feat(networking): bind userspace WireGuard to named carriers`.
 
 ### N1C — compatible loopback lab server
 
+Status (2026-07-21): complete. The repository-owned in-process lab peer binds
+only explicit loopback addresses and ephemeral ports, generates a fresh TLS
+certificate and WireGuard identity per run, and exposes trust only as an
+in-memory certificate pool. It terminates a userspace WireGuard peer over KYNP
+QUIC, WSS, or TLS/TCP. Automated tests pass four bidirectional, varied-size
+traffic cycles on every carrier and cover non-loopback refusal, untrusted TLS,
+UDP refusal, delay, deterministic loss, forced disconnect, and server abort.
+Shared frame/carrier tests remain the single enforcement point for malformed,
+replayed, oversized, control-kind, and unknown-version frames.
+
 Deliverables:
 
 - Add a repository-owned lab server that accepts the KYNP QUIC, WSS, and
