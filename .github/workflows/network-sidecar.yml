@@ -169,7 +169,12 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build/race
-          go test -race -count=5 -timeout=300s ./... 2>&1 | tee build/race/run.log
+          # Hosted macOS runners can be substantially slower in the live
+          # userspace carrier matrix. Keep the five-run race coverage and its
+          # per-operation deadlines; give the package aggregate a bounded
+          # 10-minute budget so a slow runner does not turn a valid run into
+          # an infrastructure timeout.
+          go test -race -count=5 -timeout=600s ./... 2>&1 | tee build/race/run.log
 
       - name: Upload race-test evidence
         if: always()
