@@ -611,6 +611,11 @@ helper absence, PKG signature, and emits a byte hash. Performance baselines,
 fresh-install/upgrade/rollback/uninstall evidence, and current-byte VM package
 evidence remain open.
 
+The sidecar verification workflow now retains a repeated QUIC fragmented-round-
+trip benchmark with CPU/runtime and allocation metadata. A local Apple M5 run
+produced 14.00 MB/s, 292599 ns/op, and 67260 B/op at the current source; this
+is a baseline only, not yet a release threshold.
+
 Deliverables:
 
 - Record CPU, resident memory, battery/energy, latency, throughput, loss, utun

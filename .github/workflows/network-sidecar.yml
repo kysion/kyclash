@@ -178,6 +178,27 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Record carrier performance baseline
+        run: |
+          set -o pipefail
+          mkdir -p build/bench
+          {
+            uname -a
+            go version
+            go test ./internal/carrier -run '^$' \
+              -bench '^BenchmarkQUICCarrierFragmentedRoundTrip$' \
+              -benchtime=10s -count=3 -benchmem
+          } 2>&1 | tee build/bench/carrier.txt
+
+      - name: Upload performance baseline
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-sidecar-benchmark-${{ runner.arch }}-${{ github.sha }}
+          path: network-sidecar/build/bench/carrier.txt
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Vet source
         run: go vet ./...
 
