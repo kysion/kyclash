@@ -309,6 +309,8 @@ fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<Rou
         1 => Some(NetworkErrorCode::SidecarUnavailable),
         2 => Some(NetworkErrorCode::InvalidConfiguration),
         3 => Some(NetworkErrorCode::PermissionDenied),
+        4..=6 => Some(NetworkErrorCode::PermissionDenied),
+        7..=8 => Some(NetworkErrorCode::InvalidStateTransition),
         _ => return Err(NetworkErrorCode::UnsupportedProtocolVersion),
     };
     Ok(RouteHelperStatus {
@@ -356,6 +358,29 @@ mod tests {
                 None,
             ),
             Err(NetworkErrorCode::SidecarUnavailable)
+        );
+        assert_eq!(
+            native_status(
+                NativeReply {
+                    transport_status: 0,
+                    state: 4,
+                    error_code: 8,
+                },
+                None,
+            )
+            .map(|status| status.error_code),
+            Ok(Some(NetworkErrorCode::InvalidStateTransition))
+        );
+        assert_eq!(
+            native_status(
+                NativeReply {
+                    transport_status: 0,
+                    state: 4,
+                    error_code: 99,
+                },
+                None,
+            ),
+            Err(NetworkErrorCode::UnsupportedProtocolVersion)
         );
     }
 
