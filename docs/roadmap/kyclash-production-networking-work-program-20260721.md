@@ -628,9 +628,11 @@ fragment expiry, replay refusal, abrupt server close, and Rust-commanded
 QUIC/WSS/TCP fallback already have focused coverage. Additional bounded tests
 now cover blocked stream writes, cancelled QUIC receives, abrupt authenticated
 QUIC peer close, and twelve repeated userspace connect/disconnect cycles. The
-full Go suite and race suite both pass at `-count=3`; a loopback soak driver is
-available at `network-sidecar/lab/linux/reliability-soak.sh` and has passed a
-two-round smoke run. Evidence is recorded in
+full Go suite and the CI-equivalent race suite pass at `-count=5`; a loopback
+soak driver is available at `network-sidecar/lab/linux/reliability-soak.sh` and
+completed ten rounds. The Rust process-level actual-child matrix also passed
+with freshly built temporary Go binaries, covering IPC health traffic,
+explicit QUIC/WSS/TCP sequencing, and cancellation. Evidence is recorded in
 `docs/testing/kyclash-network-reliability-20260722.md`.
 
 The consolidated short CI matrix, stable reason-code assertions for every
