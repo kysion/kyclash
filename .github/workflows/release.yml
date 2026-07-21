@@ -130,7 +130,7 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          corepack pnpm exec node scripts/verify-macos-package.mjs aarch64-apple-darwin
+          corepack pnpm macos:pkg:verify aarch64-apple-darwin
 
       - name: Verify optional notarization and Gatekeeper acceptance
         if: vars.KYCLASH_NOTARIZATION_ENABLED == 'true'

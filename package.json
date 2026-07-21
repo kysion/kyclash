@@ -30,6 +30,7 @@
     "portable": "node scripts/portable.mjs",
     "portable-fixed-webview2": "node scripts/portable-fixed-webview2.mjs",
     "macos:pkg": "node scripts/package-macos-pkg.mjs",
+    "macos:pkg:verify": "node scripts/verify-macos-package.mjs",
     "fix-alpha-version": "node scripts/fix-alpha_version.mjs",
     "release-version": "node scripts/release-version.mjs",
     "release:autobuild": "pnpm release-version autobuild",
