@@ -8,6 +8,7 @@ on:
       - 'docs/architecture/kyclash-network-runtime-v1.md'
       - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
       - 'scripts/build-network-sidecar-macos.mjs'
+      - 'macos/route-helper/**'
       - 'src-tauri/src/networking/sidecar_trust.rs'
   push:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - 'network-sidecar/**'
       - '.github/workflows/network-sidecar.yml'
       - 'scripts/build-network-sidecar-macos.mjs'
+      - 'macos/route-helper/**'
       - 'src-tauri/src/networking/sidecar_trust.rs'
   workflow_dispatch:
 
