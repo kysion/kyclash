@@ -77,6 +77,19 @@ go test -race -count=5 -timeout=180s \
   ./internal/ipc -run TestBackendFailureReasonCodeIsStableAndStateRemainsBounded
 ```
 
+The Rust process-level integration also passed with freshly built temporary Go
+children (the binaries were kept only under `/tmp`):
+
+```bash
+KYCLASH_NETWORK_SIDECAR_BIN=/tmp/kyclash-s114-child/kyclash-network-sidecar \
+KYCLASH_NETWORK_LAB_SIDECAR_BIN=/tmp/kyclash-s114-child/kyclash-network-sidecar-lab \
+  cargo test --manifest-path src-tauri/Cargo.toml --features networking-dev \
+  --lib networking::stdio_runtime::unix::tests::actual_lab_child_carries_health_traffic_across_all_carriers -- --exact
+```
+
+The test passed in 1.84 seconds and covered the actual IPC child, userspace
+WireGuard health traffic, explicit QUIC/WSS/TCP sequencing, and cancellation.
+
 The Linux `tc netem`/nftables harness was inspected in non-mutating mode on the
 same host:
 
