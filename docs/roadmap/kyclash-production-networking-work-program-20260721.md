@@ -55,7 +55,7 @@ stopping points.
 | --- | --- | --- |
 | S1.01–S1.04 | contracts, carriers, lab server, actual child | complete |
 | S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
-| S1.08 | reproducible signed nested sidecar and launch trust | in progress; run 29837451828 failed at certificate import, evidence pending |
+| S1.08 | reproducible signed nested sidecar and launch trust | in progress; run 29837451828 proved the protected environment lacks `APPLE_CERTIFICATE`, signed evidence pending |
 | S1.09–S1.10 | owned real utun and disposable-VM termination matrix | pending |
 | S1.11–S1.13 | signed helper, route lease/recovery, Mihomo coexistence | pending |
 | S1.14–S1.16 | impairment, performance/package lifecycle, physical/staging gates | pending |

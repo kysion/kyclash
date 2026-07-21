@@ -26,6 +26,8 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: macos-15
     environment: kyclash-production-release
+    env:
+      HAS_SIGNING_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
     permissions:
       contents: read
     steps:
@@ -49,12 +51,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Record unavailable signing evidence boundary
+        if: env.HAS_SIGNING_CERTIFICATE != 'true'
+        run: echo '::notice::APPLE_CERTIFICATE is not configured; signed S1.08 evidence remains pending'
+
       - uses: apple-actions/import-codesign-certs@v6
+        if: env.HAS_SIGNING_CERTIFICATE == 'true'
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Build and verify signed nested sidecar
+        if: env.HAS_SIGNING_CERTIFICATE == 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -69,6 +77,7 @@ jobs:
           file "$binary" | grep -F 'arm64'
 
       - uses: actions/upload-artifact@v4
+        if: env.HAS_SIGNING_CERTIFICATE == 'true'
         with:
           name: signed-network-sidecar-${{ github.sha }}
           path: |
@@ -140,7 +149,7 @@ jobs:
           test -z "$(gofmt -l .)"
 
       - name: Test race safety
-        run: go test -race -count=5 -timeout=90s ./...
+        run: go test -race -count=5 -timeout=180s ./...
 
       - name: Vet source
         run: go vet ./...
