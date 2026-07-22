@@ -285,7 +285,9 @@ with SHA-256
 `5630fa3513fbddf96af38c3a78eedf43bd3f327eb42ed2971fc5edf3c83cdea9`.
 
 The same guest then ran the signed production route helper and typed client on
-an owned `utun4`. The final helper SHA-256 was
+an owned `utun4`. The following hash identifies the historical VM copy that
+produced the raw probe below; it is not a current less-specific-coexistence
+acceptance artifact:
 `39bf4758ad3b346947621f9288c7ec81c2127e50d0787670daede9e4e10c056a`.
 The matrix proved:
 
