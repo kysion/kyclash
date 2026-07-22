@@ -256,13 +256,27 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
             operation_id: owner.operation_id.clone(),
         };
         self.active = Some(reference.clone());
-        let begin = self.client.begin(&owner)?;
+        let begin = match self.client.begin(&owner) {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = self.client.rollback(&reference);
+                self.active = None;
+                return Err(error);
+            }
+        };
         if let Err(error) = require_helper_status(&begin, RouteHelperState::Prepared) {
             let _ = self.client.rollback(&reference);
             self.active = None;
             return Err(error);
         }
-        let applied = self.client.apply(&reference)?;
+        let applied = match self.client.apply(&reference) {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = self.client.rollback(&reference);
+                self.active = None;
+                return Err(error);
+            }
+        };
         if let Err(error) = require_helper_status(&applied, RouteHelperState::Applied) {
             let _ = self.client.rollback(&reference);
             self.active = None;
@@ -310,7 +324,8 @@ fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<Rou
         2 => Some(NetworkErrorCode::InvalidConfiguration),
         3 => Some(NetworkErrorCode::PermissionDenied),
         4..=6 => Some(NetworkErrorCode::PermissionDenied),
-        7..=9 => Some(NetworkErrorCode::InvalidStateTransition),
+        7..=8 => Some(NetworkErrorCode::InvalidStateTransition),
+        9 => Some(NetworkErrorCode::RouteConflict),
         _ => return Err(NetworkErrorCode::UnsupportedProtocolVersion),
     };
     Ok(RouteHelperStatus {
@@ -370,6 +385,18 @@ mod tests {
             )
             .map(|status| status.error_code),
             Ok(Some(NetworkErrorCode::InvalidStateTransition))
+        );
+        assert_eq!(
+            native_status(
+                NativeReply {
+                    transport_status: 0,
+                    state: 4,
+                    error_code: 9,
+                },
+                None,
+            )
+            .map(|status| status.error_code),
+            Ok(Some(NetworkErrorCode::RouteConflict))
         );
         assert_eq!(
             native_status(

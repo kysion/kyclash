@@ -32,6 +32,7 @@ impl RouteLeaseOwner {
             || self.private_cidrs.len() > 64
             || !all_unique(self.private_cidrs.iter())
             || !self.private_cidrs.iter().all(|cidr| valid_cidr(cidr))
+            || !cidrs_are_non_overlapping(self.private_cidrs.iter())
         {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
@@ -91,16 +92,95 @@ fn valid_identifier(value: &str) -> bool {
 }
 
 fn valid_cidr(value: &str) -> bool {
-    let Some((address, prefix)) = value.split_once('/') else {
-        return false;
-    };
-    let Ok(address) = address.parse::<IpAddr>() else {
-        return false;
-    };
-    let Ok(prefix) = prefix.parse::<u8>() else {
-        return false;
-    };
-    !address.is_unspecified() && !address.is_multicast() && prefix <= if address.is_ipv4() { 32 } else { 128 }
+    parse_cidr(value).is_some()
+}
+
+fn parse_cidr(value: &str) -> Option<(IpAddr, u8)> {
+    let (address, prefix) = value.split_once('/')?;
+    let address = address.parse::<IpAddr>().ok()?;
+    let prefix = prefix.parse::<u8>().ok()?;
+    if prefix == 0
+        || address.is_unspecified()
+        || address.is_multicast()
+        || prefix > if address.is_ipv4() { 32 } else { 128 }
+    {
+        return None;
+    }
+    is_network_base(address, prefix).then_some((address, prefix))
+}
+
+fn cidrs_are_non_overlapping<'a>(values: impl Iterator<Item = &'a String>) -> bool {
+    let mut parsed = Vec::new();
+    for value in values {
+        let Some(cidr) = parse_cidr(value) else {
+            return false;
+        };
+        parsed.push(cidr);
+    }
+    for (index, (address, prefix)) in parsed.iter().enumerate() {
+        for (other_address, other_prefix) in parsed.iter().skip(index + 1) {
+            if cidr_overlaps(*address, *prefix, *other_address, *other_prefix) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn cidr_overlaps(left: IpAddr, left_prefix: u8, right: IpAddr, right_prefix: u8) -> bool {
+    match (left, right) {
+        (IpAddr::V4(left), IpAddr::V4(right)) => {
+            let left = u32::from(left);
+            let right = u32::from(right);
+            let prefix = left_prefix.min(right_prefix);
+            let mask = u32::MAX << (32 - u32::from(prefix));
+            left & mask == right & mask
+        }
+        (IpAddr::V6(left), IpAddr::V6(right)) => {
+            let left = u128::from(left);
+            let right = u128::from(right);
+            let prefix = left_prefix.min(right_prefix);
+            let mask = u128::MAX << (128 - u32::from(prefix));
+            left & mask == right & mask
+        }
+        _ => false,
+    }
+}
+
+fn is_network_base(address: IpAddr, prefix: u8) -> bool {
+    match address {
+        IpAddr::V4(value) => {
+            let host_bits = 32 - u32::from(prefix);
+            let mask = if host_bits == 32 {
+                u32::MAX
+            } else {
+                (1u32 << host_bits) - 1
+            };
+            u32::from_be_bytes(value.octets()) & mask == 0
+        }
+        IpAddr::V6(value) => {
+            let bytes = value.octets();
+            let mut remaining = 128 - usize::from(prefix);
+            let mut index = usize::from(prefix / 8);
+            if remaining > 0 && !prefix.is_multiple_of(8) {
+                let host_bits = 8 - (prefix % 8);
+                let mask = (1u8 << host_bits) - 1;
+                if bytes[index] & mask != 0 {
+                    return false;
+                }
+                remaining -= usize::from(host_bits);
+                index += 1;
+            }
+            while remaining >= 8 {
+                if bytes[index] != 0 {
+                    return false;
+                }
+                remaining -= 8;
+                index += 1;
+            }
+            true
+        }
+    }
 }
 
 fn all_unique<'a>(mut values: impl Iterator<Item = &'a String>) -> bool {
@@ -166,6 +246,18 @@ mod tests {
         let mut default_route = valid.clone();
         default_route.private_cidrs = vec!["0.0.0.0/0".into()];
         cases.push(default_route);
+        let mut host_bits = valid.clone();
+        host_bits.private_cidrs = vec!["10.127.1.0/16".into()];
+        cases.push(host_bits);
+        let mut multicast = valid.clone();
+        multicast.private_cidrs = vec!["224.0.0.0/4".into()];
+        cases.push(multicast);
+        let mut malformed_prefix = valid.clone();
+        malformed_prefix.private_cidrs = vec!["10.127.0.0/nope".into()];
+        cases.push(malformed_prefix);
+        let mut overlapping = valid.clone();
+        overlapping.private_cidrs = vec!["10.127.0.0/16".into(), "10.127.1.0/24".into()];
+        cases.push(overlapping);
         let mut zero_revision = valid;
         zero_revision.profile_revision = 0;
         cases.push(zero_revision);
