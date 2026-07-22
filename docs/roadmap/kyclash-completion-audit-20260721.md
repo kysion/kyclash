@@ -18,9 +18,7 @@ locally closed in `96064f84`, with deterministic self-tests and independent
 review. XPC-C (Rust-owned replacement and same-generation read-only
 reconciliation) is locally closed in the current source unit: the bounded
 replacement, frozen-owner retention, no-mutation-replay rule, and injected
-failure tests pass. The first incomplete safe source criterion is now the
-production-feature live-source and typed service-lifecycle path required by the
-incomplete S1.13 VM aggregate. Its controller-absence prerequisite is locally
+failure tests pass. The final source/design prerequisite for the production-feature live-source path is now design-approved and locked for disposable-VM construction. The first incomplete criterion is the S1.13 disposable-VM runtime aggregate. Its controller-absence prerequisite is locally
 closed: only a never-spawned or exact stop/reap generation can retire, retained
 handles become mutation-inert, and launch secrets are destroyed immediately.
 The route-boundary terminal receipt is now locally closed: a receipt requires
@@ -223,7 +221,7 @@ separate authorization boundaries:
 | GitHub updater activation and first metadata publication | Prepared, not authorized or enabled | Yes, for live updates only | Generated public key, protected private signing secret, retained rollback artifact, lifecycle evidence, and explicit publication/activation authorization |
 | Developer ID internal arm64 PKG | Signed; unnotarized with Gatekeeper warning | No | None |
 | Apple notarization and stapling | Optional enhancement | No | Notary credentials only if selected |
-| Keychain destructive lifecycle | Complete on disposable GitHub macOS runner; scoped to `net.kysion.kyclash.test` | No | None |
+| Keychain destructive lifecycle | Scoped manual/ignored test only; `.test` namespace contract and non-destructive source gates pass | No | Disposable account/VM only when the manual lifecycle run is selected |
 | Real route mutation and crash recovery | v2 typed lease/journal, dual-stack VM transaction, conflict/restart/journal-corruption, packaged-Mihomo, and ordinary signed-App managed-TUN VM matrices passed; production Rust live-source/reachability/abort/reboot aggregate remains | Yes, for production route adapter | Production-feature VM evidence and isolated private-service fixture |
 | Impaired-network and sustained transport validation | Deterministic loopback + race count=5 + ten-round soak passed; Linux netem CI evidence retained; external matrix pending | Yes, for production data plane | Compatible isolated server and disposable client host |
 | Install/upgrade/rollback/uninstall cleanup | Procedure prepared; signed GUI smoke passed; full installed-byte matrix pending | Yes, for general distribution | Disposable macOS lifecycle host and retained candidate/rollback artifacts |
@@ -415,3 +413,18 @@ control path. Its exact policy-identity/restart, XPC-A helper-barrier, XPC-B
 Objective-C terminal-generation, and XPC-C Rust replacement/reconciliation
 source prerequisites are now complete. No endpoint, release, updater activation, production
 infrastructure, or real login-Keychain lifecycle was touched.
+
+## S1.13 production-feature candidate design lock — 2026-07-22
+
+The independent recheck closed the candidate-review findings. Keychain
+creation is atomic and create-only, duplicate/foreign items fail closed, and
+destructive cleanup requires both the durable `created=1` marker and the exact
+public-key witness under the scoped `net.kysion.kyclash.test` namespace. The
+resolver also wipes the temporary generated buffer on generation, duplicate,
+and error paths. The
+guest-to-host boundary now transfers only the descriptor, policy-revision
+preflight, and expiry-ceiling scalar, with same-session VirtualMac proof,
+TOCTOU validation, and create-only private host publication. The candidate
+design is locked and construction in `kyclash-macos-lab-work` is authorized;
+runtime acceptance remains the first incomplete S1.13 gate. Ordinary builds
+remain default-off, and no release/updater publication is authorized.

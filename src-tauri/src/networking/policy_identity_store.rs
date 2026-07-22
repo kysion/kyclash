@@ -83,6 +83,24 @@ pub enum PolicyIdentityDecision {
     Reject,
 }
 
+/// Redacted snapshot exposed only to the disposable VM system-lab helper.
+/// The owning transaction retains the exact production lock until it is
+/// dropped, so callers can durably publish their preflight evidence before a
+/// production writer can proceed.
+#[cfg(feature = "networking-system-lab")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyIdentityLabSnapshot {
+    Missing,
+    Legacy {
+        revision: u64,
+    },
+    Identity {
+        revision: u64,
+        envelope_sha256: String,
+        key_id: String,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct FilePolicyIdentityStore {
     app_data_root: PathBuf,
@@ -144,6 +162,34 @@ impl std::fmt::Debug for PolicyIdentityTransaction {
 
 #[cfg(unix)]
 impl PolicyIdentityTransaction {
+    #[cfg(feature = "networking-system-lab")]
+    pub fn lab_snapshot(&self) -> Result<PolicyIdentityLabSnapshot, NetworkErrorCode> {
+        unix::ensure_attached(self)?;
+        if unix::read_record_snapshot(&self.networking)? != self.snapshot {
+            return Err(NetworkErrorCode::PolicySignatureInvalid);
+        }
+        Ok(match self.stored.as_ref() {
+            None => PolicyIdentityLabSnapshot::Missing,
+            Some(unix::StoredRecord::Legacy(record)) => PolicyIdentityLabSnapshot::Legacy {
+                revision: record.revision,
+            },
+            Some(unix::StoredRecord::Identity(record)) => PolicyIdentityLabSnapshot::Identity {
+                revision: record.revision,
+                envelope_sha256: record.envelope_sha256.clone(),
+                key_id: record.key_id.clone(),
+            },
+        })
+    }
+
+    #[cfg(feature = "networking-system-lab")]
+    pub fn lab_finish(self) -> Result<(), NetworkErrorCode> {
+        unix::ensure_attached(&self)?;
+        if unix::read_record_snapshot(&self.networking)? != self.snapshot {
+            return Err(NetworkErrorCode::PolicySignatureInvalid);
+        }
+        Ok(())
+    }
+
     pub fn classify(
         &mut self,
         candidate: PolicyIdentityCandidate,
@@ -1247,6 +1293,76 @@ mod tests {
         );
         net(transaction.commit(150))?;
         assert_eq!(read_identity(directory.path())?["revision"], 42);
+        Ok(())
+    }
+
+    #[cfg(feature = "networking-system-lab")]
+    #[test]
+    fn system_lab_snapshot_uses_the_production_lock_and_exact_record() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let empty = net(store(directory.path())?.begin())?;
+        assert_eq!(net(empty.lab_snapshot())?, PolicyIdentityLabSnapshot::Missing);
+        net(empty.lab_finish())?;
+
+        let mut seed = net(store(directory.path())?.begin())?;
+        assert_eq!(
+            net(seed.classify(candidate(42, 'a')?, 150))?,
+            PolicyIdentityDecision::New
+        );
+        net(seed.commit(150))?;
+
+        let present = net(store(directory.path())?.begin())?;
+        assert_eq!(
+            net(present.lab_snapshot())?,
+            PolicyIdentityLabSnapshot::Identity {
+                revision: 42,
+                envelope_sha256: "a".repeat(64),
+                key_id: "policy.test".into(),
+            }
+        );
+        net(present.lab_finish())?;
+        Ok(())
+    }
+
+    #[cfg(feature = "networking-system-lab")]
+    #[test]
+    fn system_lab_finish_rejects_a_changed_snapshot_and_lock_is_exclusive() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let held = net(store(directory.path())?.begin())?;
+        let blocked = store(directory.path())?
+            .with_lock_timeout(Duration::from_millis(20))
+            .begin();
+        assert!(matches!(blocked, Err(NetworkErrorCode::PolicySignatureInvalid)));
+
+        let record_path = directory.path().join(NETWORKING_DIRECTORY_NAME).join(RECORD_FILE_NAME);
+        fs::write(&record_path, br#"{"schema_version":1,"revision":42}"#)?;
+        fs::set_permissions(&record_path, fs::Permissions::from_mode(0o600))?;
+        assert_eq!(held.lab_finish(), Err(NetworkErrorCode::PolicySignatureInvalid));
+        Ok(())
+    }
+
+    #[cfg(feature = "networking-system-lab")]
+    #[test]
+    fn system_lab_finish_rejects_replaced_networking_directory_and_named_lock() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let networking = directory.path().join(NETWORKING_DIRECTORY_NAME);
+        let replaced = directory.path().join("networking.replaced");
+        let transaction = net(store(directory.path())?.begin())?;
+        fs::rename(&networking, &replaced)?;
+        fs::create_dir(&networking)?;
+        fs::set_permissions(&networking, fs::Permissions::from_mode(0o700))?;
+        fs::write(networking.join(LOCK_FILE_NAME), b"")?;
+        fs::set_permissions(networking.join(LOCK_FILE_NAME), fs::Permissions::from_mode(0o600))?;
+        assert_eq!(transaction.lab_finish(), Err(NetworkErrorCode::PolicySignatureInvalid));
+
+        let directory = tempfile::tempdir()?;
+        let networking = directory.path().join(NETWORKING_DIRECTORY_NAME);
+        let lock = networking.join(LOCK_FILE_NAME);
+        let transaction = net(store(directory.path())?.begin())?;
+        fs::remove_file(&lock)?;
+        fs::write(&lock, b"")?;
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o600))?;
+        assert_eq!(transaction.lab_finish(), Err(NetworkErrorCode::PolicySignatureInvalid));
         Ok(())
     }
 

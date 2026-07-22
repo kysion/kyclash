@@ -33,7 +33,7 @@ networking-route-lab = []
 networking-keychain-lab = []
 # Builds the fixed-scope lab binaries without packaging application resources.
 # This feature is never enabled by normal application or release builds.
-networking-system-lab = ["tauri/test"]
+networking-system-lab = ["tauri/test", "dep:aws-lc-rs"]
 updater-verifier = []
 
 [[bin]]
@@ -50,6 +50,11 @@ required-features = ["networking-route-lab"]
 name = "kyclash-keychain-lab"
 path = "src/bin/kyclash-keychain-lab.rs"
 required-features = ["networking-keychain-lab"]
+
+[[bin]]
+name = "kyclash-keychain-public-lab"
+path = "src/bin/kyclash-keychain-public-lab.rs"
+required-features = ["networking-system-lab"]
 
 [[bin]]
 name = "kyclash-updater-verify"
@@ -154,6 +159,7 @@ rustix = { version = "1.1.4", features = ["fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
+aws-lc-rs = { version = "1.17.1", default-features = false, features = ["non-fips"], optional = true }
 objc2 = "0.6.4"
 objc2-foundation = { version = "0.3.2", features = [
   "NSString",

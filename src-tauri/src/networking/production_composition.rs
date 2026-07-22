@@ -215,7 +215,7 @@ impl DeferredProductionServiceFactory {
             .map_err(|_| NetworkErrorCode::AuthenticationFailed)?;
         let instance_id = random_instance_id(&auth_token)?;
         let materialized = (|| {
-            let mut credentials = MacOsKeychainCredentialStore::new();
+            let mut credentials = MacOsKeychainCredentialStore::new_for_runtime();
             let context = prepare_sidecar_launch_context(
                 instance_id.clone(),
                 auth_token.clone(),

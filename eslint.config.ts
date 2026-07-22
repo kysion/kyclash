@@ -39,6 +39,11 @@ export default defineConfig([
       globals: globals.browser,
       parserOptions: {
         projectService: {
+          // The reviewed VM-lab command chain intentionally spans more than
+          // the parser's conservative eight-file default-project limit. Keep
+          // type-aware linting enabled for those scripts while making the
+          // audited ceiling explicit instead of silently skipping new files.
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 64,
           allowDefaultProject: [
             'eslint.config.ts',
             `vite.config.mts`,

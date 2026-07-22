@@ -362,6 +362,20 @@ func (backend *Backend) Close() error {
 	return nil
 }
 
+// DialLabTCP is the intentionally narrow payload-test boundary. It is only
+// enabled for NewLab instances and returns one connection, never the raw
+// netstack pointer used by production lifecycle code.
+func (backend *Backend) DialLabTCP(ctx context.Context, address netip.AddrPort) (net.Conn, error) {
+	backend.mu.Lock()
+	if backend.closed || backend.network == nil || !backend.probeAddress.IsValid() {
+		backend.mu.Unlock()
+		return nil, ErrInvalidState
+	}
+	network := backend.network
+	backend.mu.Unlock()
+	return network.DialContextTCPAddrPort(ctx, address)
+}
+
 func validOwnerID(value string) bool {
 	return identifier.Valid(value)
 }

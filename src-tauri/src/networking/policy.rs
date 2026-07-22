@@ -350,4 +350,38 @@ mod tests {
         );
         Ok(())
     }
+
+    #[cfg(feature = "networking-system-lab")]
+    #[test]
+    fn random_js_generator_output_verifies_with_production_rust() -> anyhow::Result<()> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct JsFixture {
+            now: u64,
+            policy_base64: String,
+            trust_base64: String,
+        }
+
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/networking-production-policy-rust-fixture.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .map_err(|_| anyhow::anyhow!("cannot launch the JS policy fixture"))?;
+        if !output.status.success() || !output.stderr.is_empty() {
+            return Err(anyhow::anyhow!("JS policy fixture failed"));
+        }
+        let fixture: JsFixture = serde_json::from_slice(&output.stdout)?;
+        let policy = STANDARD.decode(fixture.policy_base64)?;
+        let trust_bytes = STANDARD.decode(fixture.trust_base64)?;
+        let trust = PolicyTrustStore::from_json(&trust_bytes).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let verified = trust
+            .verify(&policy, fixture.now)
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(verified.key_id, "lab.vm.0123456789abcdef");
+        assert_eq!(verified.revision, 42);
+        assert_eq!(verified.profile.control_plane, "https://127.0.0.1:20001/control");
+        assert_eq!(verified.profile.site.private_cidrs, ["10.88.0.2/32", "fd00:88::2/128"]);
+        Ok(())
+    }
 }

@@ -1078,6 +1078,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
+ "aws-lc-rs",
  "backon",
  "base64 0.22.1",
  "bitflags 2.13.0",

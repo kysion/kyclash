@@ -572,6 +572,17 @@ app/sidecar/helper abort, reboot/retry, typed service retirement, and aggregate
 foreign-state cleanup; ordinary App evidence is not represented as
 production-controller evidence.
 
+The S1.13 production-feature candidate review is design-approved and locked in
+`kyclash-production-vm-lab-candidate-review-20260722.md`. Its final recheck
+closed the Keychain ownership and guest-to-host pull findings: creation is
+atomic/create-only with duplicate and foreign-item fail-closed handling,
+temporary generated buffers are wiped on error/duplicate paths, and cleanup
+requires durable ownership plus a public witness. The pull transfers only
+public descriptor/preflight/expiry evidence into a new private host root.
+Construction is authorized only in
+`kyclash-macos-lab-work`; runtime acceptance remains pending. Ordinary builds
+remain default-off and no release/updater publication is authorized.
+
 ## Later platform order
 
 1. macOS x64
