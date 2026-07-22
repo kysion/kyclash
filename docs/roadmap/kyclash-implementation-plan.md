@@ -497,8 +497,10 @@ both response orders, bounded timeout/child reap, crash-loop backoff, and
 post-cancel carrier reuse pass across Rust and Go. The aggregate system
 criterion remains in progress at S1.13. The exact policy-identity portion of
 the locked production restart/rematerialization implementation is complete;
-the helper accepted-connection barrier is now the first source gate in the XPC
-generation/rematerialization chain.
+the helper accepted-connection barrier and Objective-C first-wins terminal
+generation boundary are now closed source gates in the XPC
+generation/rematerialization chain; Rust-owned replacement/reconciliation is
+the next source gate.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and
@@ -524,12 +526,12 @@ Legacy revision-only records migrate only on a higher authenticated revision.
 Initialization remains single-flight and installs only a deferred factory, so
 this source evidence does not claim an App launch, XPC connection, Keychain
 read, sidecar, utun, or route mutation. The Swift helper accepted-connection
-barrier is now closed. The current source unit is the Objective-C XPC-B
-terminal-generation/transport-status boundary; after it, Rust XPC-C will own
-replaceable generations and same-generation read-only discovery retry without
-replaying route mutations. The sidecar cancellation amendment is committed as
-`8811dda9` with local full-race and 20-round soak evidence; hosted replacement
-verification remains pending.
+barrier and Objective-C XPC-B terminal-generation/transport-status boundary
+are now closed. The current source unit is Rust XPC-C: replaceable generations,
+one bounded same-generation read-only discovery reconciliation, and frozen-owner
+retention without replaying route mutations. The sidecar cancellation amendment
+is committed as `8811dda9` with local full-race and 20-round soak evidence;
+hosted replacement verification remains pending.
 
 The route-helper v2 lease/journal implementation and signed disposable-VM
 matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,

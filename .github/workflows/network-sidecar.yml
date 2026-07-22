@@ -414,6 +414,14 @@ jobs:
             "${RUNNER_TEMP}/kyclash-route-helper-lab-client.o" \
             -framework Foundation \
             -o "${RUNNER_TEMP}/kyclash-route-helper-lab-client"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -mmacosx-version-min=13.0 \
+            -DKYCLASH_ROUTE_HELPER_CLIENT_SELF_TEST \
+            macos/route-helper/client.m \
+            -framework Foundation \
+            -o "${RUNNER_TEMP}/kyclash-route-helper-client-self-test"
+          test "$("${RUNNER_TEMP}/kyclash-route-helper-client-self-test")" = \
+            'kyclash_route_helper_client_self_test=passed'
           file "${RUNNER_TEMP}/kyclash-route-helper" | grep -F 'arm64'
           file "${RUNNER_TEMP}/kyclash-route-helper-lab-client" | grep -F 'arm64'
           set +e

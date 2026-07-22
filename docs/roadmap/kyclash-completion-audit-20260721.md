@@ -13,10 +13,12 @@ implementation is complete, and XPC-A (the helper accepted-connection
 barrier) is now locally closed. Registration occurs before XPC resume, all
 requests require a live registered generation, and invalidation performs the
 owned rollback before a replacement can certify idle. XPC-B (the Objective-C
-first-wins terminal-generation and precise transport-status boundary) is the
-first incomplete safe source criterion required by the incomplete S1.13 VM
-aggregate. This audit is not a terminal completion or permission to stop continuous delivery
-while safe work remains.
+first-wins terminal-generation and precise transport-status boundary) is now
+locally closed in `96064f84`, with deterministic self-tests and independent
+review. XPC-C (Rust-owned replacement and same-generation read-only
+reconciliation) is the first incomplete safe source criterion required by the
+incomplete S1.13 VM aggregate. This audit is not a terminal completion or
+permission to stop continuous delivery while safe work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
 route and lifecycle gates still require disposable hosts, and impaired-network
@@ -158,8 +160,8 @@ production infrastructure, updater publication, and release activation remain
 separate authorization boundaries:
 
 1. Finish the locked XPC connection-generation/rematerialization source chain,
-   starting with XPC-B's Objective-C terminal-generation/transport-status
-   boundary, then exercise the production-feature Rust live-source path against the
+   starting with XPC-C's Rust replacement and reconciliation boundary, then
+   exercise the production-feature Rust live-source path against the
    packaged Mihomo control API in the disposable VM, including private-service
    reachability, app/sidecar/helper abort, reboot/retry, and aggregate
    foreign-route cleanup. The ordinary signed-App managed-TUN subcase has
@@ -378,7 +380,7 @@ S1.13 remains the first incomplete VM aggregate criterion for production Rust
 live-source invocation, private-service reachability, app/sidecar/helper abort,
 reboot/retry, and the aggregate foreign-state/credential cleanup gate. The
 ordinary App matrix does not substitute for the default-off production
-control path. Its exact policy-identity/restart and XPC-A helper-barrier source
-prerequisites are now complete; XPC-B terminal-generation/transport status
-remains the first source prerequisite. No endpoint, release, updater activation, production
+control path. Its exact policy-identity/restart, XPC-A helper-barrier, and XPC-B
+Objective-C terminal-generation source prerequisites are now complete; XPC-C
+Rust replacement/reconciliation remains the first source prerequisite. No endpoint, release, updater activation, production
 infrastructure, or real login-Keychain lifecycle was touched.

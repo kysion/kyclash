@@ -69,13 +69,16 @@ stopping points.
 
 The exact policy-identity portion of the locked production restart and
 rematerialization amendment is complete at the source boundary. The helper
-accepted-connection barrier (XPC-A) is now implemented and locally closed:
+accepted-connection barrier (XPC-A) is implemented and locally closed:
 registration happens before `resume`, every request is bound to a registered
 generation, and invalidation rolls back under the same coordinator lock before
-the replacement generation may observe authoritative `idle`. The first
-incomplete source criterion is now XPC-B: the Objective-C first-wins terminal
-generation state and precise transport-status boundary. The first incomplete
-aggregate criterion remains S1.13. Overall S1 status: in progress.
+the replacement generation may observe authoritative `idle`. The Objective-C
+first-wins terminal-generation and precise transport-status boundary (XPC-B)
+is now locally closed in `96064f84`; strict arm64/x86_64 builds, analyzer,
+ABI-layout checks, deterministic self-tests, and independent review passed.
+The first incomplete source criterion is now XPC-C: Rust-owned replacement,
+same-generation read-only reconciliation, and frozen-owner retention. The first
+incomplete aggregate criterion remains S1.13. Overall S1 status: in progress.
 
 ### Work-package dependency chain
 
