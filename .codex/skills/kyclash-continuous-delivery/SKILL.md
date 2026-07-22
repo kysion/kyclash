@@ -1,6 +1,6 @@
 ---
 name: kyclash-continuous-delivery
-description: Review, lock, implement, verify, commit, and push the KyClash roadmap continuously without stopping at partial milestones. Use whenever work under the KyClash workspace concerns architecture, networking, sidecars, routes, WireGuard, QUIC/WSS fallback, UI, packaging, releases, branding, tests, documentation, requests to continue/finish/all-complete, or any active roadmap whose safe tasks must proceed without repeated prompting.
+description: Review, lock, implement, visibly run in the selected disposable macOS VM, verify, commit, and push the KyClash roadmap continuously without stopping at partial milestones. Use whenever work under the KyClash workspace concerns architecture, networking, sidecars, routes, WireGuard, QUIC/WSS fallback, UI, packaging, releases, branding, tests, documentation, macOS VM App launch or acceptance, requests to continue/finish/all-complete, or any active roadmap whose safe tasks must proceed without repeated prompting.
 ---
 
 # KyClash Continuous Delivery
@@ -119,6 +119,16 @@ Treat the host Mac as build and orchestration infrastructure, not as the macOS
 acceptance target. When a disposable Apple Virtualization.framework guest has
 been selected for the work:
 
+- Before every runtime-affecting command, classify its target as `host-build`
+  or `guest-runtime`. Commands that invoke `open`, `installer`, an App
+  executable, Mihomo, the sidecar, the helper, `launchctl`, routes, DNS,
+  Keychain, or lifecycle tests are forbidden in a `host-build` shell. Execute
+  them only through the confirmed guest console or guest SSH session.
+- Resolve the work-guest address from `scripts/macos-vm-lab.sh ip`; do not trust
+  a remembered address. At the start of each new guest session, verify
+  `VirtualMac*` from inside that same session before invoking a runtime command.
+  Prefer the ignored VM-only SSH key; never embed a password in a command,
+  script, log, evidence file, or skill.
 - Interpret “run/open/verify the App” as running `/Applications/KyClash.app`
   inside that guest. Do not substitute a host launch because it is easier to
   observe or automate.
@@ -146,6 +156,59 @@ been selected for the work:
 For the current local lab, use the explicitly selected disposable
 `kyclash-macos-lab-work` guest. Never mutate or use the clean
 `kyclash-macos-lab-base` image for acceptance tests.
+
+## Enforce the App-first visible checkpoint
+
+When the user asks to run, open, show, or verify KyClash, or says they have not
+seen the App running, make the visible guest App the first active acceptance
+criterion. Pause unrelated backend, documentation, CI, and long test batches
+until this checkpoint passes. Perform only work directly required to build,
+package, install, or repair the candidate if it cannot launch yet.
+
+Use this order without substituting host evidence:
+
+1. Build the candidate; a host build is compile/package evidence only.
+2. Copy the candidate into a guest-writable location in
+   `kyclash-macos-lab-work` and install it there.
+3. Re-prove `VirtualMac*`, guest OS/architecture, package receipt, installed
+   path, candidate hash, Team ID, and deep signature from inside the guest.
+4. Launch `/Applications/KyClash.app` through guest LaunchServices, bring its
+   window to the foreground, and keep the VM console visible.
+5. Prove the guest PID resolves to the installed executable, the window is
+   visible, and every expected bundled child such as Mihomo is healthy.
+6. Capture a screenshot from the guest session, copy it to the ignored
+   `target/macos-vm-lab/evidence/<run-id>/` directory, and surface it to the
+   user in the same run. Keep a redacted evidence manifest beside it.
+7. Resume lower-level roadmap work only after this visible checkpoint passes.
+
+The evidence manifest must distinguish `build_target` from
+`runtime_target` and contain only non-secret facts: timestamp, VM name,
+`hw.model`, OS, architecture, package/bundle version, artifact hash, Team ID,
+guest PID, executable path, visible-window result, bundled-child health, and
+screenshot path. Never store a password, token, private key, Keychain value, or
+raw credential output.
+
+No screenshot means GUI acceptance is incomplete. No `VirtualMac*` proof means
+the execution target is unverified. A host process, successful build, passing
+unit test, valid signature, installed PKG, or historical screenshot cannot
+replace the current guest launch. If launch or evidence collection fails, keep
+the criterion `in progress`, fix the failure, and retry in the guest.
+
+## Report outcomes instead of defending activity
+
+- Lead every runtime update with the concrete artifact and execution target,
+  for example `KyClash.app launched in kyclash-macos-lab-work`, followed by its
+  evidence. Never present intent such as “I did not stop” or “I will continue”
+  as progress or delivery.
+- Do not use `running`, `verified`, `passed`, `delivered`, or `complete` for the
+  App unless the current guest evidence satisfies the visible checkpoint.
+- If the App is not yet visible, say `App not yet delivered` and identify the
+  exact failing gate. Continue resolving it when the action remains authorized.
+- Treat a user-visible runnable App as a product deliverable, not as an optional
+  final smoke test after invisible implementation work.
+- Before finalizing, surface the latest guest screenshot or its clickable local
+  evidence path and state separately what ran on the host and what ran in the
+  guest.
 
 ## Implementation order
 

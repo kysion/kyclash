@@ -1,4 +1,4 @@
 interface:
   display_name: "KyClash Continuous Delivery"
-  short_description: "Continuously complete the authorized KyClash roadmap"
-  default_prompt: "Use $kyclash-continuous-delivery to execute the authorized KyClash roadmap continuously until all safe work is complete or only a genuine external boundary remains."
+  short_description: "Continuously deliver KyClash with macOS VM runtime proof"
+  default_prompt: "Use $kyclash-continuous-delivery to execute the authorized KyClash roadmap continuously, prove any requested App launch visibly inside the selected disposable macOS VM before claiming delivery, and continue until all safe work is complete or only a genuine external boundary remains."
