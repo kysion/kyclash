@@ -20,8 +20,12 @@ reconciliation) is locally closed in the current source unit: the bounded
 replacement, frozen-owner retention, no-mutation-replay rule, and injected
 failure tests pass. The first incomplete safe source criterion is now the
 production-feature live-source and typed service-lifecycle path required by the
-incomplete S1.13 VM aggregate. This audit is not a terminal completion or
-permission to stop continuous delivery while safe work remains.
+incomplete S1.13 VM aggregate. Its controller-absence prerequisite is locally
+closed: only a never-spawned or exact stop/reap generation can retire, retained
+handles become mutation-inert, and launch secrets are destroyed immediately.
+The route-boundary terminal receipt remains the next source criterion. This
+audit is not a terminal completion or permission to stop continuous delivery
+while safe work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
 route and lifecycle gates still require disposable hosts, and impaired-network
@@ -38,6 +42,11 @@ public-distribution enhancement rather than a current development blocker.
   closed; and invalidation rollback retains the journal and recovery tombstone
   on failure. The native lab client retries only typed v2 `not_ready` on that
   same connection generation.
+- The production controller now distinguishes reusable shutdown from permanent
+  retirement. A private generation-bound receipt requires positive child
+  absence, stop timeout/CrashLoop cannot produce it, retained handles reject
+  every later mutation, diagnostics remain read-only, and launch context plus
+  authentication proof are destroyed before the receipt is returned.
 - Production initialization now persists only revision, exact signed-envelope
   SHA-256, and key ID under a bounded cross-process transaction. Exact restart
   is zero-write; v1 migration, expiry, same-revision identity changes,
@@ -163,7 +172,9 @@ authorized disposable-VM matrix continue without another routine prompt;
 production infrastructure, updater publication, and release activation remain
 separate authorization boundaries:
 
-1. Exercise the production-feature Rust live-source path against the packaged
+1. Finish the route-boundary terminal receipt, service mutation gate, and
+   command-layer CAS rematerialization, then exercise the production-feature
+   Rust live-source path against the packaged
    Mihomo control API in the disposable VM, including private-service
    reachability, app/sidecar/helper abort, reboot/retry, aggregate foreign-route
    cleanup, and typed service retirement. XPC-C's bounded replacement and

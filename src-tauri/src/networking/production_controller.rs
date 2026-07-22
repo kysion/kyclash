@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use super::{
     IpcRequest, IpcResponse, NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode, SidecarHandshake, SidecarLaunchContext,
@@ -97,6 +98,36 @@ pub struct ProductionEvent {
     pub error: Option<NetworkErrorCode>,
 }
 
+/// Positive proof that the controller can no longer own a sidecar child.
+///
+/// `NeverSpawned` is valid only for generation zero. `Reaped` is emitted only
+/// after the runtime's exact stop/reap contract succeeds for the recorded
+/// generation. A lifecycle label or a closed command channel is deliberately
+/// not accepted as absence proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControllerAbsenceKind {
+    NeverSpawned,
+    Reaped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControllerRetirementReceipt {
+    runtime_generation: u64,
+    absence: ControllerAbsenceKind,
+}
+
+impl ControllerRetirementReceipt {
+    #[must_use]
+    pub const fn runtime_generation(self) -> u64 {
+        self.runtime_generation
+    }
+
+    #[must_use]
+    pub const fn absence(self) -> ControllerAbsenceKind {
+        self.absence
+    }
+}
+
 enum Command {
     Start {
         response: oneshot::Sender<Result<(), NetworkErrorCode>>,
@@ -123,6 +154,9 @@ enum Command {
     },
     Shutdown {
         response: oneshot::Sender<Result<(), NetworkErrorCode>>,
+    },
+    Retire {
+        response: oneshot::Sender<Result<ControllerRetirementReceipt, NetworkErrorCode>>,
     },
 }
 
@@ -252,6 +286,18 @@ impl ProductionControllerHandle {
         receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?
     }
 
+    /// Permanently closes this exact controller generation after positive
+    /// child-absence proof. Shutdown remains reusable; only retirement makes
+    /// every later mutation sent through an old handle fail closed.
+    pub async fn retire(&self) -> Result<ControllerRetirementReceipt, NetworkErrorCode> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .send(Command::Retire { response: send })
+            .await
+            .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+        receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+    }
+
     fn register_cancellation(
         &self,
         operation_id: &str,
@@ -304,8 +350,8 @@ fn spawn_production_controller_with_stop_timeout<R: AsyncProductionRuntime>(
     let cancellations = Arc::new(Mutex::new(HashMap::new()));
     let actor = ProductionController {
         runtime,
-        context,
-        expected_auth_proof,
+        context: Some(context),
+        expected_auth_proof: Zeroizing::new(expected_auth_proof),
         state: SidecarLifecycleState::Stopped,
         receiver,
         cancellations: Arc::clone(&cancellations),
@@ -314,6 +360,9 @@ fn spawn_production_controller_with_stop_timeout<R: AsyncProductionRuntime>(
         crashes: 0,
         retry_at: None,
         stop_timeout,
+        runtime_generation: 0,
+        absence: Some(ControllerAbsenceKind::NeverSpawned),
+        retired: false,
     };
     tokio::spawn(actor.run());
     ProductionControllerHandle {
@@ -324,8 +373,8 @@ fn spawn_production_controller_with_stop_timeout<R: AsyncProductionRuntime>(
 
 struct ProductionController<R> {
     runtime: R,
-    context: SidecarLaunchContext,
-    expected_auth_proof: String,
+    context: Option<SidecarLaunchContext>,
+    expected_auth_proof: Zeroizing<String>,
     state: SidecarLifecycleState,
     receiver: mpsc::Receiver<Command>,
     cancellations: Arc<Mutex<HashMap<String, CancellationRegistration>>>,
@@ -334,6 +383,9 @@ struct ProductionController<R> {
     crashes: u8,
     retry_at: Option<Instant>,
     stop_timeout: Duration,
+    runtime_generation: u64,
+    absence: Option<ControllerAbsenceKind>,
+    retired: bool,
 }
 
 impl<R: AsyncProductionRuntime> ProductionController<R> {
@@ -341,7 +393,12 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         while let Some(command) = self.receiver.recv().await {
             match command {
                 Command::Start { response } => {
-                    let _ = response.send(self.start(true).await);
+                    let result = if self.retired {
+                        Err(NetworkErrorCode::InvalidStateTransition)
+                    } else {
+                        self.start(true).await
+                    };
+                    let _ = response.send(result);
                 }
                 Command::Request {
                     operation_id,
@@ -350,14 +407,21 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                     timeout,
                     response,
                 } => {
-                    let result = self
-                        .execute(operation_id.clone(), request, Arc::clone(&cancel), timeout)
-                        .await;
+                    let result = if self.retired {
+                        Err(NetworkErrorCode::InvalidStateTransition)
+                    } else {
+                        self.execute(operation_id.clone(), request, Arc::clone(&cancel), timeout)
+                            .await
+                    };
                     self.remove_cancellation(&operation_id, &cancel);
                     let _ = response.send(result);
                 }
                 Command::Poll { response } => {
-                    let result = self.poll().await;
+                    let result = if self.retired {
+                        Err(NetworkErrorCode::InvalidStateTransition)
+                    } else {
+                        self.poll().await
+                    };
                     let _ = response.send(result);
                 }
                 Command::Health {
@@ -367,9 +431,12 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                     timeout,
                     response,
                 } => {
-                    let result = self
-                        .execute(operation_id.clone(), request, Arc::clone(&cancel), timeout)
-                        .await;
+                    let result = if self.retired {
+                        Err(NetworkErrorCode::InvalidStateTransition)
+                    } else {
+                        self.execute(operation_id.clone(), request, Arc::clone(&cancel), timeout)
+                            .await
+                    };
                     self.remove_cancellation(&operation_id, &cancel);
                     let _ = response.send(result);
                 }
@@ -377,12 +444,19 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                     let _ = response.send(self.events.iter().cloned().collect());
                 }
                 Command::Shutdown { response } => {
-                    let result = self.shutdown().await;
+                    let result = if self.retired {
+                        Err(NetworkErrorCode::InvalidStateTransition)
+                    } else {
+                        self.shutdown().await
+                    };
                     let _ = response.send(result);
+                }
+                Command::Retire { response } => {
+                    let _ = response.send(self.retire());
                 }
             }
         }
-        if self.state != SidecarLifecycleState::Stopped {
+        if !self.retired && self.state != SidecarLifecycleState::Stopped {
             let _ = self.stop_runtime_bounded(None).await;
         }
         self.cancellations.lock().clear();
@@ -392,11 +466,27 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         if self.state != SidecarLifecycleState::Stopped {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
+        self.runtime_generation = self
+            .runtime_generation
+            .checked_add(1)
+            .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+        self.absence = None;
         self.state = SidecarLifecycleState::Starting;
-        let handshake = self.runtime.start(&self.context).await.inspect_err(|error| {
-            self.state = SidecarLifecycleState::Stopped;
-            self.record(ProductionEventKind::Failed, None, Some(*error));
-        })?;
+        let handshake = match self
+            .runtime
+            .start(self.context.as_ref().ok_or(NetworkErrorCode::InvalidStateTransition)?)
+            .await
+        {
+            Ok(handshake) => handshake,
+            Err(primary) => {
+                // A runtime may fail after spawning but before returning a
+                // handshake. Only its exact stop/reap contract can restore a
+                // positive absence receipt for this attempted generation.
+                let _ = self.stop_runtime_bounded(None).await;
+                self.record(ProductionEventKind::Failed, None, Some(primary));
+                return Err(primary);
+            }
+        };
         if handshake.protocol_version != NETWORK_IPC_PROTOCOL_VERSION {
             let _ = self.stop_runtime_bounded(None).await;
             self.record(
@@ -406,7 +496,12 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             );
             return Err(NetworkErrorCode::UnsupportedProtocolVersion);
         }
-        if handshake.instance_id != self.context.instance_id || handshake.auth_proof != self.expected_auth_proof {
+        let expected_instance = self
+            .context
+            .as_ref()
+            .map(|context| context.instance_id.as_str())
+            .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+        if handshake.instance_id != expected_instance || handshake.auth_proof != self.expected_auth_proof.as_str() {
             let _ = self.stop_runtime_bounded(None).await;
             self.record(
                 ProductionEventKind::Failed,
@@ -504,8 +599,12 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                 // converge on CrashLoop, while independent later crashes do not
                 // accumulate forever.
                 self.crashes = 0;
+                self.absence = None;
             }
             SidecarProcessStatus::Exited { .. } => {
+                // `Exited` is returned only after the runtime observes and
+                // reaps its exact owned child handle.
+                self.absence = Some(ControllerAbsenceKind::Reaped);
                 self.crashes = self.crashes.saturating_add(1);
                 if self.crashes > 3 {
                     self.state = SidecarLifecycleState::CrashLoop;
@@ -554,12 +653,43 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             Err(_) => Err(NetworkErrorCode::OperationTimedOut),
         };
         if let Err(error) = result {
+            self.absence = None;
             self.state = SidecarLifecycleState::CrashLoop;
             self.record(ProductionEventKind::Failed, operation_id, Some(error));
         } else {
+            self.absence = Some(if self.runtime_generation == 0 {
+                ControllerAbsenceKind::NeverSpawned
+            } else {
+                ControllerAbsenceKind::Reaped
+            });
             self.state = SidecarLifecycleState::Stopped;
         }
         result
+    }
+
+    fn retire(&mut self) -> Result<ControllerRetirementReceipt, NetworkErrorCode> {
+        if self.retired || self.state != SidecarLifecycleState::Stopped || !self.cancellations.lock().is_empty() {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        let absence = self.absence.ok_or(NetworkErrorCode::SidecarUnavailable)?;
+        if (self.runtime_generation == 0) != (absence == ControllerAbsenceKind::NeverSpawned) {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        self.retired = true;
+        self.retry_at = None;
+        // Old service/controller Arcs may remain alive indefinitely. Retire
+        // must therefore destroy secrets now instead of waiting for actor
+        // teardown when the final handle eventually drops.
+        drop(self.context.take());
+        self.expected_auth_proof.zeroize();
+        self.expected_auth_proof.clear();
+        if self.context.is_some() || !self.expected_auth_proof.is_empty() {
+            return Err(NetworkErrorCode::AuthenticationFailed);
+        }
+        Ok(ControllerRetirementReceipt {
+            runtime_generation: self.runtime_generation,
+            absence,
+        })
     }
 
     fn record(&mut self, kind: ProductionEventKind, operation_id: Option<String>, error: Option<NetworkErrorCode>) {
@@ -1211,6 +1341,81 @@ mod tests {
             event.kind == ProductionEventKind::Failed && event.error == Some(NetworkErrorCode::OperationTimedOut)
         }));
         assert_eq!(handle.start().await, Err(NetworkErrorCode::InvalidStateTransition));
+        assert_eq!(handle.retire().await, Err(NetworkErrorCode::InvalidStateTransition));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn never_spawned_controller_retires_with_positive_zero_generation_absence() -> Result<(), NetworkErrorCode> {
+        let (handle, stopped) = controller(RequestMode::Success);
+        let retained = handle.clone();
+        assert_eq!(
+            handle.retire().await?,
+            ControllerRetirementReceipt {
+                runtime_generation: 0,
+                absence: ControllerAbsenceKind::NeverSpawned,
+            }
+        );
+        assert_eq!(stopped.load(Ordering::Acquire), 0);
+        assert_eq!(retained.start().await, Err(NetworkErrorCode::InvalidStateTransition));
+        assert_eq!(retained.shutdown().await, Err(NetworkErrorCode::InvalidStateTransition));
+        assert_eq!(retained.poll().await, Err(NetworkErrorCode::InvalidStateTransition));
+        assert!(retained.diagnostics().await?.is_empty());
+        assert_eq!(retained.retire().await, Err(NetworkErrorCode::InvalidStateTransition));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exact_reap_receipt_terminalizes_every_retained_handle() -> Result<(), NetworkErrorCode> {
+        let (handle, stopped) = controller(RequestMode::Success);
+        let retained = handle.clone();
+        handle.start().await?;
+        handle.shutdown().await?;
+        assert_eq!(
+            handle.retire().await?,
+            ControllerRetirementReceipt {
+                runtime_generation: 1,
+                absence: ControllerAbsenceKind::Reaped,
+            }
+        );
+        assert_eq!(stopped.load(Ordering::Acquire), 1);
+        assert_eq!(retained.start().await, Err(NetworkErrorCode::InvalidStateTransition));
+        assert_eq!(
+            retained
+                .request(
+                    "operation.retired".into(),
+                    request("request.retired"),
+                    Duration::from_secs(1),
+                )
+                .await,
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        assert!(
+            retained
+                .diagnostics()
+                .await?
+                .iter()
+                .any(|event| event.kind == ProductionEventKind::Stopped)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reusable_shutdowns_advance_the_exact_runtime_generation_before_retirement() -> Result<(), NetworkErrorCode>
+    {
+        let (handle, stopped) = controller(RequestMode::Success);
+        for _ in 0..2 {
+            handle.start().await?;
+            handle.shutdown().await?;
+        }
+        assert_eq!(
+            handle.retire().await?,
+            ControllerRetirementReceipt {
+                runtime_generation: 2,
+                absence: ControllerAbsenceKind::Reaped,
+            }
+        );
+        assert_eq!(stopped.load(Ordering::Acquire), 2);
         Ok(())
     }
 

@@ -74,7 +74,12 @@ pub struct SidecarHandshake {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidecarProcessStatus {
     Running,
-    Exited { success: bool },
+    /// The runtime has observed exit through, and released, its exact owned
+    /// child handle. A signal, missing PID lookup, or nominal terminal label
+    /// without wait/reap confirmation must not produce this variant.
+    Exited {
+        success: bool,
+    },
 }
 
 pub trait SidecarRuntime {

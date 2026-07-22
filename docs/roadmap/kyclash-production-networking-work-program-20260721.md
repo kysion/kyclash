@@ -80,9 +80,14 @@ XPC-C is locally closed in the current source unit: Rust owns one bounded
 replacement, performs same-generation read-only reconciliation, preserves a
 frozen owner on failed recovery, and never replays a mutation on a fresh
 generation. Focused and full Rust library tests, Clippy, formatting, and diff
-checks pass. The first incomplete source criterion is now the production-feature
-live-source/typed-service cleanup path; the first incomplete aggregate criterion
-remains S1.13. Overall S1 status: in progress.
+checks pass. The first typed-service cleanup slice is also locally closed: the
+controller now issues an unforgeable generation-bound receipt only for a
+never-spawned or exactly reaped child, permanently rejects mutations through
+retained handles after retirement, and destroys retained launch secrets at the
+retirement boundary. The first incomplete source criterion is the route-boundary
+terminal receipt, followed by the service mutation gate and command-layer CAS
+rematerialization. The first incomplete aggregate criterion remains S1.13.
+Overall S1 status: in progress.
 
 ### Work-package dependency chain
 

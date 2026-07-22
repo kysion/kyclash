@@ -502,8 +502,11 @@ generation boundary are now closed source gates in the XPC
 generation/rematerialization chain. Rust XPC-C is also locally closed: it owns
 one bounded replacement, performs read-only discovery reconciliation on the
 same generation, retains frozen ownership on failed recovery, and never
-replays route mutations on a fresh generation. The next source gate is the
-production-feature live-source and typed service-lifecycle path.
+replays route mutations on a fresh generation. The first typed service-lifecycle
+slice is also closed at the controller boundary: positive never-spawned/exact-
+reap receipts, permanent old-handle mutation refusal, and immediate secret
+destruction are enforced. The next source gate is the route-boundary terminal
+receipt, followed by service/command rematerialization.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and
@@ -532,8 +535,11 @@ read, sidecar, utun, or route mutation. The Swift helper accepted-connection
 barrier, Objective-C XPC-B terminal-generation/transport-status boundary, and
 Rust XPC-C replacement/reconciliation boundary are now closed source units.
 XPC-C has local focused and full-library test, Clippy, formatting, and diff
-evidence; it does not claim a live production endpoint. The sidecar cancellation
-amendment is committed as `8811dda9` with local full-race and 20-round soak
+evidence; it does not claim a live production endpoint. The controller's exact
+child-absence retirement receipt is now also implemented and locally tested;
+route-boundary retirement, the service mutation gate, and command CAS remain.
+The sidecar cancellation amendment is committed as `8811dda9` with local
+full-race and 20-round soak
 evidence. Hosted run `29923178571` still has a red macOS race verification
 step, so the hosted gate remains open.
 
