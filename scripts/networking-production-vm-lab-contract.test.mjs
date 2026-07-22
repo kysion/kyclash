@@ -77,6 +77,15 @@ test('production system-lab candidates keep the real Tauri App context', () => {
   assert.match(appSource, /builder\.build\(tauri::generate_context!\(\)\)/u)
 })
 
+test('production networking UI keeps polling connected and fallback states', () => {
+  const page = fs.readFileSync(
+    path.join(root, 'src', 'pages', 'networking.tsx'),
+    'utf8',
+  )
+  assert.match(page, /'connected_primary',\s*'degraded_fallback'/u)
+  assert.match(page, /activeStates\.has\(status\.state\)/u)
+})
+
 test('production VM contract exposes a guest-to-host public pull only', () => {
   const copier = fs.readFileSync(
     path.join(root, 'scripts', 'copy-networking-vm-lab-fixtures.mjs'),

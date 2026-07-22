@@ -36,6 +36,8 @@ const activeStates = new Set([
   'fetching_config',
   'preparing_tunnel',
   'connecting_primary',
+  'connected_primary',
+  'degraded_fallback',
   'reconnecting',
   'disconnecting',
 ])
