@@ -5,6 +5,12 @@ use clash_verge_logging::{Type, logging};
 use once_cell::sync::OnceCell;
 #[cfg(unix)]
 use std::iter;
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt as _;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
+#[cfg(unix)]
+use std::path::{Component, Path};
 use std::{fs, path::PathBuf};
 use tauri::Manager as _;
 
@@ -214,6 +220,9 @@ pub fn get_encryption_key() -> Result<Vec<u8>> {
 }
 
 #[cfg(unix)]
+const IPC_PATH_ENV: &str = "KYCLASH_IPC_PATH";
+
+#[cfg(unix)]
 pub fn ensure_mihomo_safe_dir() -> Option<PathBuf> {
     iter::once("/tmp")
         .map(PathBuf::from)
@@ -233,6 +242,9 @@ pub fn ensure_mihomo_safe_dir() -> Option<PathBuf> {
 
 #[cfg(unix)]
 pub fn ipc_path() -> Result<PathBuf> {
+    if let Ok(override_path) = std::env::var(IPC_PATH_ENV) {
+        return validate_ipc_override(&override_path);
+    }
     ensure_mihomo_safe_dir()
         .map(|base_dir| base_dir.join("verge").join("verge-mihomo.sock"))
         .or_else(|| {
@@ -243,9 +255,104 @@ pub fn ipc_path() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Failed to determine ipc path"))
 }
 
+#[cfg(unix)]
+fn validate_ipc_override(value: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(value);
+    if value.is_empty() || value.len() > 100 || !path.is_absolute() {
+        return Err(anyhow::anyhow!("{IPC_PATH_ENV} must be an absolute Unix socket path"));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(anyhow::anyhow!(
+            "{IPC_PATH_ENV} must not contain relative path components"
+        ));
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("{IPC_PATH_ENV} must use an ASCII socket filename"))?;
+    if file_name.len() <= ".sock".len()
+        || !file_name.ends_with(".sock")
+        || !file_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(anyhow::anyhow!("{IPC_PATH_ENV} has an unsafe socket filename"));
+    }
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty() && *parent != Path::new("/"))
+        .ok_or_else(|| anyhow::anyhow!("{IPC_PATH_ENV} must have a dedicated parent directory"))?;
+    let metadata = fs::symlink_metadata(parent)
+        .map_err(|error| anyhow::anyhow!("{IPC_PATH_ENV} parent is unavailable: {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(anyhow::anyhow!("{IPC_PATH_ENV} parent must be a real directory"));
+    }
+    if metadata.permissions().mode() & 0o022 != 0 {
+        return Err(anyhow::anyhow!(
+            "{IPC_PATH_ENV} parent must not be group/world writable"
+        ));
+    }
+
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {}
+        Ok(_) => return Err(anyhow::anyhow!("{IPC_PATH_ENV} target must be a Unix socket")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(anyhow::anyhow!("{IPC_PATH_ENV} target is unavailable: {error}")),
+    }
+    Ok(path)
+}
+
 #[cfg(target_os = "windows")]
 pub fn ipc_path() -> Result<PathBuf> {
     Ok(PathBuf::from(r"\\.\pipe\verge-mihomo"))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::validate_ipc_override;
+    use std::{fs, process};
+
+    fn candidate(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("kyclash-ipc-{}-{name}", process::id()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn ipc_override_accepts_existing_parent_and_safe_socket_name() -> anyhow::Result<()> {
+        let parent = tempfile::tempdir()?;
+        let path = parent.path().join("dev.sock");
+        let path = path.to_string_lossy().into_owned();
+        assert_eq!(validate_ipc_override(&path)?.to_string_lossy(), path);
+        Ok(())
+    }
+
+    #[test]
+    fn ipc_override_rejects_relative_traversal_and_unsafe_names() {
+        assert!(validate_ipc_override("target/kyclash.sock").is_err());
+        assert!(validate_ipc_override(&candidate("../escape.sock")).is_err());
+        assert!(validate_ipc_override(&candidate("dev.sock;rm")).is_err());
+        assert!(validate_ipc_override(&candidate("dev.txt")).is_err());
+    }
+
+    #[test]
+    fn ipc_override_rejects_missing_parent_and_non_socket_target() -> anyhow::Result<()> {
+        let missing_parent = std::env::temp_dir()
+            .join(format!("kyclash-ipc-missing-{}", process::id()))
+            .join("dev.sock");
+        assert!(validate_ipc_override(&missing_parent.to_string_lossy()).is_err());
+
+        let parent = tempfile::tempdir()?;
+        let regular_file = parent.path().join(format!("kyclash-ipc-file-{}.sock", process::id()));
+        fs::write(&regular_file, b"not a socket")?;
+        assert!(validate_ipc_override(&regular_file.to_string_lossy()).is_err());
+        Ok(())
+    }
 }
 #[async_trait]
 pub trait PathBufExec {
