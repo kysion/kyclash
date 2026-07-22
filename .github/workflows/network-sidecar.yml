@@ -283,12 +283,22 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build/race
-          # Hosted macOS runners can be substantially slower in the live
-          # userspace carrier matrix. Keep the five-run race coverage and its
-          # per-operation deadlines; give the package aggregate a bounded
-          # 10-minute budget so a slow runner does not turn a valid run into
-          # an infrastructure timeout.
-          go test -race -count=5 -timeout=600s ./... 2>&1 | tee build/race/run.log
+          # Keep every package at five race-detector repetitions. Isolate the
+          # CPU-heavy loopback WireGuard matrix so unrelated package workers
+          # cannot consume its probe budget on the three-core hosted runner.
+          # The custom tag widens only this instrumented lab's probe budget;
+          # ordinary and release builds retain the shipped one-second value.
+          go list ./... | grep -v '/internal/labserver$' > build/race/packages.txt
+          {
+            race_exit_code=0
+            xargs go test -race -count=5 -timeout=600s < build/race/packages.txt || race_exit_code=$?
+            go test -race -tags=kyclash_race_lab -count=1 -timeout=60s \
+              ./internal/userspace \
+              -run '^TestRaceLabHealthProbeBudgetIsIsolated$' || race_exit_code=$?
+            go test -race -tags=kyclash_race_lab -count=5 -timeout=600s \
+              ./internal/labserver || race_exit_code=$?
+            exit "$race_exit_code"
+          } 2>&1 | tee build/race/run.log
 
       - name: Upload race-test evidence
         if: always()
@@ -300,6 +310,7 @@ jobs:
           retention-days: 14
 
       - name: Record carrier performance baseline
+        if: ${{ !cancelled() }}
         run: |
           set -o pipefail
           mkdir -p build/bench
@@ -436,6 +447,8 @@ jobs:
             grep -Fx 'if_nametoindex device=utun65535 index=0 exists=false'
 
       - name: Test actual child data plane
+        id: actual_child
+        if: ${{ !cancelled() }}
         env:
           # The networking-dev lib test compiles the desktop crate on a fresh
           # macOS runner. Bound Cargo's compiler fan-out so a cold cache does
@@ -467,7 +480,7 @@ jobs:
           } 2>&1 | tee build/actual-child/run.log
 
       - name: Report actual-child failure tail
-        if: failure()
+        if: ${{ !cancelled() && steps.actual_child.outcome == 'failure' }}
         run: |
           set -euo pipefail
           log='build/actual-child/run.log'

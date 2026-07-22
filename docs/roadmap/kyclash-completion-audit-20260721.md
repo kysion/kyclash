@@ -177,6 +177,14 @@ public-distribution enhancement rather than a current development blocker.
   The latest hosted run `29923178571` passed signing, Linux impaired-network,
   and loopback-soak jobs but its macOS verify job still failed in the hosted
   race step; the hosted gate remains red and is not represented as green here.
+  The failure was reproduced as a low-CPU race-instrumentation timing false
+  negative in loopback health probes (not a reported data race). The workflow
+  now isolates the labserver race package, applies a `race && kyclash_race_lab`
+  test-only budget while keeping the shipped one-second probe deadline, and
+  runs benchmark/actual-child diagnostics whenever the run is not cancelled.
+  Local split `GOMAXPROCS=3` race ×5, ordinary Go tests, vet, formatting, and
+  the benchmark all pass; a replacement hosted run is required before this
+  gate can be called green.
 
 ## Remaining system, external, and activation gates
 
@@ -185,8 +193,8 @@ authorized disposable-VM matrix continue without another routine prompt;
 production infrastructure, updater publication, and release activation remain
 separate authorization boundaries:
 
-1. Finish the route-boundary terminal receipt, service mutation gate, and
-   command-layer CAS rematerialization, then exercise the production-feature
+1. Finish the service mutation gate and generation-bound Connect reservation,
+   then command-layer CAS rematerialization and exercise the production-feature
    Rust live-source path against the packaged
    Mihomo control API in the disposable VM, including private-service
    reachability, app/sidecar/helper abort, reboot/retry, aggregate foreign-route

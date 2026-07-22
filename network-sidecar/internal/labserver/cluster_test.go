@@ -41,7 +41,7 @@ func TestClusterCarriesBackendHealthProbe(t *testing.T) {
 	} else {
 		t.Fatal(endpointErr)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), clusterSingleHealthTimeout)
 	defer cancel()
 	if err := backend.Connect(ctx, endpoint.Transport, normalized); err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestClusterCarriesBreakBeforeMakeAcrossAllCarriers(t *testing.T) {
 	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), clusterCarrierMatrixTimeout)
 	defer cancel()
 	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
 		endpoint, err := networkProfile.Endpoint(transport)
@@ -124,7 +124,7 @@ func TestClusterCarriesProductionBackendHealthAcrossAllCarriers(t *testing.T) {
 	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), clusterCarrierMatrixTimeout)
 	defer cancel()
 	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
 		endpoint, err := networkProfile.Endpoint(transport)
@@ -173,7 +173,7 @@ func TestProductionBackendHealthDetectsAbruptLoopbackCarrierFailure(t *testing.T
 	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), clusterFailureLifecycleTimeout)
 	defer cancel()
 	endpoint, err := networkProfile.Endpoint(profile.TCP)
 	if err != nil {
@@ -199,7 +199,7 @@ func TestProductionBackendHealthDetectsAbruptLoopbackCarrierFailure(t *testing.T
 	if health.Reachable || health.LossPercent != 100 {
 		t.Fatalf("abrupt carrier failure was not reported: %#v", health)
 	}
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
+	if elapsed := time.Since(started); elapsed > clusterFailureObservationBound {
 		t.Fatalf("post-connect failure detection exceeded bound: %v", elapsed)
 	}
 }

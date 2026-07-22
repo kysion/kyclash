@@ -228,7 +228,6 @@ func (backend *Backend) Health(ctx context.Context) (ipc.Health, error) {
 const (
 	healthOperationTimeout = 12 * time.Second
 	healthProbeCount       = 4
-	healthProbeTimeout     = time.Second
 )
 
 func sampleCarrierHealth(ctx context.Context, board *wgcarrier.Switchboard) (ipc.Health, error) {

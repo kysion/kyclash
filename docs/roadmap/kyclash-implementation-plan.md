@@ -549,7 +549,14 @@ service mutation gate, generation-bound reservation, and command CAS remain.
 The sidecar cancellation amendment is committed as `8811dda9` with local
 full-race and 20-round soak
 evidence. Hosted run `29923178571` still has a red macOS race verification
-step, so the hosted gate remains open.
+step, so the hosted gate remains open. Its failure was a low-CPU
+race-instrumentation timing false negative in the loopback health probe, not a
+reported data race. The workflow now splits the labserver race package,
+selects a `race && kyclash_race_lab` budget only for that test binary, preserves
+the shipped one-second probe deadline, and keeps benchmark/actual-child
+diagnostics running unless cancelled. Local split race ×5, ordinary tests,
+vet, formatting, and benchmark validation pass; the replacement hosted run is
+still required for a green hosted gate.
 
 The route-helper v2 lease/journal implementation and signed disposable-VM
 matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,

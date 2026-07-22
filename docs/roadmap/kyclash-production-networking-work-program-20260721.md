@@ -98,6 +98,17 @@ by command-layer CAS rematerialization. The first incomplete aggregate
 criterion remains S1.13.
 Overall S1 status: in progress.
 
+Hosted CI continuation (2026-07-22): the previous macOS verify failure was
+reproduced as a race-detector scheduling false negative in loopback health
+sampling on the constrained runner, not a data race. The workflow now keeps
+the shipped one-second userspace probe deadline, applies a separate
+`race && kyclash_race_lab` test-only budget to the isolated labserver package,
+retains all reachability/loss/order assertions, and runs benchmark plus
+actual-child evidence after a non-cancelled race failure. Local GOMAXPROCS=3
+split race ×5, ordinary tests, vet, formatting, YAML validation, and the
+benchmark pass. The replacement hosted run remains an open gate until its
+macOS verify job actually succeeds.
+
 ### Work-package dependency chain
 
 ```text
