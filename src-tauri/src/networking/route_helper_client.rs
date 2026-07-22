@@ -78,6 +78,13 @@ impl RouteRetirementIssuer {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+pub(crate) fn test_retirement_receipt(native_generation: u64) -> ProductionRouteRetirementReceipt {
+    let issuer = RouteRetirementIssuer::allocate().expect("test route receipt issuer exhausted");
+    ProductionRouteRetirementReceipt::issued(&issuer, native_generation)
+}
+
 #[derive(Default)]
 struct RouteHelperCallTracker {
     in_flight: AtomicUsize,

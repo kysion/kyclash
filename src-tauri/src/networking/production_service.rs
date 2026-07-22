@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     future::Future as _,
     pin::Pin,
     sync::{
@@ -12,14 +13,17 @@ use std::{
 use futures::task::noop_waker_ref;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 
 use super::route_helper_client::RouteRetirementIssuer;
 use super::{
-    ActiveMihomoTunSource, IpcRequest, IpcRequestPayload, IpcResponsePayload, MihomoTunSnapshot,
-    NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode, NetworkHealth, NetworkProfile, NetworkState, NetworkStatus,
-    ProductionControllerHandle, ProductionEvent, SidecarLifecycleState, StaticActiveMihomoTunSource, TransportKind,
-    TunnelDeviceFacts, valid_ipc_id,
+    ActiveMihomoTunSource, ControllerRetirementReceipt, IpcRequest, IpcRequestPayload, IpcResponsePayload,
+    MihomoTunSnapshot, NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode, NetworkHealth, NetworkProfile, NetworkState,
+    NetworkStatus, ProductionControllerHandle, ProductionEvent, SidecarLifecycleState, StaticActiveMihomoTunSource,
+    TransportKind, TunnelDeviceFacts, valid_ipc_id,
 };
+
+static NEXT_PRODUCTION_SERVICE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Read-only route-boundary state.  This is an observation only: callers must
 /// use `try_retire` for the atomic close decision and may never manufacture a
@@ -77,6 +81,328 @@ pub enum ProductionRouteRetirementResult {
     Busy,
     RecoveryOnly,
     AlreadyRetired,
+}
+
+/// Service-level mutation gate.  Route-local retirement is only one input to
+/// this gate; the service also owns operation reservations, lifecycle owners,
+/// and queued route calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductionServiceGateState {
+    Open,
+    Retiring,
+    RecoveryOnly,
+    Retired,
+}
+
+/// A read-only service disposition.  `Reusable` is an observation and never
+/// authorizes a caller to replace the service; callers must obtain a
+/// generation-bound reservation or an exact retirement receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductionServiceDispositionKind {
+    Busy,
+    Reusable,
+    TerminalCandidate,
+    RecoveryOnly,
+    Retired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductionServiceDisposition {
+    generation: u64,
+    kind: ProductionServiceDispositionKind,
+}
+
+impl ProductionServiceDisposition {
+    #[must_use]
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn kind(self) -> ProductionServiceDispositionKind {
+        self.kind
+    }
+}
+
+/// A single generation-bound Connect admission.  The authority is consumed
+/// exactly once by `connect_reserved`, or abandoned by `Drop` when a caller
+/// cannot spawn its operation.  It is intentionally non-Clone and does not
+/// expose the gate internals to the command layer.
+pub struct ProductionConnectReservation {
+    generation: u64,
+    authority: Option<ProductionConnectReservationAuthority>,
+}
+
+struct ProductionConnectReservationAuthority {
+    gate: Arc<Mutex<ProductionMutationGate>>,
+    reservation_id: u64,
+}
+
+impl std::fmt::Debug for ProductionConnectReservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionConnectReservation")
+            .field("generation", &self.generation)
+            .field("issued", &self.authority.is_some())
+            .finish()
+    }
+}
+
+impl ProductionConnectReservation {
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Explicitly abandon this reservation.  `Drop` performs the same action;
+    /// the named method makes spawn/build failure paths auditable at call
+    /// sites without exposing a second way to mint a reservation.
+    pub fn abandon(mut self) {
+        self.release();
+    }
+
+    fn release(&mut self) {
+        let Some(authority) = self.authority.take() else {
+            return;
+        };
+        let mut gate = authority.gate.lock();
+        if gate.generation == self.generation {
+            gate.reservations.remove(&authority.reservation_id);
+        }
+    }
+}
+
+impl Drop for ProductionConnectReservation {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// The only service-level replacement authority.  The route receipt is
+/// consumed into this non-copy wrapper; callers can inspect redacted
+/// generation facts but cannot duplicate the proof.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ProductionServiceRetirementReceipt {
+    service_generation: u64,
+    route: ProductionRouteRetirementReceipt,
+    controller: ControllerRetirementReceipt,
+    _sealed: (),
+}
+
+impl ProductionServiceRetirementReceipt {
+    #[must_use]
+    pub const fn service_generation(&self) -> u64 {
+        self.service_generation
+    }
+
+    #[must_use]
+    pub const fn route_boundary_incarnation(&self) -> u64 {
+        self.route.boundary_incarnation()
+    }
+
+    #[must_use]
+    pub const fn route_native_generation(&self) -> u64 {
+        self.route.native_generation()
+    }
+
+    #[must_use]
+    pub const fn controller_runtime_generation(&self) -> u64 {
+        self.controller.runtime_generation()
+    }
+
+    #[must_use]
+    pub const fn controller_absence(&self) -> super::ControllerAbsenceKind {
+        self.controller.absence()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProductionServiceRetirementResult {
+    Retired(ProductionServiceRetirementReceipt),
+    Busy,
+    RecoveryOnly,
+    AlreadyRetired,
+}
+
+struct ProductionMutationGate {
+    generation: u64,
+    state: ProductionServiceGateState,
+    next_reservation_id: u64,
+    reservations: HashSet<u64>,
+    in_flight_mutations: usize,
+    next_route_task_id: u64,
+    route_tasks: HashSet<u64>,
+    route_receipt: Option<ProductionRouteRetirementReceipt>,
+    controller_retirement: Option<Arc<ControllerRetirementProgress>>,
+}
+
+struct ControllerRetirementProgress {
+    result: Mutex<Option<Result<ControllerRetirementReceipt, NetworkErrorCode>>>,
+    completed: tokio::sync::Notify,
+}
+
+impl ProductionMutationGate {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            state: ProductionServiceGateState::Open,
+            next_reservation_id: 0,
+            reservations: HashSet::new(),
+            in_flight_mutations: 0,
+            next_route_task_id: 0,
+            route_tasks: HashSet::new(),
+            route_receipt: None,
+            controller_retirement: None,
+        }
+    }
+
+    fn issue_reservation(&mut self, gate: &Arc<Mutex<Self>>) -> Result<ProductionConnectReservation, NetworkErrorCode> {
+        if self.state != ProductionServiceGateState::Open || !self.reservations.is_empty() {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        let Some(id) = self.next_reservation_id.checked_add(1) else {
+            self.state = ProductionServiceGateState::RecoveryOnly;
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        };
+        self.next_reservation_id = id;
+        self.reservations.insert(id);
+        Ok(ProductionConnectReservation {
+            generation: self.generation,
+            authority: Some(ProductionConnectReservationAuthority {
+                gate: Arc::clone(gate),
+                reservation_id: id,
+            }),
+        })
+    }
+
+    fn consume_reservation(&mut self, generation: u64, reservation_id: u64) -> Result<(), NetworkErrorCode> {
+        if self.state != ProductionServiceGateState::Open || self.generation != generation {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        if self.in_flight_mutations == usize::MAX {
+            self.state = ProductionServiceGateState::RecoveryOnly;
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        if !self.reservations.remove(&reservation_id) {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        self.in_flight_mutations += 1;
+        Ok(())
+    }
+
+    fn begin_mutation(&mut self) -> Result<(), NetworkErrorCode> {
+        if self.state != ProductionServiceGateState::Open || !self.reservations.is_empty() {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        let Some(in_flight) = self.in_flight_mutations.checked_add(1) else {
+            self.state = ProductionServiceGateState::RecoveryOnly;
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        };
+        self.in_flight_mutations = in_flight;
+        Ok(())
+    }
+
+    fn queue_route_task(&mut self) -> Result<u64, NetworkErrorCode> {
+        if self.state != ProductionServiceGateState::Open || !self.reservations.is_empty() {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        let Some(id) = self.next_route_task_id.checked_add(1) else {
+            self.state = ProductionServiceGateState::RecoveryOnly;
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        };
+        self.next_route_task_id = id;
+        self.route_tasks.insert(id);
+        Ok(id)
+    }
+
+    fn finish_route_task(&mut self, id: u64) {
+        self.route_tasks.remove(&id);
+    }
+
+    fn can_retire(&self) -> bool {
+        self.reservations.is_empty() && self.in_flight_mutations == 0 && self.route_tasks.is_empty()
+    }
+}
+
+struct ProductionMutationLease {
+    gate: Arc<Mutex<ProductionMutationGate>>,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceRetirementPreflight {
+    Ready,
+    Busy,
+    RecoveryOnly,
+}
+
+impl Drop for ProductionMutationLease {
+    fn drop(&mut self) {
+        let mut gate = self.gate.lock();
+        if gate.generation == self.generation && gate.in_flight_mutations > 0 {
+            gate.in_flight_mutations -= 1;
+        }
+    }
+}
+
+struct RouteTaskLifecycle {
+    gate: Arc<Mutex<ProductionMutationGate>>,
+    generation: u64,
+    id: u64,
+    completed: AtomicBool,
+    joined: AtomicBool,
+}
+
+impl RouteTaskLifecycle {
+    fn complete(&self) {
+        self.completed.store(true, Ordering::Release);
+        self.finish_if_joined();
+    }
+
+    fn joined(&self) {
+        self.joined.store(true, Ordering::Release);
+        self.finish_if_joined();
+    }
+
+    fn finish_if_joined(&self) {
+        if self.completed.load(Ordering::Acquire) && self.joined.load(Ordering::Acquire) {
+            let mut gate = self.gate.lock();
+            if gate.generation == self.generation {
+                gate.finish_route_task(self.id);
+            }
+        }
+    }
+}
+
+struct RouteTaskCompletionGuard(Arc<RouteTaskLifecycle>);
+
+impl Drop for RouteTaskCompletionGuard {
+    fn drop(&mut self) {
+        self.0.complete();
+    }
+}
+
+struct RouteTaskJoinGuard {
+    lifecycle: Arc<RouteTaskLifecycle>,
+    joined: bool,
+}
+
+impl RouteTaskJoinGuard {
+    fn mark_joined(&mut self) {
+        self.joined = true;
+        self.lifecycle.joined();
+    }
+}
+
+impl Drop for RouteTaskJoinGuard {
+    fn drop(&mut self) {
+        if !self.joined {
+            // A cancelled drainer cannot prove that the blocking task was
+            // joined. Retain the ticket and freeze the service instead of
+            // allowing a false retirement.
+            self.lifecycle.gate.lock().state = ProductionServiceGateState::RecoveryOnly;
+        }
+    }
 }
 
 pub trait ProductionRouteBoundary: Send {
@@ -172,6 +498,7 @@ impl ProductionOperation {
 struct MonitorCleanupContext {
     status: Arc<Mutex<ProductionNetworkStatus>>,
     routes: Arc<Mutex<Box<dyn ProductionRouteBoundary>>>,
+    route_gate: Arc<Mutex<ProductionMutationGate>>,
     routes_active: Arc<AtomicBool>,
     controller: ProductionControllerHandle,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
@@ -201,6 +528,7 @@ pub struct ProductionNetworkStatus {
 }
 
 pub struct ProductionNetworkingService {
+    mutation_gate: Arc<Mutex<ProductionMutationGate>>,
     controller: ProductionControllerHandle,
     profile: NetworkProfile,
     routes: Arc<Mutex<Box<dyn ProductionRouteBoundary>>>,
@@ -251,12 +579,16 @@ impl ProductionNetworkingService {
         if profile_revision == 0 {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
+        let generation = NEXT_PRODUCTION_SERVICE_GENERATION
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| next.checked_add(1))
+            .map_err(|_| NetworkErrorCode::InvalidStateTransition)?;
         let site = ProductionSiteSummary {
             id: profile.site.id.clone(),
             display_name: profile.site.display_name.clone(),
             private_route_count: profile.site.private_cidrs.len(),
         };
         Ok(Self {
+            mutation_gate: Arc::new(Mutex::new(ProductionMutationGate::new(generation))),
             controller,
             timeout: Duration::from_secs(profile.policy.connect_timeout_seconds.into()),
             route_heartbeat_interval: Duration::from_secs(u64::from(profile.policy.health_interval_seconds).min(5)),
@@ -290,11 +622,370 @@ impl ProductionNetworkingService {
         self.status.lock().clone()
     }
 
+    /// Stable identity for this materialized service incarnation.  It is
+    /// distinct from the sidecar runtime generation and from the policy
+    /// revision, so a stale command cannot reuse a reservation after a
+    /// replacement.
+    #[must_use]
+    pub fn service_generation(&self) -> u64 {
+        self.mutation_gate.lock().generation
+    }
+
+    #[must_use]
+    pub fn mutation_gate_state(&self) -> ProductionServiceGateState {
+        self.mutation_gate.lock().state
+    }
+
+    /// Return an observational service disposition.  The result is never a
+    /// replacement authority; `reserve_connect` and `try_retire` perform the
+    /// corresponding atomic decisions under the same gate.
+    #[must_use]
+    pub fn disposition(&self) -> ProductionServiceDisposition {
+        let (generation, state, counters_busy) = {
+            let gate = self.mutation_gate.lock();
+            (gate.generation, gate.state, !gate.can_retire())
+        };
+        let kind = match state {
+            ProductionServiceGateState::Retired => ProductionServiceDispositionKind::Retired,
+            ProductionServiceGateState::RecoveryOnly => ProductionServiceDispositionKind::RecoveryOnly,
+            ProductionServiceGateState::Retiring => ProductionServiceDispositionKind::Busy,
+            ProductionServiceGateState::Open if counters_busy => ProductionServiceDispositionKind::Busy,
+            ProductionServiceGateState::Open => {
+                let active = self.active_operation.lock().is_some();
+                let status = self.status.lock().clone();
+                let heartbeat = self.route_heartbeat.lock().is_some();
+                let lifecycle_busy = self.lifecycle.try_lock().is_err();
+                let terminal_candidate = status.state == NetworkState::Error
+                    && status.operation_id.is_none()
+                    && status.active_transport.is_none()
+                    && status.health.is_none()
+                    && status.sidecar_state == SidecarLifecycleState::Stopped;
+                if active
+                    || heartbeat
+                    || lifecycle_busy
+                    || self.routes_active.load(Ordering::Acquire)
+                    || (status.state != NetworkState::Disconnected && !terminal_candidate)
+                    || status.operation_id.is_some()
+                    || status.active_transport.is_some()
+                    || status.health.is_some()
+                    || status.sidecar_state != SidecarLifecycleState::Stopped
+                {
+                    ProductionServiceDispositionKind::Busy
+                } else {
+                    let routes = self.routes.lock();
+                    match routes.disposition() {
+                        ProductionRouteDisposition::Reusable if terminal_candidate => {
+                            ProductionServiceDispositionKind::TerminalCandidate
+                        }
+                        ProductionRouteDisposition::Reusable => ProductionServiceDispositionKind::Reusable,
+                        ProductionRouteDisposition::Busy => ProductionServiceDispositionKind::Busy,
+                        ProductionRouteDisposition::RecoveryOnly | ProductionRouteDisposition::Retired => {
+                            ProductionServiceDispositionKind::RecoveryOnly
+                        }
+                    }
+                }
+            }
+        };
+        ProductionServiceDisposition { generation, kind }
+    }
+
+    /// Atomically issue one generation-bound Connect admission.  The command
+    /// layer may hold the returned token while it publishes/spawns its task;
+    /// any unconsumed token makes retirement Busy and is automatically
+    /// abandoned if the caller drops it.
+    pub fn reserve_connect(&self) -> Result<ProductionConnectReservation, NetworkErrorCode> {
+        let mut gate = self.mutation_gate.lock();
+        if gate.state != ProductionServiceGateState::Open
+            || !gate.reservations.is_empty()
+            || gate.in_flight_mutations != 0
+            || !gate.route_tasks.is_empty()
+        {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        if self.active_operation.lock().is_some()
+            || self.route_heartbeat.lock().is_some()
+            || self.routes_active.load(Ordering::Acquire)
+        {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        let status = self.status.lock();
+        if status.state != NetworkState::Disconnected
+            || status.operation_id.is_some()
+            || status.active_transport.is_some()
+            || status.health.is_some()
+            || status.sidecar_state != SidecarLifecycleState::Stopped
+        {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        drop(status);
+        if self.lifecycle.try_lock().is_err() {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        let routes = self.routes.lock();
+        if routes.disposition() != ProductionRouteDisposition::Reusable {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        drop(routes);
+        let gate_arc = Arc::clone(&self.mutation_gate);
+        let reservation = gate.issue_reservation(&gate_arc);
+        drop(gate);
+        reservation
+    }
+
+    /// Consume an exact reservation and run the legacy service Connect path.
+    /// The reservation is consumed before the first controller request, so a
+    /// delayed/retained command cannot start a second operation on this
+    /// generation.
+    pub async fn connect_reserved(
+        &self,
+        operation_id: String,
+        mut reservation: ProductionConnectReservation,
+    ) -> Result<ProductionNetworkStatus, NetworkErrorCode> {
+        if !valid_production_operation_id(&operation_id) {
+            reservation.release();
+            return Err(NetworkErrorCode::InvalidConfiguration);
+        }
+        let authority = reservation
+            .authority
+            .take()
+            .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+        if !Arc::ptr_eq(&authority.gate, &self.mutation_gate) {
+            reservation.authority = Some(authority);
+            reservation.release();
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        let lease = {
+            let mut gate = self.mutation_gate.lock();
+            if let Err(error) = gate.consume_reservation(reservation.generation, authority.reservation_id) {
+                drop(gate);
+                reservation.authority = Some(authority);
+                reservation.release();
+                return Err(error);
+            }
+            ProductionMutationLease {
+                gate: Arc::clone(&self.mutation_gate),
+                generation: reservation.generation,
+            }
+        };
+        self.connect_with_mutation_lease(operation_id, lease).await
+    }
+
+    /// Retire this exact service generation.  Route retirement is performed
+    /// first and its non-copy receipt is consumed into the gate before the
+    /// asynchronous controller retirement.  Any failure or cancellation
+    /// leaves the gate fail-closed with that receipt retained.
+    pub async fn try_retire(&self) -> ProductionServiceRetirementResult {
+        let needs_route_receipt = {
+            let mut gate = self.mutation_gate.lock();
+            match gate.state {
+                ProductionServiceGateState::Retired => return ProductionServiceRetirementResult::AlreadyRetired,
+                ProductionServiceGateState::Retiring => {
+                    if gate.route_receipt.is_none()
+                        || gate
+                            .controller_retirement
+                            .as_ref()
+                            .is_some_and(|progress| progress.result.lock().is_none())
+                    {
+                        return ProductionServiceRetirementResult::Busy;
+                    }
+                    false
+                }
+                ProductionServiceGateState::RecoveryOnly => {
+                    if gate.route_receipt.is_none() {
+                        return ProductionServiceRetirementResult::RecoveryOnly;
+                    }
+                    if gate
+                        .controller_retirement
+                        .as_ref()
+                        .is_some_and(|progress| progress.result.lock().is_none())
+                    {
+                        return ProductionServiceRetirementResult::Busy;
+                    }
+                    // Continue only the controller absence proof for the
+                    // exact generation whose route receipt remains retained.
+                    gate.state = ProductionServiceGateState::Retiring;
+                    false
+                }
+                ProductionServiceGateState::Open => {
+                    if !gate.can_retire() {
+                        return ProductionServiceRetirementResult::Busy;
+                    }
+                    gate.state = ProductionServiceGateState::Retiring;
+                    true
+                }
+            }
+        };
+
+        if needs_route_receipt {
+            match self.service_retirement_preflight() {
+                ServiceRetirementPreflight::Ready => {}
+                ServiceRetirementPreflight::Busy => {
+                    self.set_gate_open_after_preflight();
+                    return ProductionServiceRetirementResult::Busy;
+                }
+                ServiceRetirementPreflight::RecoveryOnly => {
+                    self.set_gate_recovery_only();
+                    return ProductionServiceRetirementResult::RecoveryOnly;
+                }
+            }
+
+            let route_receipt = {
+                let mut routes = self.routes.lock();
+                match routes.try_retire() {
+                    ProductionRouteRetirementResult::Retired(receipt) => receipt,
+                    ProductionRouteRetirementResult::Busy => {
+                        self.set_gate_open_after_preflight();
+                        return ProductionServiceRetirementResult::Busy;
+                    }
+                    ProductionRouteRetirementResult::RecoveryOnly | ProductionRouteRetirementResult::AlreadyRetired => {
+                        self.set_gate_recovery_only();
+                        return ProductionServiceRetirementResult::RecoveryOnly;
+                    }
+                }
+            };
+            if !self.consume_route_retirement_receipt(route_receipt) {
+                self.set_gate_recovery_only();
+                return ProductionServiceRetirementResult::RecoveryOnly;
+            }
+        }
+
+        let progress = self.start_or_resume_controller_retirement();
+        let controller_receipt = match wait_for_controller_retirement(&progress).await {
+            Ok(receipt) => receipt,
+            Err(_) => {
+                self.set_gate_recovery_only();
+                return ProductionServiceRetirementResult::RecoveryOnly;
+            }
+        };
+        self.finish_service_retirement(controller_receipt)
+    }
+
+    fn service_retirement_preflight(&self) -> ServiceRetirementPreflight {
+        if self.active_operation.lock().is_some()
+            || self.route_heartbeat.lock().is_some()
+            || self.routes_active.load(Ordering::Acquire)
+            || self.lifecycle.try_lock().is_err()
+        {
+            return ServiceRetirementPreflight::Busy;
+        }
+        let status = self.status.lock();
+        let terminal_candidate = status.state == NetworkState::Error
+            && status.operation_id.is_none()
+            && status.active_transport.is_none()
+            && status.health.is_none()
+            && status.sidecar_state == SidecarLifecycleState::Stopped;
+        if status.state == NetworkState::Error && !terminal_candidate {
+            return ServiceRetirementPreflight::RecoveryOnly;
+        }
+        if (status.state != NetworkState::Disconnected && !terminal_candidate)
+            || status.operation_id.is_some()
+            || status.active_transport.is_some()
+            || status.health.is_some()
+        {
+            return ServiceRetirementPreflight::Busy;
+        }
+        if status.sidecar_state != SidecarLifecycleState::Stopped {
+            return ServiceRetirementPreflight::RecoveryOnly;
+        }
+        drop(status);
+        let route_disposition = self.routes.lock().disposition();
+        match route_disposition {
+            ProductionRouteDisposition::Reusable => ServiceRetirementPreflight::Ready,
+            ProductionRouteDisposition::Busy => ServiceRetirementPreflight::Busy,
+            ProductionRouteDisposition::RecoveryOnly | ProductionRouteDisposition::Retired => {
+                ServiceRetirementPreflight::RecoveryOnly
+            }
+        }
+    }
+
+    fn start_or_resume_controller_retirement(&self) -> Arc<ControllerRetirementProgress> {
+        let mut gate = self.mutation_gate.lock();
+        if let Some(existing) = gate.controller_retirement.as_ref() {
+            let completed = existing.result.lock().as_ref().copied();
+            if !matches!(completed, Some(Err(_))) {
+                return Arc::clone(existing);
+            }
+            // A prior exact attempt failed before controller retirement. Keep
+            // the consumed route receipt and retry only this same generation.
+            gate.controller_retirement = None;
+        }
+        let progress = Arc::new(ControllerRetirementProgress {
+            result: Mutex::new(None),
+            completed: tokio::sync::Notify::new(),
+        });
+        gate.controller_retirement = Some(Arc::clone(&progress));
+        drop(gate);
+        let controller = self.controller.clone();
+        let task_progress = Arc::clone(&progress);
+        let task_gate = Arc::clone(&self.mutation_gate);
+        tokio::spawn(async move {
+            let result = controller.retire().await;
+            *task_progress.result.lock() = Some(result);
+            if result.is_err() {
+                let mut gate = task_gate.lock();
+                if gate.state == ProductionServiceGateState::Retiring {
+                    gate.state = ProductionServiceGateState::RecoveryOnly;
+                }
+            }
+            task_progress.completed.notify_waiters();
+        });
+        progress
+    }
+
+    fn consume_route_retirement_receipt(&self, receipt: ProductionRouteRetirementReceipt) -> bool {
+        let mut gate = self.mutation_gate.lock();
+        if gate.state != ProductionServiceGateState::Retiring || gate.route_receipt.is_some() {
+            return false;
+        }
+        gate.route_receipt = Some(receipt);
+        true
+    }
+
+    fn finish_service_retirement(&self, controller: ControllerRetirementReceipt) -> ProductionServiceRetirementResult {
+        let mut gate = self.mutation_gate.lock();
+        if gate.state != ProductionServiceGateState::Retiring || !gate.can_retire() {
+            gate.state = ProductionServiceGateState::RecoveryOnly;
+            return ProductionServiceRetirementResult::RecoveryOnly;
+        }
+        let Some(route) = gate.route_receipt.take() else {
+            gate.state = ProductionServiceGateState::RecoveryOnly;
+            return ProductionServiceRetirementResult::RecoveryOnly;
+        };
+        gate.state = ProductionServiceGateState::Retired;
+        ProductionServiceRetirementResult::Retired(ProductionServiceRetirementReceipt {
+            service_generation: gate.generation,
+            route,
+            controller,
+            _sealed: (),
+        })
+    }
+
+    fn set_gate_open_after_preflight(&self) {
+        let mut gate = self.mutation_gate.lock();
+        if gate.state == ProductionServiceGateState::Retiring && gate.route_receipt.is_none() {
+            gate.state = ProductionServiceGateState::Open;
+        }
+    }
+
+    fn set_gate_recovery_only(&self) {
+        self.mutation_gate.lock().state = ProductionServiceGateState::RecoveryOnly;
+    }
+
+    fn acquire_mutation(&self) -> Result<ProductionMutationLease, NetworkErrorCode> {
+        let mut gate = self.mutation_gate.lock();
+        gate.begin_mutation()?;
+        Ok(ProductionMutationLease {
+            gate: Arc::clone(&self.mutation_gate),
+            generation: gate.generation,
+        })
+    }
+
     pub async fn diagnostics(&self) -> Result<Vec<ProductionEvent>, NetworkErrorCode> {
         self.controller.diagnostics().await
     }
 
     pub fn cancel(&self, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        let _mutation = self.acquire_mutation()?;
         {
             // `commit_connected` uses the same active -> status order. Holding
             // both locks makes accepted cancellation and final publication one
@@ -332,6 +1023,15 @@ impl ProductionNetworkingService {
         if !valid_production_operation_id(&operation_id) {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
+        let reservation = self.reserve_connect()?;
+        self.connect_reserved(operation_id, reservation).await
+    }
+
+    async fn connect_with_mutation_lease(
+        &self,
+        operation_id: String,
+        _mutation: ProductionMutationLease,
+    ) -> Result<ProductionNetworkStatus, NetworkErrorCode> {
         let _lifecycle = self.lifecycle.lock().await;
         if self.status.lock().state != NetworkState::Disconnected {
             return Err(NetworkErrorCode::InvalidStateTransition);
@@ -497,13 +1197,12 @@ impl ProductionNetworkingService {
         let tunnel = tunnel.clone();
         let mihomo = mihomo.clone();
         let profile_revision = self.profile_revision;
-        tokio::task::spawn_blocking(move || {
+        self.run_tracked_route_call(NetworkErrorCode::SidecarUnavailable, move || {
             routes
                 .lock()
                 .apply(&profile, &operation_id, &tunnel, profile_revision, &mihomo)
         })
         .await
-        .map_err(|_| NetworkErrorCode::SidecarUnavailable)?
     }
 
     async fn prepare_tunnel(&self, operation_id: &str) -> Result<TunnelDeviceFacts, NetworkErrorCode> {
@@ -576,6 +1275,7 @@ impl ProductionNetworkingService {
         if !valid_production_operation_id(&operation_id) {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
+        let _mutation = self.acquire_mutation()?;
         let (active_operation, primary_error) = {
             // Match `cancel` and `commit_connected`: a disconnect intent must
             // become visible while the exact active generation is pinned.
@@ -668,9 +1368,27 @@ impl ProductionNetworkingService {
     async fn rollback_routes(&self, operation_id: &str) -> Result<(), NetworkErrorCode> {
         let routes = Arc::clone(&self.routes);
         let operation_id = operation_id.to_owned();
-        tokio::task::spawn_blocking(move || routes.lock().rollback(&operation_id))
-            .await
-            .map_err(|_| NetworkErrorCode::RouteRollbackFailed)?
+        self.run_tracked_route_call(NetworkErrorCode::RouteRollbackFailed, move || {
+            routes.lock().rollback(&operation_id)
+        })
+        .await
+    }
+
+    fn issue_route_task(&self) -> Result<Arc<RouteTaskLifecycle>, NetworkErrorCode> {
+        issue_route_task_with_gate(&self.mutation_gate)
+    }
+
+    /// Register before `spawn_blocking`, then keep the registration until the
+    /// exact JoinHandle has completed.  If the caller future is aborted, the
+    /// detached drainer still awaits the blocking task and clears the ticket;
+    /// retirement therefore cannot mistake an abandoned outer future for
+    /// route absence.
+    async fn run_tracked_route_call<F>(&self, join_error: NetworkErrorCode, call: F) -> Result<(), NetworkErrorCode>
+    where
+        F: FnOnce() -> Result<(), NetworkErrorCode> + Send + 'static,
+    {
+        let lifecycle = self.issue_route_task()?;
+        run_tracked_route_call_with_lifecycle(lifecycle, join_error, call).await
     }
 
     async fn request(
@@ -829,6 +1547,7 @@ impl ProductionNetworkingService {
         let monitor_cleanup = MonitorCleanupContext {
             status: Arc::clone(&status),
             routes: Arc::clone(&routes),
+            route_gate: Arc::clone(&self.mutation_gate),
             routes_active: Arc::clone(&routes_active),
             controller: controller.clone(),
             lifecycle: Arc::clone(&lifecycle),
@@ -958,10 +1677,12 @@ impl ProductionNetworkingService {
                 }
                 let heartbeat_routes = Arc::clone(&routes);
                 let heartbeat_operation = operation_id.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || heartbeat_routes.lock().heartbeat(&heartbeat_operation))
-                        .await
-                        .unwrap_or(Err(NetworkErrorCode::SidecarUnavailable));
+                let result = run_tracked_route_call_with_gate(
+                    &monitor_cleanup.route_gate,
+                    NetworkErrorCode::SidecarUnavailable,
+                    move || heartbeat_routes.lock().heartbeat(&heartbeat_operation),
+                )
+                .await;
                 if ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled).is_err() {
                     break;
                 }
@@ -1053,6 +1774,79 @@ fn track_dropped_route_heartbeat(task: RouteHeartbeatTask) {
         .lock();
     drains.retain(|existing| !existing.is_finished());
     drains.push(drain);
+}
+
+async fn wait_for_controller_retirement(
+    progress: &ControllerRetirementProgress,
+) -> Result<ControllerRetirementReceipt, NetworkErrorCode> {
+    loop {
+        let completed = progress.completed.notified();
+        let result = progress.result.lock().as_ref().copied();
+        if let Some(result) = result {
+            return result;
+        }
+        completed.await;
+    }
+}
+
+async fn run_tracked_route_call_with_gate<F>(
+    gate: &Arc<Mutex<ProductionMutationGate>>,
+    join_error: NetworkErrorCode,
+    call: F,
+) -> Result<(), NetworkErrorCode>
+where
+    F: FnOnce() -> Result<(), NetworkErrorCode> + Send + 'static,
+{
+    let lifecycle = issue_route_task_with_gate(gate)?;
+    run_tracked_route_call_with_lifecycle(lifecycle, join_error, call).await
+}
+
+fn issue_route_task_with_gate(
+    gate: &Arc<Mutex<ProductionMutationGate>>,
+) -> Result<Arc<RouteTaskLifecycle>, NetworkErrorCode> {
+    let mut gate_state = gate.lock();
+    let id = gate_state.queue_route_task()?;
+    Ok(Arc::new(RouteTaskLifecycle {
+        gate: Arc::clone(gate),
+        generation: gate_state.generation,
+        id,
+        completed: AtomicBool::new(false),
+        joined: AtomicBool::new(false),
+    }))
+}
+
+async fn run_tracked_route_call_with_lifecycle<F>(
+    lifecycle: Arc<RouteTaskLifecycle>,
+    join_error: NetworkErrorCode,
+    call: F,
+) -> Result<(), NetworkErrorCode>
+where
+    F: FnOnce() -> Result<(), NetworkErrorCode> + Send + 'static,
+{
+    let completion = RouteTaskCompletionGuard(Arc::clone(&lifecycle));
+    let join = RouteTaskJoinGuard {
+        lifecycle,
+        joined: false,
+    };
+    let handle = tokio::task::spawn_blocking(move || {
+        let _completion = completion;
+        call()
+    });
+    let (send, receive) = oneshot::channel();
+    tokio::spawn(async move {
+        let joined_result = handle.await;
+        if joined_result.is_err() {
+            // A panic/cancelled blocking worker is not a positive route
+            // absence proof. Keep the ticket fail-closed even after the
+            // JoinHandle itself has been observed.
+            join.lifecycle.gate.lock().state = ProductionServiceGateState::RecoveryOnly;
+        }
+        let result = joined_result.map_err(|_| join_error).and_then(|result| result);
+        let mut join = join;
+        join.mark_joined();
+        let _ = send.send(result);
+    });
+    receive.await.unwrap_or(Err(join_error))
 }
 
 async fn monitor_carrier_health(
@@ -1205,9 +1999,10 @@ fn ensure_monitor_operation_active(
 async fn monitor_route_heartbeat(context: &MonitorCleanupContext, operation_id: &str) -> Result<(), NetworkErrorCode> {
     let routes = Arc::clone(&context.routes);
     let operation_id = operation_id.to_owned();
-    tokio::task::spawn_blocking(move || routes.lock().heartbeat(&operation_id))
-        .await
-        .map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+    run_tracked_route_call_with_gate(&context.route_gate, NetworkErrorCode::SidecarUnavailable, move || {
+        routes.lock().heartbeat(&operation_id)
+    })
+    .await
 }
 
 async fn monitor_disconnect_carrier(
@@ -1274,9 +2069,11 @@ async fn monitor_failure_cleanup(context: &MonitorCleanupContext, operation_id: 
 
     let rollback_routes = Arc::clone(&context.routes);
     let rollback_operation = operation_id.to_owned();
-    let rollback = tokio::task::spawn_blocking(move || rollback_routes.lock().rollback(&rollback_operation))
-        .await
-        .unwrap_or(Err(NetworkErrorCode::RouteRollbackFailed));
+    let rollback =
+        run_tracked_route_call_with_gate(&context.route_gate, NetworkErrorCode::RouteRollbackFailed, move || {
+            rollback_routes.lock().rollback(&rollback_operation)
+        })
+        .await;
     match rollback {
         Ok(()) => {
             context.routes_active.store(false, Ordering::Release);
@@ -1902,7 +2699,7 @@ mod tests {
 
     impl ProductionRouteBoundary for Routes {
         fn disposition(&self) -> ProductionRouteDisposition {
-            ProductionRouteDisposition::RecoveryOnly
+            ProductionRouteDisposition::Reusable
         }
 
         fn try_retire(&mut self) -> ProductionRouteRetirementResult {
@@ -1935,11 +2732,51 @@ mod tests {
         }
     }
 
+    struct RetireableRoutes {
+        receipt: Option<ProductionRouteRetirementReceipt>,
+    }
+
+    impl ProductionRouteBoundary for RetireableRoutes {
+        fn disposition(&self) -> ProductionRouteDisposition {
+            if self.receipt.is_some() {
+                ProductionRouteDisposition::Reusable
+            } else {
+                ProductionRouteDisposition::Retired
+            }
+        }
+
+        fn try_retire(&mut self) -> ProductionRouteRetirementResult {
+            self.receipt
+                .take()
+                .map(ProductionRouteRetirementResult::Retired)
+                .unwrap_or(ProductionRouteRetirementResult::AlreadyRetired)
+        }
+
+        fn apply(
+            &mut self,
+            _: &NetworkProfile,
+            _: &str,
+            _: &TunnelDeviceFacts,
+            _: u64,
+            _: &MihomoTunSnapshot,
+        ) -> Result<(), NetworkErrorCode> {
+            Err(NetworkErrorCode::InvalidStateTransition)
+        }
+
+        fn heartbeat(&mut self, _: &str) -> Result<(), NetworkErrorCode> {
+            Err(NetworkErrorCode::InvalidStateTransition)
+        }
+
+        fn rollback(&mut self, _: &str) -> Result<(), NetworkErrorCode> {
+            Err(NetworkErrorCode::InvalidStateTransition)
+        }
+    }
+
     struct FailingHeartbeatRoutes(Arc<Mutex<Vec<String>>>);
 
     impl ProductionRouteBoundary for FailingHeartbeatRoutes {
         fn disposition(&self) -> ProductionRouteDisposition {
-            ProductionRouteDisposition::RecoveryOnly
+            ProductionRouteDisposition::Reusable
         }
 
         fn try_retire(&mut self) -> ProductionRouteRetirementResult {
@@ -2003,7 +2840,7 @@ mod tests {
 
     impl ProductionRouteBoundary for BlockingHeartbeatRoutes {
         fn disposition(&self) -> ProductionRouteDisposition {
-            ProductionRouteDisposition::RecoveryOnly
+            ProductionRouteDisposition::Reusable
         }
 
         fn try_retire(&mut self) -> ProductionRouteRetirementResult {
@@ -2043,7 +2880,7 @@ mod tests {
 
     impl ProductionRouteBoundary for BlockingRollbackRoutes {
         fn disposition(&self) -> ProductionRouteDisposition {
-            ProductionRouteDisposition::RecoveryOnly
+            ProductionRouteDisposition::Reusable
         }
 
         fn try_retire(&mut self) -> ProductionRouteRetirementResult {
@@ -2082,7 +2919,7 @@ mod tests {
 
     impl ProductionRouteBoundary for FailFirstRollbackRoutes {
         fn disposition(&self) -> ProductionRouteDisposition {
-            ProductionRouteDisposition::RecoveryOnly
+            ProductionRouteDisposition::Reusable
         }
 
         fn try_retire(&mut self) -> ProductionRouteRetirementResult {
@@ -3384,6 +4221,175 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("missing controller shutdown"))?;
         assert!(rollback < shutdown);
         drop(events);
+        Ok(())
+    }
+
+    #[test]
+    fn service_gate_reservation_is_single_use_and_generation_bound() {
+        let gate = Arc::new(Mutex::new(ProductionMutationGate::new(41)));
+        let reservation_result = {
+            let mut gate_state = gate.lock();
+            gate_state.issue_reservation(&gate)
+        };
+        let Ok(mut reservation) = reservation_result else {
+            return;
+        };
+        assert_eq!(reservation.generation(), 41);
+        assert!(!gate.lock().can_retire());
+        assert!(gate.lock().issue_reservation(&gate).is_err());
+
+        let Some(authority) = reservation.authority.take() else {
+            return;
+        };
+        assert!(gate.lock().consume_reservation(41, authority.reservation_id).is_ok());
+        let lease = ProductionMutationLease {
+            gate: Arc::clone(&gate),
+            generation: 41,
+        };
+        assert!(gate.lock().consume_reservation(41, authority.reservation_id).is_err());
+        drop(lease);
+        assert!(gate.lock().can_retire());
+
+        // A reservation from a different gate/generation cannot be consumed
+        // by a replacement service, and dropping it reopens only its owner.
+        let other = Arc::new(Mutex::new(ProductionMutationGate::new(42)));
+        let stale_result = {
+            let mut other_state = other.lock();
+            other_state.issue_reservation(&other)
+        };
+        let Ok(stale) = stale_result else {
+            return;
+        };
+        assert!(gate.lock().consume_reservation(stale.generation(), 1).is_err());
+        drop(stale);
+        assert!(other.lock().can_retire());
+    }
+
+    #[tokio::test]
+    async fn aborted_outer_route_call_keeps_queued_ticket_until_exact_join() -> anyhow::Result<()> {
+        let gate = Arc::new(Mutex::new(ProductionMutationGate::new(51)));
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let task_gate = Arc::clone(&gate);
+        let task_entered = Arc::clone(&entered);
+        let task_release = Arc::clone(&release);
+        let call = tokio::spawn(async move {
+            run_tracked_route_call_with_gate(&task_gate, NetworkErrorCode::RouteRollbackFailed, move || {
+                task_entered.store(true, Ordering::Release);
+                while !task_release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                Ok(())
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert!(!gate.lock().can_retire());
+        call.abort();
+        tokio::task::yield_now().await;
+        assert!(!gate.lock().can_retire());
+        release.store(true, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if gate.lock().can_retire() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn active_service_owner_returns_busy_and_reopens_gate() -> anyhow::Result<()> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let controller = spawn_production_controller(
+            Runtime {
+                events,
+                fail_quic: false,
+            },
+            SidecarLaunchContext::new("instance.test".into(), vec![7; 32]).with_private_key(vec![8; 32]),
+            "proof".into(),
+        );
+        let profile: NetworkProfile = serde_json::from_str(PROFILE)?;
+        let service = ProductionNetworkingService::new(
+            controller,
+            profile,
+            Box::new(Routes(Arc::new(Mutex::new(Vec::new())))),
+            "instance.test".into(),
+            42,
+        )
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        *service.active_operation.lock() = Some(Arc::new(ProductionOperation::new("operation.busy".into(), 1)));
+        service.status.lock().state = NetworkState::ConnectingPrimary;
+        service.status.lock().operation_id = Some("operation.busy".into());
+        assert_eq!(service.try_retire().await, ProductionServiceRetirementResult::Busy);
+        assert_eq!(service.mutation_gate_state(), ProductionServiceGateState::Open);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exact_route_receipt_is_retained_across_controller_failure_and_then_consumed() -> anyhow::Result<()> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let controller = spawn_production_controller(
+            Runtime {
+                events,
+                fail_quic: false,
+            },
+            SidecarLaunchContext::new("instance.test".into(), vec![9; 32]).with_private_key(vec![10; 32]),
+            "proof".into(),
+        );
+        // Make the first controller retirement fail while the route receipt is
+        // already consumed.  The exact same controller generation is then
+        // cleanly stopped and retried; no new route receipt is minted.
+        controller.start().await.map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let profile: NetworkProfile = serde_json::from_str(PROFILE)?;
+        let service = ProductionNetworkingService::new(
+            controller.clone(),
+            profile,
+            Box::new(RetireableRoutes {
+                receipt: Some(crate::networking::route_helper_client::test_retirement_receipt(1)),
+            }),
+            "instance.test".into(),
+            42,
+        )
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        service.status.lock().state = NetworkState::Error;
+        assert_eq!(
+            service.disposition().kind(),
+            ProductionServiceDispositionKind::TerminalCandidate
+        );
+        assert_eq!(
+            service.try_retire().await,
+            ProductionServiceRetirementResult::RecoveryOnly
+        );
+        assert_eq!(service.mutation_gate_state(), ProductionServiceGateState::RecoveryOnly);
+        controller
+            .shutdown()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let result = service.try_retire().await;
+        let ProductionServiceRetirementResult::Retired(receipt) = result else {
+            anyhow::bail!("same-generation retirement did not consume retained route receipt")
+        };
+        assert_eq!(receipt.service_generation(), service.service_generation());
+        assert_eq!(receipt.route_native_generation(), 1);
+        assert_eq!(service.mutation_gate_state(), ProductionServiceGateState::Retired);
+        assert!(service.reserve_connect().is_err());
+        assert_eq!(
+            service.cancel("operation.retired"),
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        assert_eq!(
+            service.disconnect("operation.retired.disconnect".into()).await,
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
         Ok(())
     }
 }
