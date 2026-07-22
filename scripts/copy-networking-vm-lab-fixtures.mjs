@@ -732,7 +732,7 @@ case "$ceiling_record" in
   1:[1-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
   *) exit 73 ;;
 esac
-ceiling="\${ceiling_record#1:}"
+ceiling="$(printf '%s\n' "$ceiling_record" | /usr/bin/sed 's/^1://')"
 manifest_identity_after="$(/usr/bin/stat -f '%d:%i:%l:%u:%Lp:%z' "$manifest")"
 [ "$manifest_identity_before" = "$manifest_identity_after" ]
 

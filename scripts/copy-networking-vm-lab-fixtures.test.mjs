@@ -152,6 +152,7 @@ test('guest pull shell contract is syntactically valid', () => {
     encoding: 'utf8',
   })
   assert.equal(result.status, 0, result.stderr)
+  assert.doesNotMatch(guestPullScript, /\\\$\{/u)
 })
 
 test('guest pull shell pins both run-id guards to exactly 16 hex digits', () => {
