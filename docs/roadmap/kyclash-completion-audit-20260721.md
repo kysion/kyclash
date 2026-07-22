@@ -439,7 +439,10 @@ stop/reap is the only positive child-absence result. A stale generation,
 transport failure, interruption, or invalidation is quarantined as
 recovery-only and can never be converted into a `Reaped` receipt. Swift closes
 late XPC pipe replies explicitly. Focused Rust, Objective-C, Swift self-test,
-and contract gates pass.
+and contract gates pass. The companion pure-Rust route-helper v3 contract now
+binds broker protocol/generation/sidecar ID to the lease and operation tuple,
+models the hold/route/retirement journal order, and classifies v2 records as
+recovery-only.
 
 This does not close S1.13. The production composition remains intentionally
 unwired until the broker reference is bound into bootstrap/handshake/tunnel

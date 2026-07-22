@@ -25,6 +25,7 @@ mod route_helper;
 mod route_helper_client;
 #[cfg(feature = "networking-production")]
 mod route_helper_registration;
+mod route_helper_v3;
 mod sidecar;
 mod sidecar_trust;
 mod state;
@@ -50,6 +51,6 @@ pub use self::route_helper_registration::*;
 pub use self::tunnel_broker_client::*;
 pub use self::{
     config::*, credentials::*, data_plane::*, diagnostics::*, ipc::*, macos_route::*, mihomo_tun_source::*, mock::*,
-    mock_control::*, operation::*, policy::*, route::*, route_helper::*, sidecar::*, sidecar_trust::*, state::*,
-    stdio_runtime::*,
+    mock_control::*, operation::*, policy::*, route::*, route_helper::*, route_helper_v3::*, sidecar::*,
+    sidecar_trust::*, state::*, stdio_runtime::*,
 };

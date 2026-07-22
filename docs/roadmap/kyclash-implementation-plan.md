@@ -594,10 +594,12 @@ changes are covered by focused Rust tests, Objective-C contract checks, and
 the Swift broker self-test.
 
 The next implementation unit is deliberately still gated: route-helper v3
-must carry the broker protocol/generation/instance tuple and durably order
-`hold_pending -> held -> routes -> retirement_pending -> release` before the
-production factory can replace the local launcher. Until that unit and fresh
-restart materialization are complete, the no-sign VM App remains the visible
+now has a pure-Rust owner/journal contract carrying the broker
+protocol/generation/instance tuple and enforcing
+`hold_pending -> held -> routes -> retirement_pending -> release`; its native
+XPC/client and durable filesystem integration are still required before the
+production factory can replace the local launcher. Until that integration and
+fresh restart materialization are complete, the no-sign VM App remains the visible
 userspace lab artifact and cannot claim real utun or private routes.
 
 ## Later platform order
