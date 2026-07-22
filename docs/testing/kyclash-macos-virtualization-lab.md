@@ -540,6 +540,29 @@ preflight followed by a full rerun then passed. Observed Mihomo PIDs changed
 from 8086 to 9079 across restart; final process, socket, `utun4094`, fixed
 routes, journal, and lease were all absent.
 
+## Installed App-managed TUN matrix
+
+`scripts/macos-vm-app-managed-tun-matrix.sh` passed in the same disposable
+`VirtualMac2,1` guest against the freshly installed, Developer ID-signed
+internal PKG. The script refuses the host and the base image, atomically moves
+the entire guest user's App-data directory to a private backup, installs only
+hash-pinned DIRECT fixtures, and launches `/Applications/KyClash.app` through
+guest LaunchServices.
+
+The passing run proved a frontmost visible guest window, the exact App and
+root-owned packaged Mihomo executable paths, live `tun.enable=true`, fixed
+`utun4093`, and disabled auto-route. A continuous monitor proved unchanged
+system DNS, proxy state, IPv4/IPv6 default routes, and existing RFC1918/ULA
+routes. Cleanup removed the App, Mihomo, Unix socket, and utun and restored the
+same original App-data directory object. The 29-line redacted log is retained
+under `target/macos-vm-lab/evidence/app-managed-tun-v1-20260722/` with SHA-256
+`1e06355753e3856e01ac3e1aaf6f18687b8a6a6cb96d41e9f84c124abd6095bd`.
+
+The run also exercised fail-closed recovery: an interrupted attempt restored
+the original directory and left no runtime. This matrix proves ordinary App-
+managed Mihomo behavior; it does not claim that the default-off production
+Rust live-source adapter was invoked.
+
 ## Disposable test cycle
 
 ```bash

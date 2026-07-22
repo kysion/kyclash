@@ -63,7 +63,7 @@ stopping points.
 | S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
 | S1.12 | route lease/recovery | complete; v2 wire/journal migration, injected failure coverage, signed dual-stack VM transaction, conflict refusal, helper restart, journal-corruption fail-closed, and final-absence evidence passed |
-| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary, signed synthetic-Mihomo v2 matrix, and the fail-closed packaged-Mihomo/live-control VM executor pass in the disposable VM; production live-source execution, reachability, reboot, and full coexistence cleanup evidence remain |
+| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary, signed synthetic and packaged-Mihomo matrices, and the signed App-managed `utun4093` GUI/lifecycle matrix pass in the disposable VM; production live-source execution, private reachability, abort/reboot, and aggregate cleanup remain |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
@@ -704,6 +704,19 @@ This advances but does not close S1.13. Production Rust live-source execution,
 private-service reachability, app/sidecar/helper abort, guest reboot/retry, and
 complete synthetic-credential/foreign-state cleanup remain required; the
 packaged lab-client path is not production-controller evidence.
+
+The independent App-managed Mihomo matrix now also passes against a freshly
+installed Developer ID-signed internal PKG in the same `VirtualMac2,1` guest.
+LaunchServices produced a visible frontmost guest window, the exact installed
+App and root-owned packaged Mihomo processes were proven, and live `/configs`
+reported enabled `utun4093` with auto-route disabled. A continuous invariant
+monitor proved system DNS, proxy state, default routes, and existing private
+routes unchanged; cleanup removed the process/socket/utun and restored the
+original App-data directory identity. Its redacted evidence SHA-256 is
+`1e06355753e3856e01ac3e1aaf6f18687b8a6a6cb96d41e9f84c124abd6095bd`.
+This closes the ordinary signed-App managed-TUN subcase, but deliberately does
+not substitute for invoking `MacosActiveMihomoTunSource` through the
+production-feature control path.
 
 Scenarios:
 

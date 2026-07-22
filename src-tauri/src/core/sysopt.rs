@@ -33,6 +33,16 @@ const fn proxy_apply_steps(sys_enabled: bool, auto_enabled: bool) -> [ProxyApply
     }
 }
 
+const fn proxy_apply_required(sys_enabled: bool, auto_enabled: bool, current_state_is_clear: bool) -> bool {
+    sys_enabled || auto_enabled || !current_state_is_clear
+}
+
+#[cfg(target_os = "macos")]
+fn macos_proxy_state_is_clear() -> bool {
+    matches!(Sysproxy::get_system_proxy(), Ok(proxy) if !proxy.enable)
+        && matches!(Autoproxy::get_auto_proxy(), Ok(proxy) if !proxy.enable)
+}
+
 pub struct Sysopt {
     update_lock: TokioMutex<()>,
     reset_sysproxy: AtomicBool,
@@ -180,6 +190,23 @@ impl Sysopt {
 
         self.access_guard().write().set_guard_type(guard_type);
 
+        // On macOS, sysproxy-rs configures the host/port before applying the
+        // final on/off state. Calling it when every proxy is already disabled
+        // therefore creates a brief but real enabled HTTPS/SOCKS state. When
+        // KyClash wants both modes disabled, first observe the OS state and
+        // avoid that unnecessary mutation. A read failure remains fail-safe:
+        // fall through to the existing clearing path.
+        #[cfg(target_os = "macos")]
+        if !proxy_apply_required(
+            sys.enable,
+            auto.enable,
+            tokio::task::spawn_blocking(macos_proxy_state_is_clear)
+                .await
+                .unwrap_or(false),
+        ) {
+            return Ok(());
+        }
+
         let apply_steps = proxy_apply_steps(sys.enable, auto.enable);
 
         tokio::task::spawn_blocking(move || -> Result<()> {
@@ -233,7 +260,15 @@ impl Sysopt {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProxyApplyStep, proxy_apply_steps};
+    use super::{ProxyApplyStep, proxy_apply_required, proxy_apply_steps};
+
+    #[test]
+    fn already_disabled_proxy_state_requires_no_os_mutation() {
+        assert!(!proxy_apply_required(false, false, true));
+        assert!(proxy_apply_required(false, false, false));
+        assert!(proxy_apply_required(true, false, true));
+        assert!(proxy_apply_required(false, true, true));
+    }
 
     #[test]
     fn pure_sysproxy_mode_clears_pac_before_enabling_global_proxy() {

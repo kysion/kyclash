@@ -509,10 +509,12 @@ The route-helper v2 lease/journal implementation and signed disposable-VM
 matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,
 exact/more-specific/unknown-interface conflict refusal, explicit synthetic
 Mihomo covering classification, helper restart, corrupt-journal recovery, and
-final route/journal/lease absence. S1.13 is now the first incomplete criterion:
-the remaining gate requires the packaged Mihomo control API and live device
-observation, private-service reachability, reboot/restart, and foreign-route
-cleanup. The synthetic fixture is not represented as packaged-Mihomo evidence.
+final route/journal/lease absence. S1.13 is now the first incomplete criterion.
+Its packaged-Mihomo/live-control matrix and a separate signed App-managed
+`utun4093` GUI/lifecycle matrix pass in the disposable VM. The remaining gate
+is the production-feature Rust live-source path, private-service reachability,
+app/sidecar/helper abort, reboot/retry, and aggregate foreign-state cleanup;
+ordinary App evidence is not represented as production-controller evidence.
 
 ## Later platform order
 

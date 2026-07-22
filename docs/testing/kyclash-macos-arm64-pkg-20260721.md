@@ -150,3 +150,30 @@ one window, and its managed Mihomo socket returned version `v1.19.29`. This is
 VM GUI and packaged-subsystem evidence; the candidate does not enable the
 default-off `networking-production` feature and is not the final S1 release
 candidate.
+
+## App-managed TUN invariant candidate — 2026-07-22
+
+A later internal candidate added the macOS no-op guard for an already-disabled
+system proxy and was rebuilt with the authorized Developer ID Application and
+Installer identities. It is intentionally unnotarized. The package verifier
+passed the deep App seal, nested helper/sidecar signatures and Team ID,
+sidecar trust hash, LaunchDaemon plist, and trusted Installer timestamp.
+
+Exact artifacts:
+
+- App executable:
+  `acbd5b20a99dfd85115fb192dae184e773844b4d1e3724ae676c565761967e8f`
+- packaged Mihomo:
+  `3ead9b2b29854961100af3ef2c6bdce2764779b53e3177b4590bf34dd45b53ad`
+- nested network sidecar:
+  `f50e402be47f3c15196807784b46f6ec141234a929b401613f07fe3e59dbe557`
+- nested route helper:
+  `aa6816decd845e167747adf953fd4406da12674860383b3b4d3573057e3d8280`
+- 68,501,192-byte PKG:
+  `81de8dafe66eb8891210fdf52de669af058dbc099809cabfc9aa84e4ff58caff`
+
+The upgrade was installed only in `kyclash-macos-lab-work`. Its App-managed
+Mihomo matrix passed with a visible guest window and live `utun4093`, unchanged
+DNS/proxy/default/private-route invariants, final runtime absence, and exact
+App-data directory restoration. This remains an internal, default-feature
+candidate and is not the production-feature S1 release candidate.

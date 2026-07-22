@@ -125,9 +125,11 @@ authorized disposable-VM matrix continue without another routine prompt;
 production infrastructure, updater publication, and release activation remain
 separate authorization boundaries:
 
-1. Exercise the packaged Mihomo control API and live TUN observation in the
-   disposable VM, including coexistence, reachability, stop/restart, reboot,
-   and foreign-route cleanup.
+1. Exercise the production-feature Rust live-source path against the packaged
+   Mihomo control API in the disposable VM, including private-service
+   reachability, app/sidecar/helper abort, reboot/retry, and aggregate
+   foreign-route cleanup. The ordinary signed-App managed-TUN subcase has
+   passed and is not substituted for this production boundary.
 2. Test a reviewed compatible server endpoint under loss, jitter, UDP blocking,
    sustained load, suspend/resume, and network switching.
 3. Enable the already composed production command boundary only after the
@@ -155,7 +157,7 @@ separate authorization boundaries:
 | Developer ID internal arm64 PKG | Signed; unnotarized with Gatekeeper warning | No | None |
 | Apple notarization and stapling | Optional enhancement | No | Notary credentials only if selected |
 | Keychain destructive lifecycle | Complete on disposable GitHub macOS runner; scoped to `net.kysion.kyclash.test` | No | None |
-| Real route mutation and crash recovery | v2 typed lease/journal, dual-stack VM transaction, conflict/restart/journal-corruption matrix passed; packaged Mihomo live coexistence pending | Yes, for production route adapter | Packaged Mihomo live-control observation and coexistence evidence |
+| Real route mutation and crash recovery | v2 typed lease/journal, dual-stack VM transaction, conflict/restart/journal-corruption, packaged-Mihomo, and ordinary signed-App managed-TUN VM matrices passed; production Rust live-source/reachability/abort/reboot aggregate remains | Yes, for production route adapter | Production-feature VM evidence and isolated private-service fixture |
 | Impaired-network and sustained transport validation | Deterministic loopback + race count=5 + ten-round soak passed; Linux netem CI evidence retained; external matrix pending | Yes, for production data plane | Compatible isolated server and disposable client host |
 | Install/upgrade/rollback/uninstall cleanup | Procedure prepared; signed GUI smoke passed; full installed-byte matrix pending | Yes, for general distribution | Disposable macOS lifecycle host and retained candidate/rollback artifacts |
 | macOS x64 and later platforms | Deferred by locked platform order | Yes, for those platforms only | macOS arm64 MVP gates closed |
@@ -176,7 +178,9 @@ the feature-gated real route executor and fixed-scope lab harness documented in
 development Mac as the mutation environment because it carries active split
 routes and multiple tunnels and has no non-interactive elevation. At that
 checkpoint item 1 remained open for a disposable macOS host. The subsequent
-signed v2 VM matrix closed S1.12; packaged live-Mihomo coexistence remains the
+signed v2 route matrix closed S1.12, and the packaged-Mihomo plus ordinary
+signed-App managed-TUN matrices advanced S1.13. The production Rust
+live-source, reachability, abort/reboot, and aggregate cleanup cases remain the
 S1.13 continuation recorded below.
 
 The authorized credential-lab source preparation is also complete. The
@@ -285,13 +289,13 @@ evidence and are not claimed for this current candidate.
 
 ## Visible App and production route overlap continuation — 2026-07-22
 
-The corrected signed PKG is installed in the disposable macOS guest and
-`/Applications/KyClash.app` is visibly running with the KyClash brand, Mihomo
-child, and singleton listener. A separate host-side launch of the signed bundle
-also rendered a `KyClash` window and returned a healthy Mihomo `/version`
-response. The latest host candidate after pushed commit `be3c9f39` is recorded
-in `docs/testing/kyclash-macos-arm64-pkg-20260721.md`; this closes the question
-of whether the current App bundle can be started, but does not imply that the
+The corrected signed PKG is installed in the disposable macOS guest, where
+`/Applications/KyClash.app` has visibly run with the KyClash brand, Mihomo
+child, and singleton listener. An earlier host-side diagnostic launch is not
+acceptance evidence and is superseded by the guest-only matrices. The current
+candidate and exact VM evidence are recorded in
+`docs/testing/kyclash-macos-arm64-pkg-20260721.md`; this closes the ordinary
+signed-App launch and managed-TUN subcase, but does not imply that the
 default-off production networking feature has been enabled in the release
 candidate.
 
@@ -308,13 +312,12 @@ conflicts failed closed without a journal. The historical
 acceptance evidence. The typed active-Mihomo-interface ownership amendment is
 implemented through the v2 source/wire/journal boundary, while its packaged
 Mihomo live-source gate is still pending before less-specific coexistence can
-be accepted. An earlier scoped cleanup found no test route, journal, helper, or
-test utun. The current v2 run removed its synthetic utun and every matrix route
-but intentionally retained the primary launchd fixture and its owned `utun4`
-for the next isolated probe. The packaged Mihomo live-control, stop/restart,
-guest-reboot, private-service, physical sleep/wake, and real network-switch
-gates remain open. Helper journal-corruption/restart recovery itself is already
-covered by the signed v2 fixture matrix below.
+be accepted through the production-feature Rust path. An earlier scoped
+cleanup found no test route, journal, helper, or test utun. Later VM matrices
+removed their synthetic devices, routes, sockets, journal, and lease state.
+The production live-source, abort/reboot, private-service, physical sleep/wake,
+and real network-switch gates remain open. Helper journal-corruption/restart
+recovery itself is already covered by the signed v2 fixture matrix below.
 
 ## S1 v2 route-helper continuation — 2026-07-22
 
@@ -329,10 +332,17 @@ records dual-stack apply/rollback, exact/more-specific/unknown-interface
 conflict refusal, explicit empty/wrong/matching Mihomo classification, helper
 restart, corrupt-journal fail-closed, and final route/journal/lease absence.
 
-This closes the S1.12 v2 route-lease/crash-recovery criterion. The synthetic
-Mihomo fixture proves the typed boundary but is not the packaged Mihomo control
-API. S1.13 therefore remains the first incomplete criterion until the live
-Mihomo device observation, private-service reachability, reboot/restart, and
-foreign-route cleanup matrix pass. The default application and production
-feature remain separately gated; no endpoint, release, updater activation,
-production infrastructure, or real login-Keychain lifecycle was touched.
+This closes the S1.12 v2 route-lease/crash-recovery criterion. Since that run,
+the packaged-Mihomo/live-control matrix and a separate signed App-managed
+`utun4093` GUI/lifecycle matrix have also passed in the disposable VM. The
+latter proves unchanged DNS/proxy/default/private routes, visible guest UI,
+live managed TUN, final runtime absence, and original App-data restoration;
+its evidence SHA-256 is
+`1e06355753e3856e01ac3e1aaf6f18687b8a6a6cb96d41e9f84c124abd6095bd`.
+
+S1.13 remains the first incomplete criterion for production Rust live-source
+invocation, private-service reachability, app/sidecar/helper abort,
+reboot/retry, and the aggregate foreign-state/credential cleanup gate. The
+ordinary App matrix does not substitute for the default-off production
+control path. No endpoint, release, updater activation, production
+infrastructure, or real login-Keychain lifecycle was touched.

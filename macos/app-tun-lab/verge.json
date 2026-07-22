@@ -1,0 +1,18 @@
+{
+  "enable_tun_mode": true,
+  "enable_system_proxy": false,
+  "proxy_auto_config": false,
+  "enable_proxy_guard": false,
+  "enable_dns_settings": false,
+  "enable_builtin_enhanced": false,
+  "enable_auto_launch": false,
+  "enable_silent_start": false,
+  "enable_external_controller": false,
+  "enable_auto_backup_schedule": false,
+  "auto_backup_on_change": false,
+  "auto_check_update": false,
+  "verge_redir_enabled": false,
+  "verge_socks_enabled": false,
+  "verge_http_enabled": false,
+  "clash_core": "verge-mihomo"
+}

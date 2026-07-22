@@ -10,7 +10,9 @@ on:
       - 'scripts/build-network-sidecar-macos.mjs'
       - 'scripts/prepare-macos-vm-route-fixture.sh'
       - 'scripts/macos-vm-route-helper-v2-matrix.sh'
+      - 'scripts/macos-vm-app-managed-tun-matrix.sh'
       - 'macos/route-helper/**'
+      - 'macos/app-tun-lab/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src-tauri/Cargo.toml'
@@ -25,7 +27,9 @@ on:
       - 'scripts/build-network-sidecar-macos.mjs'
       - 'scripts/prepare-macos-vm-route-fixture.sh'
       - 'scripts/macos-vm-route-helper-v2-matrix.sh'
+      - 'scripts/macos-vm-app-managed-tun-matrix.sh'
       - 'macos/route-helper/**'
+      - 'macos/app-tun-lab/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src-tauri/Cargo.toml'
@@ -287,7 +291,8 @@ jobs:
           set -euo pipefail
           /bin/bash -n \
             scripts/prepare-macos-vm-route-fixture.sh \
-            scripts/macos-vm-route-helper-v2-matrix.sh
+            scripts/macos-vm-route-helper-v2-matrix.sh \
+            scripts/macos-vm-app-managed-tun-matrix.sh
           env -u BASH_ENV -u ENV \
             scripts/macos-vm-route-helper-v2-matrix.sh dry-run | \
             grep -Fx 'dry_run_mutations=none'
@@ -296,6 +301,12 @@ jobs:
             grep -Fx 'dry_run_mutations=none'
           env -u BASH_ENV -u ENV \
             scripts/macos-vm-route-helper-v2-matrix.sh live-static-check | \
+            grep -Fx 'static_mutations=none'
+          env -u BASH_ENV -u ENV \
+            scripts/macos-vm-app-managed-tun-matrix.sh dry-run | \
+            grep -Fx 'dry_run_mutations=none'
+          env -u BASH_ENV -u ENV \
+            scripts/macos-vm-app-managed-tun-matrix.sh static-check | \
             grep -Fx 'static_mutations=none'
 
       - name: Compile owned macOS utun adapter

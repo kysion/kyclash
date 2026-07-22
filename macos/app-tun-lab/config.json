@@ -1,0 +1,37 @@
+{
+  "allow-lan": false,
+  "bind-address": "127.0.0.1",
+  "mode": "direct",
+  "log-level": "info",
+  "ipv6": true,
+  "mixed-port": 7897,
+  "socks-port": 7898,
+  "port": 7899,
+  "secret": "kyclash-app-tun-lab-fixed-synthetic-token-not-a-secret",
+  "profile": {
+    "store-selected": false,
+    "store-fake-ip": false
+  },
+  "dns": {
+    "enable": false,
+    "ipv6": false,
+    "enhanced-mode": "redir-host",
+    "use-hosts": false,
+    "nameserver": []
+  },
+  "tun": {
+    "enable": false,
+    "device": "utun4093",
+    "stack": "system",
+    "auto-route": false,
+    "auto-detect-interface": false,
+    "strict-route": false,
+    "dns-hijack": [],
+    "mtu": 1420,
+    "inet4-address": ["198.18.0.1/30"],
+    "inet6-address": ["2001:db8:4093::1/126"]
+  },
+  "proxies": [],
+  "proxy-groups": [],
+  "rules": ["MATCH,DIRECT"]
+}
