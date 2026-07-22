@@ -51,7 +51,7 @@ readonly LIVE_MIHOMO_CONFIG="${LIVE_MIHOMO_ROOT}/config.json"
 readonly LIVE_MIHOMO_SOCKET="${LIVE_MIHOMO_ROOT}/mihomo.sock"
 readonly LIVE_MIHOMO_LOG="${LIVE_MIHOMO_ROOT}/mihomo.log"
 readonly LIVE_MIHOMO_UTUN="utun4094"
-readonly LIVE_MIHOMO_CONFIG_SHA256="c59a26eeb1e1fcd8f1832ac4caf948bc77128888c15dae4c16819cbe43ae50dd"
+readonly LIVE_MIHOMO_CONFIG_SHA256="cc7a671e15009dcc2d41c453778da9f8a19a4e5ee2b1362ce4562a4b5850768c"
 readonly LIVE_MIHOMO_PLIST_SHA256="a5214cbde60788d25154ede61779613aa82dfc41447f8ca52bb830d7606f36e4"
 
 readonly OWNER_FILE="/var/tmp/kyclash-utun-lab-combined-hold.evidence"
