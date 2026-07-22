@@ -461,6 +461,70 @@ routes were absent after cleanup. This closes the S1.12 v2 route-lease gate and
 advances S1.13, but does not claim packaged Mihomo live API, private-service,
 reboot, or physical coexistence evidence.
 
+## Packaged Mihomo live-control matrix
+
+The next S1.13 gate is implemented as the separate `live-*` modes of
+`scripts/macos-vm-route-helper-v2-matrix.sh`. Source and static checks are
+complete; the mutating `live-run` has not yet been executed and is not
+acceptance evidence until its root-owned VM log is copied and hashed.
+
+The live boundary accepts only the installed `/Applications/KyClash.app` with
+the `net.kysion.kyclash` package receipt, an intact Developer ID app seal, Team
+ID `RQUQ8Y3S9H`, and the fixed nested identifiers. The root-staged helper must
+be byte-identical to the installed app helper. Mihomo runs from the installed
+bundle with a fixed DIRECT-only JSON configuration, explicit `utun4094`, a
+root-private Unix controller socket, no TCP controller, no DNS section, and
+only `10.200.0.0/15` plus `fd00:200::/47` auto-routes. The script retains only
+allowlisted evidence from live `/configs`: `tun.enable` and `tun.device`. The
+same signed lab client independently calls `if_nametoindex`; it is a test
+harness and is intentionally not shipped in `KyClash.app`.
+
+`live-preflight` fails closed if any packaged Mihomo process is already
+running, if the managed app socket `/tmp/verge/verge-mihomo.sock` exists (even
+as a stale path), or if the fixed lab job, directory, interface, route, journal,
+or socket already exists. Do not delete or adopt ambiguous state. Quit the app
+cleanly or reboot the disposable guest, then rerun preflight.
+
+Prepare the already signed v2 fixtures exactly as for the synthetic matrix,
+but copy the helper from the installed app so the later byte comparison is
+authoritative. The client must be rebuilt after changes to `lab-client.m` so it
+contains the read-only `--if-nametoindex` mode:
+
+```bash
+fixture_dir=/var/tmp/kyclash-packaged-mihomo-v2-fixture
+mkdir -m 700 "${fixture_dir}"
+cp /Applications/KyClash.app/Contents/Resources/kyclash-route-helper \
+  "${fixture_dir}/kyclash-route-helper-fixed"
+# Copy the current signed primary/synthetic utun fixtures and current signed
+# lab client into this directory under the existing four fixed fixture names.
+
+env -u BASH_ENV -u ENV \
+  KYCLASH_VM_LAB_CONFIRM=authorized-kyclash-virtualization-framework-vm \
+  scripts/prepare-macos-vm-route-fixture.sh stage "${fixture_dir}"
+env -u BASH_ENV -u ENV \
+  KYCLASH_VM_LAB_CONFIRM=authorized-kyclash-virtualization-framework-vm \
+  scripts/prepare-macos-vm-route-fixture.sh bootstrap
+
+env -u BASH_ENV -u ENV \
+  scripts/macos-vm-route-helper-v2-matrix.sh live-static-check
+env -u BASH_ENV -u ENV \
+  KYCLASH_RUNNER_ENVIRONMENT=local-virtualization-framework \
+  KYCLASH_VM_LAB_CONFIRM=authorized-kyclash-virtualization-framework-vm \
+  scripts/macos-vm-route-helper-v2-matrix.sh live-preflight
+env -u BASH_ENV -u ENV \
+  KYCLASH_RUNNER_ENVIRONMENT=local-virtualization-framework \
+  KYCLASH_VM_LAB_CONFIRM=authorized-kyclash-virtualization-framework-vm \
+  scripts/macos-vm-route-helper-v2-matrix.sh live-run
+```
+
+The live matrix covers just-in-time `/configs` resampling, matching kernel
+interface existence, IPv4/IPv6 less-specific coexistence, empty/wrong/unknown
+classification, exact and more-specific refusal, Mihomo stop/restart, default-
+route refusal, and final absence of its process, socket, utun, fixed routes,
+journal, and lease. It deliberately does not claim the independent private-
+service reachability, guest-reboot, app-abort, synthetic-credential, or physical
+Mac portions of S1.13.
+
 ## Disposable test cycle
 
 ```bash

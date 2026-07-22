@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>net.kysion.kyclash.packaged-mihomo-lab</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/KyClash.app/Contents/MacOS/verge-mihomo</string>
+    <string>-d</string>
+    <string>/Library/Application Support/KyClash/route-lab/live-mihomo</string>
+    <string>-f</string>
+    <string>/Library/Application Support/KyClash/route-lab/live-mihomo/config.json</string>
+    <string>-ext-ctl-unix</string>
+    <string>/Library/Application Support/KyClash/route-lab/live-mihomo/mihomo.sock</string>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>/Library/Application Support/KyClash/route-lab/live-mihomo/mihomo.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Application Support/KyClash/route-lab/live-mihomo/mihomo.log</string>
+</dict>
+</plist>

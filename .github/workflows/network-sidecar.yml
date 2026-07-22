@@ -291,6 +291,12 @@ jobs:
           env -u BASH_ENV -u ENV \
             scripts/macos-vm-route-helper-v2-matrix.sh dry-run | \
             grep -Fx 'dry_run_mutations=none'
+          env -u BASH_ENV -u ENV \
+            scripts/macos-vm-route-helper-v2-matrix.sh live-dry-run | \
+            grep -Fx 'dry_run_mutations=none'
+          env -u BASH_ENV -u ENV \
+            scripts/macos-vm-route-helper-v2-matrix.sh live-static-check | \
+            grep -Fx 'static_mutations=none'
 
       - name: Compile owned macOS utun adapter
         run: |
@@ -361,6 +367,16 @@ jobs:
             -o "${RUNNER_TEMP}/kyclash-route-helper-lab-client"
           file "${RUNNER_TEMP}/kyclash-route-helper" | grep -F 'arm64'
           file "${RUNNER_TEMP}/kyclash-route-helper-lab-client" | grep -F 'arm64'
+          set +e
+          interface_probe_output="$(
+            "${RUNNER_TEMP}/kyclash-route-helper-lab-client" \
+              --if-nametoindex utun65535 2>&1
+          )"
+          interface_probe_status=$?
+          set -e
+          test "${interface_probe_status}" -eq 1
+          echo "${interface_probe_output}" | \
+            grep -Fx 'if_nametoindex device=utun65535 index=0 exists=false'
 
       - name: Test actual child data plane
         env:

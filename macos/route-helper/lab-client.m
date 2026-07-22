@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#include <net/if.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -66,12 +67,29 @@ static void printUsage(const char *executable) {
           "%s --expect-conflict --dual-stack [utun-interface] "
           "[--mihomo-utun utunN] | "
           "%s --hold-after-apply --dual-stack [utun-interface] "
-          "[--mihomo-utun utunN]\n",
-          executable, executable, executable, executable);
+          "[--mihomo-utun utunN] | "
+          "%s --if-nametoindex utunN\n",
+          executable, executable, executable, executable, executable);
 }
 
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
+    if (argc == 3 && strcmp(argv[1], "--if-nametoindex") == 0) {
+      if (!isCanonicalUtunInterface(argv[2])) {
+        printUsage(argv[0]);
+        return 2;
+      }
+      unsigned int interfaceIndex = if_nametoindex(argv[2]);
+      if (interfaceIndex == 0) {
+        fprintf(stderr, "if_nametoindex device=%s index=0 exists=false\n",
+                argv[2]);
+        return 1;
+      }
+      printf("if_nametoindex device=%s index=%u exists=true\n", argv[2],
+             interfaceIndex);
+      return 0;
+    }
+
     const char *arguments[5] = {argv[0], NULL, NULL, NULL, NULL};
     int argumentCount = 1;
     const char *mihomoInterface = NULL;

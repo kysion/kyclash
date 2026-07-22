@@ -63,7 +63,7 @@ stopping points.
 | S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
 | S1.12 | route lease/recovery | complete; v2 wire/journal migration, injected failure coverage, signed dual-stack VM transaction, conflict refusal, helper restart, journal-corruption fail-closed, and final-absence evidence passed |
-| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary and signed synthetic-Mihomo v2 matrix pass, while packaged Mihomo live-control observation, reachability, reboot, and full coexistence cleanup remain |
+| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary and signed synthetic-Mihomo v2 matrix pass; a fail-closed packaged-Mihomo/live-control VM executor and static CI gate are implemented, while its VM run, reachability, reboot, and full coexistence cleanup evidence remain |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
@@ -682,11 +682,15 @@ boundary pass the synthetic-Mihomo matrix: a less-specific covering route is
 accepted only for the exact frozen synthetic `utun5`, while empty/wrong,
 unknown-interface, exact, and more-specific cases fail closed. The complete
 run also passed helper restart and journal-corruption recovery. This is
-source-level and fixture-level evidence only. The packaged Mihomo TUN must
-still be started through its managed control API, with the live `tun.device`
-and interface existence verified, before the less-specific exception is
-accepted for the app. Private-service reachability, Mihomo stop/restart,
-guest reboot, and full foreign-route cleanup remain required.
+source-level and fixture-level evidence only. A separate fail-closed executor
+now pins the installed package receipt, app seal, nested Team ID/identifiers,
+byte-identical packaged helper, DIRECT-only packaged Mihomo configuration,
+root-private Unix control socket, explicit TUN name, live `/configs` fields,
+and a signed-client `if_nametoindex` probe. Its Bash/source/Mihomo-config static
+checks pass and are wired into macOS CI, but its mutating disposable-VM
+`live-run` has not yet been executed. Private-service reachability, guest
+reboot, app abort, and full foreign-route/credential cleanup also remain
+required; source readiness is not packaged-Mihomo acceptance evidence.
 
 Scenarios:
 

@@ -8,6 +8,8 @@ IFS=$'\n\t'
 umask 077
 readonly SAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH="${SAFE_PATH}"
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+readonly SCRIPT_ROOT
 
 # This matrix is deliberately unable to accept a CIDR, interface, command,
 # path, or launchd label from its caller.  The mutating mode is restricted to
@@ -20,6 +22,8 @@ readonly APP_IDENTIFIER="net.kysion.kyclash"
 readonly HELPER_IDENTIFIER="net.kysion.kyclash.route-helper"
 readonly PRIMARY_UTUN_IDENTIFIER="net.kysion.kyclash.network-sidecar-utun-lab"
 readonly SYNTHETIC_UTUN_IDENTIFIER="net.kysion.kyclash.utun-mihomo-lab"
+readonly PACKAGED_MIHOMO_IDENTIFIER="verge-mihomo"
+readonly PACKAGE_RECEIPT="net.kysion.kyclash"
 
 readonly STAGE_ROOT="/Library/Application Support/KyClash/route-lab"
 readonly STAGE_BIN="${STAGE_ROOT}/bin"
@@ -33,11 +37,29 @@ readonly UTUN_LABEL="net.kysion.kyclash.utun-route-fixture"
 readonly HELPER_PLIST="/Library/LaunchDaemons/${HELPER_LABEL}.plist"
 readonly UTUN_PLIST="/Library/LaunchDaemons/${UTUN_LABEL}.plist"
 
+readonly INSTALLED_APP="/Applications/KyClash.app"
+readonly PACKAGED_APP_EXECUTABLE="${INSTALLED_APP}/Contents/MacOS/clash-verge"
+readonly PACKAGED_MIHOMO="${INSTALLED_APP}/Contents/MacOS/verge-mihomo"
+readonly PACKAGED_HELPER="${INSTALLED_APP}/Contents/Resources/kyclash-route-helper"
+readonly MANAGED_APP_MIHOMO_SOCKET="/tmp/verge/verge-mihomo.sock"
+readonly LIVE_MIHOMO_LABEL="net.kysion.kyclash.packaged-mihomo-lab"
+readonly LIVE_MIHOMO_PLIST="/Library/LaunchDaemons/${LIVE_MIHOMO_LABEL}.plist"
+readonly LIVE_MIHOMO_PLIST_SOURCE="${SCRIPT_ROOT}/macos/route-helper/packaged-mihomo-lab.launchd.plist"
+readonly LIVE_MIHOMO_CONFIG_SOURCE="${SCRIPT_ROOT}/macos/route-helper/packaged-mihomo-lab-config.json"
+readonly LIVE_MIHOMO_ROOT="${STAGE_ROOT}/live-mihomo"
+readonly LIVE_MIHOMO_CONFIG="${LIVE_MIHOMO_ROOT}/config.json"
+readonly LIVE_MIHOMO_SOCKET="${LIVE_MIHOMO_ROOT}/mihomo.sock"
+readonly LIVE_MIHOMO_LOG="${LIVE_MIHOMO_ROOT}/mihomo.log"
+readonly LIVE_MIHOMO_UTUN="utun4094"
+readonly LIVE_MIHOMO_CONFIG_SHA256="c59a26eeb1e1fcd8f1832ac4caf948bc77128888c15dae4c16819cbe43ae50dd"
+readonly LIVE_MIHOMO_PLIST_SHA256="a5214cbde60788d25154ede61779613aa82dfc41447f8ca52bb830d7606f36e4"
+
 readonly OWNER_FILE="/var/tmp/kyclash-utun-lab-combined-hold.evidence"
 readonly COMBINED_LOG_FILE="${STAGE_ROOT}/combined-hold.log"
 readonly SYNTHETIC_MIHOMO_OWNER_FILE="/var/tmp/kyclash-utun-lab-mihomo-v2-owner"
 readonly JOURNAL="/Library/Application Support/KyClash/route-lease-v1.plist"
 readonly EVIDENCE_ROOT="${STAGE_ROOT}/evidence-v2"
+readonly LIVE_EVIDENCE_ROOT="${STAGE_ROOT}/evidence-packaged-mihomo-v2"
 readonly WRONG_MIHOMO_UTUN="utun65535"
 readonly CORRUPT_JOURNAL_TEXT="kyclash-route-helper-v2-fixed-corrupt-journal"
 
@@ -65,11 +87,18 @@ CORRUPT_JOURNAL_INSTALLED=0
 CLEANUP_ACTIVE=0
 CLEANUP_FAILURE=0
 KEEP_TMP_ROOT=0
+LIVE_MIHOMO_JOB_BOOTSTRAPPED=0
+LIVE_MIHOMO_ROOT_CREATED=0
+LIVE_MIHOMO_PLIST_INSTALLED=0
+LIVE_MIHOMO_PID=""
+LIVE_MIHOMO_INDEX=""
+EVIDENCE_TARGET_ROOT="${EVIDENCE_ROOT}"
+EVIDENCE_TARGET_NAME="route-helper-v2-matrix.log"
 ADDED_ROUTES=()
 ROUTE_FINGERPRINTS=()
 
 usage() {
-  printf 'usage: %s dry-run|preflight|run\n' "$0" >&2
+  printf 'usage: %s dry-run|preflight|run|live-dry-run|live-static-check|live-preflight|live-run\n' "$0" >&2
 }
 
 dry_run() {
@@ -87,6 +116,31 @@ scenarios=discover,dual-stack-normal,exact-conflict,more-specific-conflict,unkno
 forbidden=default-route,DNS,caller-supplied-route,caller-supplied-command,production-network
 dry_run_mutations=none
 EOF
+}
+
+live_dry_run() {
+  /bin/cat <<'EOF'
+KyClash packaged-Mihomo disposable-VM matrix (static dry-run)
+mutation_guard=VirtualMac + local-virtualization-framework + exact KYCLASH_VM_LAB_CONFIRM
+installed_package=/Applications/KyClash.app + net.kysion.kyclash receipt
+packaged_components=sealed app,verge-mihomo,route-helper
+typed_client=signed fixed lab harness,not shipped in KyClash.app
+control_api=root-private Unix socket; retained fields=tun.enable,tun.device
+kernel_device_proof=signed client if_nametoindex
+explicit_mihomo_device=utun4094
+desired_routes=10.200.0.0/16,fd00:200::/48
+mihomo_covering_routes=10.200.0.0/15,fd00:200::/47
+scenarios=live-observation,empty,wrong,matching,exact,more-specific,unknown-interface,stop,restart,final-absence
+forbidden=default-route,DNS,TCP-controller,caller-supplied-path,caller-supplied-interface,production-network
+private_service_reachability=separate-S1.13-gate
+dry_run_mutations=none
+EOF
+}
+
+live_static_check() {
+  assert_live_sources
+  printf 'live_static_check=passed\n'
+  printf 'static_mutations=none\n'
 }
 
 require_disposable_guest() {
@@ -187,6 +241,56 @@ verify_signed_binary() {
     printf 'refusing non-arm64 fixture: %s\n' "${path}" >&2
     exit 70
   fi
+}
+
+verify_packaged_app() {
+  local receipt bundle_identifier receipt_version
+  assert_root_path "${INSTALLED_APP}" 755 directory
+  assert_root_path "${INSTALLED_APP}/Contents" 755 directory
+  assert_root_path "${INSTALLED_APP}/Contents/MacOS" 755 directory
+  assert_root_path "${INSTALLED_APP}/Contents/Resources" 755 directory
+  assert_root_path "${INSTALLED_APP}/Contents/Info.plist" 644 file
+  assert_root_path "${PACKAGED_APP_EXECUTABLE}" 755 file
+  assert_root_path "${PACKAGED_MIHOMO}" 755 file
+  assert_root_path "${PACKAGED_HELPER}" 755 file
+
+  receipt="$(/usr/bin/sudo /usr/sbin/pkgutil --pkg-info "${PACKAGE_RECEIPT}" 2>/dev/null || true)"
+  if ! /usr/bin/printf '%s\n' "${receipt}" | /usr/bin/grep -Fqx 'volume: /' ||
+    ! /usr/bin/printf '%s\n' "${receipt}" | /usr/bin/grep -Fqx 'location: Applications'; then
+    printf 'refusing app without the fixed /Applications package receipt: %s\n' \
+      "${PACKAGE_RECEIPT}" >&2
+    return 1
+  fi
+  receipt_version="$(/usr/bin/printf '%s\n' "${receipt}" | /usr/bin/awk -F': ' \
+    '$1 == "version" { value=$2 } END { print value }')"
+  if [[ ! "${receipt_version}" =~ ^[0-9]+([.][0-9]+){1,3}([+_-][A-Za-z0-9.-]+)?$ ]]; then
+    printf 'refusing package receipt with invalid version\n' >&2
+    return 1
+  fi
+  bundle_identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - \
+    "${INSTALLED_APP}/Contents/Info.plist" 2>/dev/null || true)"
+  if [[ "${bundle_identifier}" != "${APP_IDENTIFIER}" ]]; then
+    printf 'refusing installed app with unexpected bundle identifier: %s\n' \
+      "${bundle_identifier}" >&2
+    return 1
+  fi
+  /usr/bin/sudo /usr/bin/codesign --verify --deep --strict "${INSTALLED_APP}" \
+    >/dev/null 2>&1 || {
+      printf 'refusing invalid installed app seal\n' >&2
+      return 1
+    }
+  verify_signed_binary "${PACKAGED_APP_EXECUTABLE}" "${APP_IDENTIFIER}"
+  verify_signed_binary "${PACKAGED_MIHOMO}" "${PACKAGED_MIHOMO_IDENTIFIER}"
+  verify_signed_binary "${PACKAGED_HELPER}" "${HELPER_IDENTIFIER}"
+  if ! /usr/bin/sudo /usr/bin/cmp -s "${PACKAGED_HELPER}" "${HELPER}"; then
+    printf 'refusing staged helper whose bytes do not match the installed app helper\n' >&2
+    return 1
+  fi
+  printf 'package_version=%s\n' "${receipt_version}"
+  printf 'packaged_mihomo_sha256=%s\n' \
+    "$(/usr/bin/sudo /usr/bin/shasum -a 256 "${PACKAGED_MIHOMO}" | /usr/bin/awk '{print $1}')"
+  printf 'packaged_helper_sha256=%s\n' \
+    "$(/usr/bin/sudo /usr/bin/shasum -a 256 "${PACKAGED_HELPER}" | /usr/bin/awk '{print $1}')"
 }
 
 valid_utun() {
@@ -355,6 +459,123 @@ assert_fixed_plists() {
   assert_plist_value "${UTUN_PLIST}" RunAtLoad true
   assert_plist_value "${UTUN_PLIST}" StandardOutPath "${COMBINED_LOG_FILE}"
   assert_plist_value "${UTUN_PLIST}" StandardErrorPath "${COMBINED_LOG_FILE}"
+}
+
+assert_file_sha256() {
+  local path="$1"
+  local expected="$2"
+  local actual
+  actual="$(/usr/bin/shasum -a 256 "${path}" | /usr/bin/awk '{print $1}')"
+  if [[ "${actual}" != "${expected}" ]]; then
+    printf 'refusing fixed lab source with unexpected digest: %s\n' "${path}" >&2
+    return 1
+  fi
+}
+
+assert_live_mihomo_plist() {
+  local plist="$1"
+  /usr/bin/plutil -lint "${plist}" >/dev/null
+  assert_plist_value "${plist}" Label "${LIVE_MIHOMO_LABEL}"
+  assert_plist_value "${plist}" ProgramArguments.0 "${PACKAGED_MIHOMO}"
+  assert_plist_value "${plist}" ProgramArguments.1 -d
+  assert_plist_value "${plist}" ProgramArguments.2 "${LIVE_MIHOMO_ROOT}"
+  assert_plist_value "${plist}" ProgramArguments.3 -f
+  assert_plist_value "${plist}" ProgramArguments.4 "${LIVE_MIHOMO_CONFIG}"
+  assert_plist_value "${plist}" ProgramArguments.5 -ext-ctl-unix
+  assert_plist_value "${plist}" ProgramArguments.6 "${LIVE_MIHOMO_SOCKET}"
+  assert_plist_array_length "${plist}" 7
+  assert_plist_value "${plist}" RunAtLoad false
+  assert_plist_value "${plist}" KeepAlive false
+  assert_plist_value "${plist}" ProcessType Interactive
+  assert_plist_value "${plist}" StandardOutPath "${LIVE_MIHOMO_LOG}"
+  assert_plist_value "${plist}" StandardErrorPath "${LIVE_MIHOMO_LOG}"
+  if /usr/bin/plutil -extract EnvironmentVariables xml1 -o - "${plist}" \
+    >/dev/null 2>&1 ||
+    /usr/bin/plutil -extract MachServices xml1 -o - "${plist}" >/dev/null 2>&1; then
+    printf 'refusing packaged Mihomo lab plist with environment or Mach service input\n' >&2
+    return 1
+  fi
+}
+
+assert_live_mihomo_config() {
+  local config="$1"
+  /usr/bin/plutil -convert xml1 -o /dev/null "${config}"
+  assert_plist_value "${config}" allow-lan false
+  assert_plist_value "${config}" bind-address 127.0.0.1
+  assert_plist_value "${config}" mode direct
+  assert_plist_value "${config}" log-level info
+  assert_plist_value "${config}" ipv6 true
+  assert_plist_value "${config}" external-controller-unix "${LIVE_MIHOMO_SOCKET}"
+  assert_plist_value "${config}" profile.store-selected false
+  assert_plist_value "${config}" profile.store-fake-ip false
+  assert_plist_value "${config}" tun.enable true
+  assert_plist_value "${config}" tun.device "${LIVE_MIHOMO_UTUN}"
+  assert_plist_value "${config}" tun.stack system
+  assert_plist_value "${config}" tun.auto-route true
+  assert_plist_value "${config}" tun.auto-detect-interface true
+  assert_plist_value "${config}" tun.strict-route false
+  assert_plist_value "${config}" tun.mtu 1500
+  assert_plist_value "${config}" tun.inet4-address.0 198.18.0.1/30
+  assert_plist_array_length_for_key "${config}" tun.inet4-address 1
+  assert_plist_value "${config}" tun.inet6-address.0 fdfe:dcba:9876::1/126
+  assert_plist_array_length_for_key "${config}" tun.inet6-address 1
+  assert_plist_value "${config}" tun.route-address.0 "${COVERING_V4}"
+  assert_plist_value "${config}" tun.route-address.1 "${COVERING_V6}"
+  assert_plist_array_length_for_key "${config}" tun.route-address 2
+  assert_empty_plist_array "${config}" proxies
+  assert_empty_plist_array "${config}" proxy-groups
+  assert_plist_value "${config}" rules.0 MATCH,DIRECT
+  assert_plist_array_length_for_key "${config}" rules 1
+  local forbidden
+  for forbidden in secret external-controller external-controller-tls \
+    external-controller-cors dns hosts listeners proxy-providers rule-providers \
+    tunnels; do
+    if /usr/bin/plutil -extract "${forbidden}" raw -o - "${config}" \
+      >/dev/null 2>&1; then
+      printf 'refusing forbidden packaged Mihomo lab config key: %s\n' \
+        "${forbidden}" >&2
+      return 1
+    fi
+  done
+}
+
+assert_plist_array_length_for_key() {
+  local plist="$1"
+  local key="$2"
+  local expected_length="$3"
+  if /usr/bin/plutil -extract "${key}.${expected_length}" raw -o - "${plist}" \
+    >/dev/null 2>&1; then
+    printf 'refusing config array with unexpected extra item: %s %s\n' \
+      "${plist}" "${key}" >&2
+    return 1
+  fi
+}
+
+assert_empty_plist_array() {
+  local plist="$1"
+  local key="$2"
+  local value
+  value="$(/usr/bin/plutil -extract "${key}" json -o - "${plist}" 2>/dev/null || true)"
+  if [[ "${value}" != '[]' ]]; then
+    printf 'refusing non-empty packaged Mihomo lab array: %s\n' "${key}" >&2
+    return 1
+  fi
+}
+
+assert_live_sources() {
+  if [[ ! -f "${LIVE_MIHOMO_CONFIG_SOURCE}" || \
+    -L "${LIVE_MIHOMO_CONFIG_SOURCE}" || \
+    ! -f "${LIVE_MIHOMO_PLIST_SOURCE}" || \
+    -L "${LIVE_MIHOMO_PLIST_SOURCE}" ]]; then
+    printf 'refusing missing or symlinked fixed packaged-Mihomo lab sources\n' >&2
+    return 1
+  fi
+  assert_file_sha256 "${LIVE_MIHOMO_CONFIG_SOURCE}" \
+    "${LIVE_MIHOMO_CONFIG_SHA256}"
+  assert_file_sha256 "${LIVE_MIHOMO_PLIST_SOURCE}" \
+    "${LIVE_MIHOMO_PLIST_SHA256}"
+  assert_live_mihomo_config "${LIVE_MIHOMO_CONFIG_SOURCE}"
+  assert_live_mihomo_plist "${LIVE_MIHOMO_PLIST_SOURCE}"
 }
 
 route_spec() {
@@ -1128,6 +1349,422 @@ assert_journal_absent() {
   fi
 }
 
+live_mihomo_pid() {
+  /usr/bin/sudo /bin/launchctl print "system/${LIVE_MIHOMO_LABEL}" 2>/dev/null | \
+    /usr/bin/awk '$1 == "pid" && $2 == "=" { value=$3 } END { print value }'
+}
+
+packaged_mihomo_processes() {
+  /usr/bin/sudo /bin/ps -axo pid=,command= | /usr/bin/awk \
+    -v executable="${PACKAGED_MIHOMO}" '
+      {
+        pid=$1
+        line=$0
+        sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", line)
+        if (line == executable || index(line, executable " ") == 1) print pid
+      }
+    '
+}
+
+assert_live_mihomo_process() {
+  local pid="$1"
+  local command_line expected
+  [[ "${pid}" =~ ^[1-9][0-9]*$ && "${pid}" -gt 1 ]] || return 1
+  command_line="$(/usr/bin/sudo /bin/ps -p "${pid}" -o command= 2>/dev/null || true)"
+  expected="${PACKAGED_MIHOMO} -d ${LIVE_MIHOMO_ROOT} -f ${LIVE_MIHOMO_CONFIG} -ext-ctl-unix ${LIVE_MIHOMO_SOCKET}"
+  if [[ "${command_line}" != "${expected}" ]]; then
+    printf 'refusing packaged Mihomo PID with unexpected command: %s %s\n' \
+      "${pid}" "${command_line}" >&2
+    return 1
+  fi
+  assert_process_identity "${pid}" "${PACKAGED_MIHOMO}"
+}
+
+assert_no_default_route_on() {
+  local interface_name="$1"
+  local family count
+  for family in inet inet6; do
+    count="$(/usr/sbin/netstat -rn -f "${family}" | /usr/bin/awk \
+      -v interface_name="${interface_name}" \
+      '$1 == "default" && $4 == interface_name { count += 1 } END { print count + 0 }')"
+    if [[ "${count}" -ne 0 ]]; then
+      printf 'refusing default-route takeover through %s (%s)\n' \
+        "${interface_name}" "${family}" >&2
+      return 1
+    fi
+  done
+}
+
+assert_live_lab_absent() {
+  local matches
+  if /usr/bin/sudo /bin/launchctl print "system/${LIVE_MIHOMO_LABEL}" \
+    >/dev/null 2>&1; then
+    printf 'refusing pre-existing packaged Mihomo lab launchd job\n' >&2
+    return 1
+  fi
+  if /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_PLIST}" || \
+    /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_PLIST}" || \
+    /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_ROOT}" || \
+    /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_ROOT}"; then
+    printf 'refusing pre-existing packaged Mihomo lab path\n' >&2
+    return 1
+  fi
+  if /usr/bin/sudo /bin/test -e "${MANAGED_APP_MIHOMO_SOCKET}" || \
+    /usr/bin/sudo /bin/test -L "${MANAGED_APP_MIHOMO_SOCKET}"; then
+    printf 'refusing while the managed app Mihomo socket exists: %s\n' \
+      "${MANAGED_APP_MIHOMO_SOCKET}" >&2
+    return 1
+  fi
+  matches="$(packaged_mihomo_processes)"
+  if [[ -n "${matches}" ]]; then
+    printf 'refusing while an installed packaged Mihomo process is already running: %s\n' \
+      "${matches}" >&2
+    return 1
+  fi
+  if /sbin/ifconfig "${LIVE_MIHOMO_UTUN}" >/dev/null 2>&1; then
+    printf 'refusing pre-existing fixed live Mihomo interface: %s\n' \
+      "${LIVE_MIHOMO_UTUN}" >&2
+    return 1
+  fi
+}
+
+assert_root_file_digest() {
+  local path="$1"
+  local expected="$2"
+  local actual
+  actual="$(/usr/bin/sudo /usr/bin/shasum -a 256 "${path}" | \
+    /usr/bin/awk '{print $1}')"
+  if [[ "${actual}" != "${expected}" ]]; then
+    printf 'refusing root-staged lab file with unexpected digest: %s\n' \
+      "${path}" >&2
+    return 1
+  fi
+}
+
+install_live_mihomo_artifacts() {
+  local config_incoming="${LIVE_MIHOMO_CONFIG}.incoming"
+  local plist_incoming="${LIVE_MIHOMO_PLIST}.incoming"
+  assert_live_sources
+  assert_live_lab_absent
+  /usr/bin/sudo /usr/bin/install -d -o root -g wheel -m 700 \
+    "${LIVE_MIHOMO_ROOT}"
+  LIVE_MIHOMO_ROOT_CREATED=1
+  assert_root_path "${LIVE_MIHOMO_ROOT}" 700 directory
+  /usr/bin/sudo /usr/bin/install -o root -g wheel -m 600 \
+    "${LIVE_MIHOMO_CONFIG_SOURCE}" "${config_incoming}"
+  assert_root_path "${config_incoming}" 600 file
+  assert_root_file_digest "${config_incoming}" "${LIVE_MIHOMO_CONFIG_SHA256}"
+  /usr/bin/sudo /bin/mv -f "${config_incoming}" "${LIVE_MIHOMO_CONFIG}"
+  assert_root_path "${LIVE_MIHOMO_CONFIG}" 600 file
+  assert_root_file_digest "${LIVE_MIHOMO_CONFIG}" "${LIVE_MIHOMO_CONFIG_SHA256}"
+  /usr/bin/sudo /usr/bin/install -o root -g wheel -m 600 /dev/null \
+    "${LIVE_MIHOMO_LOG}"
+  assert_root_path "${LIVE_MIHOMO_LOG}" 600 file
+
+  /usr/bin/sudo /usr/bin/install -o root -g wheel -m 644 \
+    "${LIVE_MIHOMO_PLIST_SOURCE}" "${plist_incoming}"
+  assert_root_path "${plist_incoming}" 644 file
+  assert_root_file_digest "${plist_incoming}" "${LIVE_MIHOMO_PLIST_SHA256}"
+  assert_live_mihomo_plist "${plist_incoming}"
+  /usr/bin/sudo /bin/mv -f "${plist_incoming}" "${LIVE_MIHOMO_PLIST}"
+  LIVE_MIHOMO_PLIST_INSTALLED=1
+  assert_root_path "${LIVE_MIHOMO_PLIST}" 644 file
+  assert_root_file_digest "${LIVE_MIHOMO_PLIST}" "${LIVE_MIHOMO_PLIST_SHA256}"
+  assert_live_mihomo_plist "${LIVE_MIHOMO_PLIST}"
+
+  # `-t` validates the immutable config without opening TUN or controller
+  # resources. Any unexpected mutation is caught immediately below.
+  /usr/bin/sudo "${PACKAGED_MIHOMO}" -t -d "${LIVE_MIHOMO_ROOT}" \
+    -f "${LIVE_MIHOMO_CONFIG}" >/dev/null
+  if /sbin/ifconfig "${LIVE_MIHOMO_UTUN}" >/dev/null 2>&1 || \
+    /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_SOCKET}" || \
+    /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_SOCKET}"; then
+    printf 'packaged Mihomo config test unexpectedly created a live resource\n' >&2
+    return 1
+  fi
+  assert_matrix_routes_absent
+}
+
+assert_live_mihomo_socket() {
+  local owner_group
+  if /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_SOCKET}" || \
+    ! /usr/bin/sudo /bin/test -S "${LIVE_MIHOMO_SOCKET}"; then
+    printf 'refusing missing, symlinked, or non-socket live Mihomo API path\n' >&2
+    return 1
+  fi
+  owner_group="$(/usr/bin/sudo /usr/bin/stat -f '%Su:%Sg' \
+    "${LIVE_MIHOMO_SOCKET}")"
+  if [[ "${owner_group}" != root:wheel ]]; then
+    printf 'refusing live Mihomo socket with unexpected owner: %s\n' \
+      "${owner_group}" >&2
+    return 1
+  fi
+}
+
+live_mihomo_api_snapshot() {
+  local response enable device index_line index
+  assert_live_mihomo_socket
+  response="$(/usr/bin/sudo /usr/bin/curl --silent --show-error --fail \
+    --connect-timeout 1 --max-time 2 --unix-socket "${LIVE_MIHOMO_SOCKET}" \
+    http://localhost/configs)" || return 1
+  if [[ "${#response}" -gt 1048576 ]]; then
+    printf 'refusing oversized packaged Mihomo /configs response\n' >&2
+    return 1
+  fi
+  enable="$(/usr/bin/printf '%s\n' "${response}" | \
+    /usr/bin/plutil -extract tun.enable raw -o - -- - 2>/dev/null || true)"
+  device="$(/usr/bin/printf '%s\n' "${response}" | \
+    /usr/bin/plutil -extract tun.device raw -o - -- - 2>/dev/null || true)"
+  if [[ "${enable}" != true || "${device}" != "${LIVE_MIHOMO_UTUN}" ]] || \
+    ! valid_utun "${device}" || [[ "${device}" == "${OWNER_UTUN}" ]]; then
+    printf 'live Mihomo API returned an invalid TUN snapshot: enable=%s device=%s\n' \
+      "${enable}" "${device}" >&2
+    return 1
+  fi
+  assert_client_integrity
+  index_line="$("${CLIENT}" --if-nametoindex "${device}")" || return 1
+  if [[ "${index_line}" != \
+    "if_nametoindex device=${device} index="*" exists=true" ]]; then
+    printf 'signed client returned malformed if_nametoindex evidence\n' >&2
+    return 1
+  fi
+  index="$(/usr/bin/printf '%s\n' "${index_line}" | /usr/bin/awk -F'[ =]' \
+    '{ for (i=1; i<=NF; i++) if ($i == "index") { print $(i+1); exit } }')"
+  if [[ ! "${index}" =~ ^[1-9][0-9]*$ ]] || \
+    ! /sbin/ifconfig "${device}" >/dev/null 2>&1; then
+    printf 'live Mihomo device is absent from the kernel interface table\n' >&2
+    return 1
+  fi
+  LIVE_MIHOMO_INDEX="${index}"
+  printf 'live_configs_tun_enable=true\n'
+  printf 'live_configs_tun_device=%s\n' "${device}"
+  printf 'live_if_nametoindex=%s\n' "${index}"
+}
+
+record_live_mihomo_snapshot() {
+  local snapshot_file="${TMP_ROOT}/live-api-snapshot-current"
+  local pid
+  pid="$(live_mihomo_pid || true)"
+  if [[ -z "${pid}" ]] || ! assert_live_mihomo_process "${pid}" || \
+    [[ "${pid}" != "${LIVE_MIHOMO_PID}" ]]; then
+    printf 'refusing live source resample after packaged Mihomo identity changed\n' >&2
+    return 1
+  fi
+  live_mihomo_api_snapshot >"${snapshot_file}"
+  /bin/cat "${snapshot_file}" | /usr/bin/tee -a "${LOG_FILE}"
+}
+
+run_live_trusted_client() {
+  record_live_mihomo_snapshot
+  run_client "$@" --mihomo-utun "${LIVE_MIHOMO_UTUN}"
+}
+
+wait_for_live_mihomo_ready() {
+  local attempt pid matches
+  attempt=0
+  while [[ "${attempt}" -lt 150 ]]; do
+    pid="$(live_mihomo_pid || true)"
+    if [[ -n "${pid}" ]] && assert_live_mihomo_process "${pid}" && \
+      assert_live_mihomo_socket && \
+      live_mihomo_api_snapshot >"${TMP_ROOT}/live-api-snapshot" 2>/dev/null && \
+      [[ "$(route_count covering4 "${LIVE_MIHOMO_UTUN}")" -eq 1 ]] && \
+      [[ "$(route_count covering6 "${LIVE_MIHOMO_UTUN}")" -eq 1 ]]; then
+      matches="$(packaged_mihomo_processes)"
+      if [[ "$(/usr/bin/printf '%s\n' "${matches}" | \
+        /usr/bin/awk 'NF { count += 1 } END { print count + 0 }')" -ne 1 ]] || \
+        ! /usr/bin/printf '%s\n' "${matches}" | /usr/bin/grep -Fqx "${pid}"; then
+        printf 'refusing ambiguous packaged Mihomo process set: %s\n' \
+          "${matches}" >&2
+        return 1
+      fi
+      LIVE_MIHOMO_PID="${pid}"
+      /bin/cat "${TMP_ROOT}/live-api-snapshot" | /usr/bin/tee -a "${LOG_FILE}"
+      assert_route_present_once covering4 "${LIVE_MIHOMO_UTUN}"
+      assert_route_present_once covering6 "${LIVE_MIHOMO_UTUN}"
+      assert_no_default_route_on "${LIVE_MIHOMO_UTUN}"
+      return 0
+    fi
+    /bin/sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  printf 'packaged Mihomo did not become live within the bounded window\n' >&2
+  if /usr/bin/sudo /bin/test -f "${LIVE_MIHOMO_LOG}"; then
+    /usr/bin/sudo /usr/bin/tail -n 40 "${LIVE_MIHOMO_LOG}" >&2 || true
+  fi
+  return 1
+}
+
+start_live_mihomo() {
+  if [[ "${LIVE_MIHOMO_JOB_BOOTSTRAPPED}" -ne 0 ]] || \
+    /usr/bin/sudo /bin/launchctl print "system/${LIVE_MIHOMO_LABEL}" \
+      >/dev/null 2>&1; then
+    printf 'refusing duplicate packaged Mihomo lab launchd bootstrap\n' >&2
+    return 1
+  fi
+  assert_root_path "${LIVE_MIHOMO_PLIST}" 644 file
+  assert_root_file_digest "${LIVE_MIHOMO_PLIST}" "${LIVE_MIHOMO_PLIST_SHA256}"
+  assert_live_mihomo_plist "${LIVE_MIHOMO_PLIST}"
+  /usr/bin/sudo /bin/launchctl bootstrap system "${LIVE_MIHOMO_PLIST}"
+  LIVE_MIHOMO_JOB_BOOTSTRAPPED=1
+  /usr/bin/sudo /bin/launchctl kickstart -k "system/${LIVE_MIHOMO_LABEL}"
+  wait_for_live_mihomo_ready
+  printf 'packaged_mihomo_pid=%s\n' "${LIVE_MIHOMO_PID}" | \
+    /usr/bin/tee -a "${LOG_FILE}"
+}
+
+stop_live_mihomo() {
+  local pid attempt matches
+  pid="${LIVE_MIHOMO_PID:-$(live_mihomo_pid || true)}"
+  if [[ "${LIVE_MIHOMO_JOB_BOOTSTRAPPED}" -eq 1 ]] || \
+    /usr/bin/sudo /bin/launchctl print "system/${LIVE_MIHOMO_LABEL}" \
+      >/dev/null 2>&1; then
+    if [[ -n "${pid}" ]] && ! assert_live_mihomo_process "${pid}"; then
+      printf 'refusing to stop packaged Mihomo after PID identity changed\n' >&2
+      return 1
+    fi
+    if ! /usr/bin/sudo /bin/launchctl bootout "system/${LIVE_MIHOMO_LABEL}" \
+      >/dev/null; then
+      printf 'packaged Mihomo launchd bootout failed\n' >&2
+      return 1
+    fi
+    LIVE_MIHOMO_JOB_BOOTSTRAPPED=0
+  fi
+  attempt=0
+  while [[ "${attempt}" -lt 100 ]]; do
+    if ! /usr/bin/sudo /bin/launchctl print "system/${LIVE_MIHOMO_LABEL}" \
+      >/dev/null 2>&1 && \
+      { [[ -z "${pid}" ]] || ! /usr/bin/sudo /bin/kill -0 "${pid}" 2>/dev/null; }; then
+      break
+    fi
+    /bin/sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  if /usr/bin/sudo /bin/launchctl print "system/${LIVE_MIHOMO_LABEL}" \
+    >/dev/null 2>&1 || \
+    { [[ -n "${pid}" ]] && /usr/bin/sudo /bin/kill -0 "${pid}" 2>/dev/null; }; then
+    printf 'packaged Mihomo launchd job or exact process remained after bootout\n' >&2
+    return 1
+  fi
+  LIVE_MIHOMO_PID=""
+  matches="$(packaged_mihomo_processes)"
+  if [[ -n "${matches}" ]]; then
+    printf 'unexpected installed packaged Mihomo process appeared during cleanup: %s\n' \
+      "${matches}" >&2
+    return 1
+  fi
+  attempt=0
+  while [[ "${attempt}" -lt 100 ]]; do
+    if ! /sbin/ifconfig "${LIVE_MIHOMO_UTUN}" >/dev/null 2>&1 && \
+      [[ "$(route_count covering4 "${LIVE_MIHOMO_UTUN}")" -eq 0 ]] && \
+      [[ "$(route_count covering6 "${LIVE_MIHOMO_UTUN}")" -eq 0 ]] && \
+      ! /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_SOCKET}" && \
+      ! /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_SOCKET}"; then
+      LIVE_MIHOMO_INDEX=""
+      return 0
+    fi
+    /bin/sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  printf 'packaged Mihomo interface, covering route, or API socket remained after stop\n' >&2
+  return 1
+}
+
+remove_live_mihomo_artifacts() {
+  local path name owner_group links cleanup_failed plist_incoming
+  cleanup_failed=0
+  if [[ "${LIVE_MIHOMO_JOB_BOOTSTRAPPED}" -eq 1 ]] || \
+    /usr/bin/sudo /bin/launchctl print "system/${LIVE_MIHOMO_LABEL}" \
+      >/dev/null 2>&1; then
+    stop_live_mihomo || cleanup_failed=1
+  fi
+  if /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_PLIST}" || \
+    /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_PLIST}"; then
+    if [[ "${LIVE_MIHOMO_PLIST_INSTALLED}" -ne 1 ]] || \
+      ! assert_root_path "${LIVE_MIHOMO_PLIST}" 644 file || \
+      ! assert_root_file_digest "${LIVE_MIHOMO_PLIST}" \
+        "${LIVE_MIHOMO_PLIST_SHA256}"; then
+      printf 'refusing unsafe packaged Mihomo plist cleanup\n' >&2
+      cleanup_failed=1
+    else
+      /usr/bin/sudo /bin/rm -f "${LIVE_MIHOMO_PLIST}" || cleanup_failed=1
+      LIVE_MIHOMO_PLIST_INSTALLED=0
+    fi
+  fi
+  plist_incoming="${LIVE_MIHOMO_PLIST}.incoming"
+  if /usr/bin/sudo /bin/test -e "${plist_incoming}" || \
+    /usr/bin/sudo /bin/test -L "${plist_incoming}"; then
+    if ! assert_root_path "${plist_incoming}" 644 file || \
+      ! assert_root_file_digest "${plist_incoming}" \
+        "${LIVE_MIHOMO_PLIST_SHA256}"; then
+      printf 'refusing unsafe packaged Mihomo incoming-plist cleanup\n' >&2
+      cleanup_failed=1
+    else
+      /usr/bin/sudo /bin/rm -f "${plist_incoming}" || cleanup_failed=1
+    fi
+  fi
+  if /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_ROOT}" || \
+    /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_ROOT}"; then
+    if [[ "${LIVE_MIHOMO_ROOT_CREATED}" -ne 1 ]] || \
+      ! assert_root_path "${LIVE_MIHOMO_ROOT}" 700 directory; then
+      printf 'refusing unsafe packaged Mihomo directory cleanup\n' >&2
+      return 1
+    fi
+    while IFS= read -r path; do
+      [[ -z "${path}" ]] && continue
+      name="$(/usr/bin/basename "${path}")"
+      case "${name}" in
+        config.json|config.json.incoming|mihomo.log|cache.db|cache.db-shm|cache.db-wal)
+          if /usr/bin/sudo /bin/test -L "${path}" || \
+            ! /usr/bin/sudo /bin/test -f "${path}"; then
+            printf 'refusing unsafe packaged Mihomo file cleanup: %s\n' \
+              "${path}" >&2
+            cleanup_failed=1
+            continue
+          fi
+          owner_group="$(/usr/bin/sudo /usr/bin/stat -f '%Su:%Sg' "${path}")"
+          links="$(/usr/bin/sudo /usr/bin/stat -f '%l' "${path}")"
+          if [[ "${owner_group}" != root:wheel || "${links}" != 1 ]]; then
+            printf 'refusing non-root or linked packaged Mihomo file: %s\n' \
+              "${path}" >&2
+            cleanup_failed=1
+            continue
+          fi
+          if [[ "${name}" == config.json || \
+            "${name}" == config.json.incoming ]] && \
+            ! assert_root_file_digest "${path}" "${LIVE_MIHOMO_CONFIG_SHA256}"; then
+            printf 'refusing changed packaged Mihomo config cleanup: %s\n' \
+              "${path}" >&2
+            cleanup_failed=1
+            continue
+          fi
+          /usr/bin/sudo /bin/rm -f "${path}" || cleanup_failed=1
+          ;;
+        mihomo.sock)
+          if [[ -n "$(packaged_mihomo_processes)" ]] || \
+            ! /usr/bin/sudo /bin/test -S "${path}" || \
+            /usr/bin/sudo /bin/test -L "${path}"; then
+            printf 'refusing unsafe packaged Mihomo socket cleanup\n' >&2
+            cleanup_failed=1
+          else
+            /usr/bin/sudo /bin/rm -f "${path}" || cleanup_failed=1
+          fi
+          ;;
+        *)
+          printf 'refusing unknown packaged Mihomo lab artifact: %s\n' \
+            "${path}" >&2
+          cleanup_failed=1
+          ;;
+      esac
+    done <<<"$(/usr/bin/sudo /usr/bin/find "${LIVE_MIHOMO_ROOT}" \
+      -mindepth 1 -maxdepth 1 -print)"
+    if [[ "${cleanup_failed}" -eq 0 ]]; then
+      /usr/bin/sudo /bin/rmdir "${LIVE_MIHOMO_ROOT}" || cleanup_failed=1
+      LIVE_MIHOMO_ROOT_CREATED=0
+    fi
+  fi
+  return "${cleanup_failed}"
+}
+
 preflight() {
   assert_root_path "/Library/Application Support/KyClash" 700 directory
   assert_root_path "${STAGE_ROOT}" 755 directory
@@ -1176,9 +1813,21 @@ preflight() {
   printf 'preflight=passed owner_utun=%s\n' "${OWNER_UTUN}"
 }
 
+live_preflight() {
+  preflight
+  assert_live_sources
+  verify_packaged_app
+  assert_live_lab_absent
+  assert_no_default_route_on "${LIVE_MIHOMO_UTUN}"
+  printf 'live_preflight=passed owner_utun=%s packaged_mihomo_utun=%s\n' \
+    "${OWNER_UTUN}" "${LIVE_MIHOMO_UTUN}"
+}
+
 run_matrix() {
   TMP_ROOT="$(/usr/bin/mktemp -d /var/tmp/kyclash-route-helper-v2-matrix.XXXXXX)"
   LOG_FILE="${TMP_ROOT}/route-helper-v2-matrix.log"
+  EVIDENCE_TARGET_ROOT="${EVIDENCE_ROOT}"
+  EVIDENCE_TARGET_NAME="route-helper-v2-matrix.log"
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -1323,6 +1972,125 @@ run_matrix() {
   printf 'matrix=passed evidence=%s\n' "${EVIDENCE_ROOT}"
 }
 
+run_live_matrix() {
+  local first_pid restarted_pid
+  TMP_ROOT="$(/usr/bin/mktemp -d /var/tmp/kyclash-packaged-mihomo-v2-matrix.XXXXXX)"
+  LOG_FILE="${TMP_ROOT}/packaged-mihomo-v2-matrix.log"
+  EVIDENCE_TARGET_ROOT="${LIVE_EVIDENCE_ROOT}"
+  EVIDENCE_TARGET_NAME="packaged-mihomo-v2-matrix.log"
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if /usr/bin/sudo /bin/test -L "${LIVE_EVIDENCE_ROOT}"; then
+    printf 'refusing symlinked live evidence directory: %s\n' \
+      "${LIVE_EVIDENCE_ROOT}" >&2
+    return 70
+  fi
+  /usr/bin/sudo /usr/bin/install -d -o root -g wheel -m 755 \
+    "${LIVE_EVIDENCE_ROOT}"
+  assert_root_path "${LIVE_EVIDENCE_ROOT}" 755 directory
+
+  {
+    printf 'matrix=kyclash-packaged-mihomo-route-helper-v2\n'
+    /usr/bin/sw_vers
+    printf 'architecture=%s\n' "$(/usr/bin/uname -m)"
+    printf 'hardware_model=%s\n' "$(/usr/sbin/sysctl -n hw.model)"
+    printf 'owner_utun=%s\n' "${OWNER_UTUN}"
+    printf 'packaged_mihomo_utun=%s\n' "${LIVE_MIHOMO_UTUN}"
+    printf 'desired_routes=%s,%s\n' "${EXACT_V4}" "${EXACT_V6}"
+    printf 'covering_routes=%s,%s\n' "${COVERING_V4}" "${COVERING_V6}"
+    printf 'packaged_mihomo_sha256=%s\n' \
+      "$(/usr/bin/sudo /usr/bin/shasum -a 256 "${PACKAGED_MIHOMO}" | /usr/bin/awk '{print $1}')"
+    printf 'packaged_helper_sha256=%s\n' \
+      "$(/usr/bin/sudo /usr/bin/shasum -a 256 "${PACKAGED_HELPER}" | /usr/bin/awk '{print $1}')"
+  } | /usr/bin/tee "${LOG_FILE}"
+
+  printf 'scenario=install-fixed-root-private-live-fixture\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  install_live_mihomo_artifacts
+
+  printf 'scenario=live-control-observation-and-covering-routes\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  start_live_mihomo
+  first_pid="${LIVE_MIHOMO_PID}"
+  assert_route_present_once covering4 "${LIVE_MIHOMO_UTUN}"
+  assert_route_present_once covering6 "${LIVE_MIHOMO_UTUN}"
+
+  printf 'scenario=covering-empty-wrong-matching-live-source\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  run_client --expect-conflict --dual-stack "${OWNER_UTUN}"
+  run_client --expect-conflict --dual-stack "${OWNER_UTUN}" \
+    --mihomo-utun "${WRONG_MIHOMO_UTUN}"
+  run_live_trusted_client --dual-stack "${OWNER_UTUN}"
+  assert_route_present_once covering4 "${LIVE_MIHOMO_UTUN}"
+  assert_route_present_once covering6 "${LIVE_MIHOMO_UTUN}"
+  assert_route_absent exact4
+  assert_route_absent exact6
+  assert_journal_absent
+
+  printf 'scenario=exact-conflict-even-when-live-trusted\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  add_fixed_route exact4 "${LIVE_MIHOMO_UTUN}"
+  add_fixed_route exact6 "${LIVE_MIHOMO_UTUN}"
+  run_live_trusted_client --expect-conflict --dual-stack "${OWNER_UTUN}"
+  delete_fixed_route exact6 "${LIVE_MIHOMO_UTUN}"
+  delete_fixed_route exact4 "${LIVE_MIHOMO_UTUN}"
+  assert_journal_absent
+
+  printf 'scenario=more-specific-conflict-even-when-live-trusted\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  add_fixed_route more4 "${LIVE_MIHOMO_UTUN}"
+  add_fixed_route more6 "${LIVE_MIHOMO_UTUN}"
+  run_live_trusted_client --expect-conflict --dual-stack "${OWNER_UTUN}"
+  delete_fixed_route more6 "${LIVE_MIHOMO_UTUN}"
+  delete_fixed_route more4 "${LIVE_MIHOMO_UTUN}"
+  assert_journal_absent
+
+  printf 'scenario=mihomo-stop-and-unknown-interface-refusal\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  stop_live_mihomo
+  add_fixed_route covering4 lo0
+  add_fixed_route covering6 lo0
+  run_client --expect-conflict --dual-stack "${OWNER_UTUN}" \
+    --mihomo-utun "${LIVE_MIHOMO_UTUN}"
+  delete_fixed_route covering6 lo0
+  delete_fixed_route covering4 lo0
+  assert_journal_absent
+
+  printf 'scenario=mihomo-restart-and-live-resample\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  start_live_mihomo
+  restarted_pid="${LIVE_MIHOMO_PID}"
+  if [[ "${restarted_pid}" == "${first_pid}" ]]; then
+    printf 'packaged Mihomo restart reused the prior PID unexpectedly\n' >&2
+    return 1
+  fi
+  printf 'packaged_mihomo_pid_before_restart=%s\n' "${first_pid}" | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  printf 'packaged_mihomo_pid_after_restart=%s\n' "${restarted_pid}" | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  run_live_trusted_client --dual-stack "${OWNER_UTUN}"
+  assert_route_present_once covering4 "${LIVE_MIHOMO_UTUN}"
+  assert_route_present_once covering6 "${LIVE_MIHOMO_UTUN}"
+  assert_route_absent exact4
+  assert_route_absent exact6
+  assert_journal_absent
+
+  printf 'scenario=final-live-cleanup\n' | /usr/bin/tee -a "${LOG_FILE}"
+  stop_live_mihomo
+  assert_matrix_routes_absent
+  assert_journal_absent
+  run_discover_retry
+  printf 'final_packaged_mihomo_process=absent\n' | /usr/bin/tee -a "${LOG_FILE}"
+  printf 'final_packaged_mihomo_socket=absent\n' | /usr/bin/tee -a "${LOG_FILE}"
+  printf 'final_packaged_mihomo_utun=absent\n' | /usr/bin/tee -a "${LOG_FILE}"
+  printf 'final_routes=absent\nfinal_journal=absent\nfinal_lease=idle\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  /usr/bin/sudo /usr/bin/install -o root -g wheel -m 644 \
+    "${LOG_FILE}" "${LIVE_EVIDENCE_ROOT}/${EVIDENCE_TARGET_NAME}"
+  printf 'matrix=passed evidence=%s\n' "${LIVE_EVIDENCE_ROOT}"
+}
+
 cleanup() {
   local status=$?
   local index entry key interface_name restore_helper journal_recovery_safe
@@ -1341,6 +2109,7 @@ cleanup() {
     if ! delete_fixed_route "${key}" "${interface_name}"; then CLEANUP_FAILURE=1; fi
   done
   if ! stop_synthetic_mihomo_utun; then CLEANUP_FAILURE=1; fi
+  if ! remove_live_mihomo_artifacts; then CLEANUP_FAILURE=1; fi
 
   restore_helper=1
   if [[ "${CORRUPT_JOURNAL_INSTALLED}" -eq 1 ]]; then
@@ -1386,7 +2155,7 @@ cleanup() {
   if [[ -n "${TMP_ROOT}" && -d "${TMP_ROOT}" && ! -L "${TMP_ROOT}" ]]; then
     if [[ -n "${LOG_FILE}" && -f "${LOG_FILE}" ]]; then
       if ! /usr/bin/sudo /usr/bin/install -o root -g wheel -m 644 \
-        "${LOG_FILE}" "${EVIDENCE_ROOT}/route-helper-v2-matrix.log" \
+        "${LOG_FILE}" "${EVIDENCE_TARGET_ROOT}/${EVIDENCE_TARGET_NAME}" \
         >/dev/null 2>&1; then
         printf 'unable to persist matrix evidence; retaining temporary log at %s\n' \
           "${TMP_ROOT}" >&2
@@ -1400,7 +2169,7 @@ cleanup() {
   fi
   if [[ "${CLEANUP_FAILURE}" -ne 0 ]]; then
     printf 'cleanup=failed; inspect root-owned evidence under %s\n' \
-      "${EVIDENCE_ROOT}" >&2
+      "${EVIDENCE_TARGET_ROOT}" >&2
     status=1
   fi
   exit "${status}"
@@ -1415,6 +2184,12 @@ case "$1" in
   dry-run)
     dry_run
     ;;
+  live-dry-run)
+    live_dry_run
+    ;;
+  live-static-check)
+    live_static_check
+    ;;
   preflight)
     require_disposable_guest
     require_sudo
@@ -1425,6 +2200,17 @@ case "$1" in
     require_sudo
     preflight
     run_matrix
+    ;;
+  live-preflight)
+    require_disposable_guest
+    require_sudo
+    live_preflight
+    ;;
+  live-run)
+    require_disposable_guest
+    require_sudo
+    live_preflight
+    run_live_matrix
     ;;
   *)
     usage
