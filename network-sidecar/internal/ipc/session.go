@@ -36,7 +36,6 @@ type Backend interface {
 	Health(context.Context) (Health, error)
 	Disconnect(context.Context) error
 	Stop(context.Context) error
-	Cancel(string) error
 	Close() error
 }
 
@@ -60,7 +59,6 @@ func (contractBackend) Health(context.Context) (Health, error) {
 }
 func (contractBackend) Disconnect(context.Context) error { return nil }
 func (contractBackend) Stop(context.Context) error       { return nil }
-func (contractBackend) Cancel(string) error              { return nil }
 func (contractBackend) Close() error                     { return nil }
 
 type session struct {

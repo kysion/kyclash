@@ -1,0 +1,15 @@
+{
+  "protocol_version": 2,
+  "request_id": "request.health",
+  "result": {
+    "Ok": {
+      "type": "health",
+      "data": {
+        "reachable": true,
+        "latency_ms": 12,
+        "jitter_ms": 3,
+        "loss_percent": 1
+      }
+    }
+  }
+}

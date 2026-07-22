@@ -95,8 +95,11 @@ KYCLASH_NETWORK_LAB_SIDECAR_BIN=/tmp/kyclash-s114-child/kyclash-network-sidecar-
   --lib networking::stdio_runtime::unix::tests::actual_lab_child_carries_health_traffic_across_all_carriers -- --exact
 ```
 
-The test passed in 1.84 seconds and covered the actual IPC child, userspace
-WireGuard health traffic, explicit QUIC/WSS/TCP sequencing, and cancellation.
+The test passed in 1.84 seconds and remains traffic/sequencing evidence for the
+actual IPC child, userspace WireGuard health traffic, and explicit
+QUIC/WSS/TCP order. Its earlier concurrent-cancellation interpretation used the
+superseded protocol-v1 framing and is not accepted as cancellation evidence;
+the valid atomic protocol-v2 cancellation closure is recorded below.
 
 The focused production-service monitor suite also passed:
 
@@ -105,11 +108,31 @@ cargo test -p clash-verge --all-features --lib \
   networking::production_service::tests
 ```
 
-Eight tests passed. The runtime-health case injects three failed QUIC samples,
+Nineteen tests passed. The runtime-health case injects three failed QUIC samples,
 then a failed WSS health gate, and proves TCP is connected only after the QUIC
 and WSS disconnect observations. Routes are applied only once and remain
 active across the successful carrier switch. A separate all-carriers-failed
-case proves final route rollback precedes tunnel stop and secret release.
+case proves final route rollback precedes tunnel stop and secret release. The
+expanded lifecycle cases also prove final Connected publication and accepted
+Cancel are a single either/or decision, fatal primary errors survive rollback
+failure, and blocked heartbeat/rollback calls cannot detach or replay a route
+mutation. A monitor that has cleaned routes and stopped the child remains
+fail-closed in `Error` until an external Disconnect joins its exact heartbeat
+task; only that completed join may publish `Disconnected` and clear the active
+operation.
+
+The atomic stdio protocol-v2 closure then passed with freshly built ignored
+host artifacts. Rust executed 14 process-level tests against the production
+and lab Go children; the matrix covers strict v2 bootstrap/HMAC, prepare/stop,
+encrypted QUIC/WSS/TCP health traffic, exact-target cancellation, both race
+outcomes and response orders, contradictory-response fail-stop, timeout
+cleanup, post-cancel reuse, and exact-child reap. The production controller's
+blocked-cancellation case also passed against the real lab child. The full
+Rust all-feature library gate passed 245 tests with the one disposable-account
+Keychain lifecycle test intentionally ignored. Go module, formatting, normal,
+race, vet, and shared-fixture parity gates passed. The locally built children
+are disposable test artifacts; no stale pre-commit binary hash is treated as
+clean-source release evidence.
 
 The Linux `tc netem`/nftables harness was inspected in non-mutating mode on the
 same host:
@@ -147,11 +170,10 @@ first hosted result for this newly added step is pending the next workflow run.
 
 ## Remaining S1.14 boundary
 
-The deterministic source, short smoke gate, and isolated Linux subset are now
-repeatable locally; the existing hosted race/netem results remain retained in
-CI. S1.14 remains open for a reviewed compatible server under sustained
-impairment, macOS sleep/wake and physical network-interface changes, and the
-production Rust-to-Go command boundary once the S1.10–S1.13 system gates are
-closed. Production Go health must still detect a post-connect carrier failure,
-and production stdio cancellation must reach the actual child while a request
-is blocked. No fallback is enabled implicitly inside Go.
+The deterministic source, short smoke gate, isolated Linux subset, production
+Rust-to-Go command boundary, production-code Go health sampling, and blocked
+actual-child cancellation are now repeatable locally; the existing hosted
+race/netem results remain retained in CI. S1.14 remains open for a reviewed
+compatible server under sustained impairment, macOS sleep/wake, and physical
+network-interface changes after the S1.13 system gate closes. No fallback is
+enabled implicitly inside Go.

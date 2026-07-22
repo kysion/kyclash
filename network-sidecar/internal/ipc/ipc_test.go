@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -29,15 +31,68 @@ type cancellableBackend struct {
 	once     sync.Once
 }
 
-func (backend *cancellableBackend) Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error {
-	close(backend.started)
-	<-backend.canceled
-	return context.Canceled
+type loopbackBlackholeBackend struct {
+	faultBackend
+	listener net.Listener
+	signal   io.Writer
+	close    sync.Once
 }
 
-func (backend *cancellableBackend) Cancel(string) error {
-	backend.once.Do(func() { close(backend.canceled) })
+func newLoopbackBlackholeBackend(signal io.Writer) (*loopbackBlackholeBackend, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	return &loopbackBlackholeBackend{listener: listener, signal: signal}, nil
+}
+
+func (backend *loopbackBlackholeBackend) Health(ctx context.Context) (Health, error) {
+	accepted := make(chan net.Conn, 1)
+	acceptErrors := make(chan error, 1)
+	go func() {
+		connection, err := backend.listener.Accept()
+		if err != nil {
+			acceptErrors <- err
+			return
+		}
+		accepted <- connection
+	}()
+	client, err := net.Dial("tcp", backend.listener.Addr().String())
+	if err != nil {
+		return Health{}, err
+	}
+	defer client.Close()
+	var peer net.Conn
+	select {
+	case peer = <-accepted:
+		defer peer.Close()
+	case err := <-acceptErrors:
+		return Health{}, err
+	case <-ctx.Done():
+		return Health{}, ctx.Err()
+	}
+	if _, err := fmt.Fprintln(backend.signal, "health-started"); err != nil {
+		return Health{}, err
+	}
+	// The accepted loopback peer deliberately sends no response. Only the
+	// operation context may release this health call.
+	<-ctx.Done()
+	return Health{}, ctx.Err()
+}
+
+func (backend *loopbackBlackholeBackend) Close() error {
+	backend.close.Do(func() {
+		_ = backend.listener.Close()
+		backend.closeCalls++
+	})
 	return nil
+}
+
+func (backend *cancellableBackend) Connect(ctx context.Context, _ profile.Transport, _ profile.NormalizedEndpoint) error {
+	close(backend.started)
+	<-ctx.Done()
+	backend.once.Do(func() { close(backend.canceled) })
+	return ctx.Err()
 }
 
 func (backend *faultBackend) Prepare(_ context.Context, _ *profile.Profile, operationID string) (TunnelDeviceFacts, error) {
@@ -82,7 +137,6 @@ func (backend *faultBackend) Stop(context.Context) error {
 	return nil
 }
 
-func (backend *faultBackend) Cancel(string) error { return nil }
 func (backend *faultBackend) Close() error {
 	backend.closeCalls++
 	return nil
@@ -90,12 +144,13 @@ func (backend *faultBackend) Close() error {
 
 func TestServeMatchesRustStatusAndDisconnectWireFormat(t *testing.T) {
 	input := strings.Join([]string{
-		`{"protocol_version":1,"request_id":"request.status","payload":{"type":"get_status"}}`,
-		`{"protocol_version":1,"request_id":"request.stop","payload":{"type":"disconnect"}}`,
+		`{"protocol_version":2,"request_id":"request.status","payload":{"type":"get_status"}}`,
+		`{"protocol_version":2,"request_id":"request.stop","payload":{"type":"disconnect"}}`,
 		"",
 	}, "\n")
 	var output bytes.Buffer
-	if err := Serve(bufio.NewReader(strings.NewReader(input)), &output); err != nil {
+	inputStream := io.NopCloser(strings.NewReader(input))
+	if err := Serve(bufio.NewReader(inputStream), inputStream, &output); err != nil {
 		t.Fatal(err)
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.Bytes()), []byte{'\n'})
@@ -110,7 +165,7 @@ func TestServeMatchesRustStatusAndDisconnectWireFormat(t *testing.T) {
 	if result["type"] != "status" || result["data"].(map[string]interface{})["state"] != "disconnected" {
 		t.Fatalf("unexpected status response: %s", lines[0])
 	}
-	fixture, err := os.ReadFile("../../../schemas/fixtures/network-ipc-v1.status.json")
+	fixture, err := os.ReadFile("../../../schemas/fixtures/network-ipc-v2.status.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,14 +203,14 @@ func TestSessionEnforcesExplicitBreakBeforeMakeLifecycle(t *testing.T) {
 	}
 	current := newSession()
 	requests := []Request{
-		{ProtocolVersion: 1, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}},
-		{ProtocolVersion: 1, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}},
-		{ProtocolVersion: 1, RequestID: "request.quic", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}},
-		{ProtocolVersion: 1, RequestID: "request.health", Payload: Payload{Type: "sample_health"}},
-		{ProtocolVersion: 1, RequestID: "request.close_quic", Payload: Payload{Type: "disconnect_transport"}},
-		{ProtocolVersion: 1, RequestID: "request.wss", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"wss"}`)}},
-		{ProtocolVersion: 1, RequestID: "request.close_wss", Payload: Payload{Type: "disconnect_transport"}},
-		{ProtocolVersion: 1, RequestID: "request.stop", Payload: Payload{Type: "stop_tunnel"}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.quic", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.health", Payload: Payload{Type: "sample_health"}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.close_quic", Payload: Payload{Type: "disconnect_transport"}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.wss", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"wss"}`)}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.close_wss", Payload: Payload{Type: "disconnect_transport"}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.stop", Payload: Payload{Type: "stop_tunnel"}},
 	}
 	for _, request := range requests {
 		response, stop := current.handle(request)
@@ -189,23 +244,36 @@ func TestSessionRejectsMakeBeforeBreakAndInvalidOrdering(t *testing.T) {
 			t.Fatalf("expected invalid state, got %#v", response)
 		}
 	}
-	assertInvalidState(Request{ProtocolVersion: 1, RequestID: "request.early", Payload: Payload{Type: "prepare_tunnel"}})
-	current.handle(Request{ProtocolVersion: 1, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}})
-	current.handle(Request{ProtocolVersion: 1, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}})
-	current.handle(Request{ProtocolVersion: 1, RequestID: "request.quic", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}})
-	assertInvalidState(Request{ProtocolVersion: 1, RequestID: "request.wss", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"wss"}`)}})
+	assertInvalidState(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.early", Payload: Payload{Type: "prepare_tunnel"}})
+	current.handle(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}})
+	current.handle(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}})
+	current.handle(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.quic", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}})
+	assertInvalidState(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.wss", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"wss"}`)}})
 }
 
 func TestRequestValidationFailsClosed(t *testing.T) {
 	for _, input := range []string{
 		`{}`,
-		`{"protocol_version":2,"request_id":"request.test","payload":{"type":"get_status"}}`,
-		`{"protocol_version":1,"request_id":"../bad","payload":{"type":"get_status"}}`,
-		`{"protocol_version":1,"request_id":"request.test","payload":{"type":"get_status"},"unknown":true}`,
+		`{"protocol_version":1,"request_id":"request.test","payload":{"type":"get_status"}}`,
+		`{"protocol_version":3,"request_id":"request.test","payload":{"type":"get_status"}}`,
+		`{"protocol_version":2,"request_id":"../bad","payload":{"type":"get_status"}}`,
+		`{"protocol_version":2,"request_id":".request.test","payload":{"type":"get_status"}}`,
+		`{"protocol_version":2,"request_id":"request.test.","payload":{"type":"get_status"}}`,
+		`{"protocol_version":2,"request_id":"request..test","payload":{"type":"get_status"}}`,
+		`{"protocol_version":2,"request_id":"request/path","payload":{"type":"get_status"}}`,
+		`{"protocol_version":2,"request_id":"request\\path","payload":{"type":"get_status"}}`,
+		`{"protocol_version":2,"request_id":"request.test","payload":{"type":"get_status"},"unknown":true}`,
 	} {
 		if _, err := decodeRequest(bufio.NewReader(strings.NewReader(input + "\n"))); !errors.Is(err, ErrInvalidRequest) {
 			t.Fatalf("expected invalid request for %q, got %v", input, err)
 		}
+	}
+}
+
+func TestRequestRejectsCompleteJSONWithoutLF(t *testing.T) {
+	input := `{"protocol_version":2,"request_id":"request.unterminated","payload":{"type":"get_status"}}`
+	if _, err := decodeRequest(bufio.NewReader(strings.NewReader(input))); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("expected unterminated IPC record refusal, got %v", err)
 	}
 }
 
@@ -216,16 +284,16 @@ func TestBackendFailureNeverAdvancesSessionState(t *testing.T) {
 	}
 	backend := &faultBackend{fail: "prepare"}
 	current := newSessionWithBackend(backend)
-	current.handle(Request{ProtocolVersion: 1, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}})
-	response, _ := current.handle(Request{ProtocolVersion: 1, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}})
+	current.handle(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.profile", Payload: Payload{Type: "apply_profile", Data: profileData}})
+	response, _ := current.handle(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.prepare", Payload: Payload{Type: "prepare_tunnel"}})
 	if current.tunnelPrepared || response.Result["Err"].(Error).Code != "sidecar_unavailable" {
 		t.Fatalf("prepare failure advanced state: %#v", current.status())
 	}
 
 	backend.fail = ""
-	current.handle(Request{ProtocolVersion: 1, RequestID: "request.prepare_ok", Payload: Payload{Type: "prepare_tunnel"}})
+	current.handle(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.prepare_ok", Payload: Payload{Type: "prepare_tunnel"}})
 	backend.fail = "connect"
-	response, _ = current.handle(Request{ProtocolVersion: 1, RequestID: "request.connect", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}})
+	response, _ = current.handle(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.connect", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}})
 	if current.activeTransport != "" || response.Result["Err"].(Error).Code != "sidecar_unavailable" {
 		t.Fatalf("connect failure advanced state: %#v", current.status())
 	}
@@ -238,7 +306,7 @@ func TestBackendFailureReasonCodeIsStableAndStateRemainsBounded(t *testing.T) {
 	}
 
 	requestFor := func(payloadType string, data json.RawMessage) Request {
-		return Request{ProtocolVersion: 1, RequestID: "request." + payloadType, Payload: Payload{Type: payloadType, Data: data}}
+		return Request{ProtocolVersion: ProtocolVersion, RequestID: "request." + payloadType, Payload: Payload{Type: payloadType, Data: data}}
 	}
 	assertFailure := func(t *testing.T, current *session, request Request, before Status) {
 		t.Helper()
@@ -312,7 +380,7 @@ func TestHealthMatchesSharedFixture(t *testing.T) {
 	current := newSessionWithBackend(&faultBackend{})
 	current.tunnelPrepared = true
 	current.activeTransport = profile.QUIC
-	response, stop := current.handle(Request{ProtocolVersion: 1, RequestID: "request.health", Payload: Payload{Type: "sample_health"}})
+	response, stop := current.handle(Request{ProtocolVersion: ProtocolVersion, RequestID: "request.health", Payload: Payload{Type: "sample_health"}})
 	if stop {
 		t.Fatal("health stopped session")
 	}
@@ -320,7 +388,7 @@ func TestHealthMatchesSharedFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture, err := os.ReadFile("../../../schemas/fixtures/network-ipc-v1.health.json")
+	fixture, err := os.ReadFile("../../../schemas/fixtures/network-ipc-v2.health.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +401,8 @@ func TestHealthMatchesSharedFixture(t *testing.T) {
 
 func TestEOFClosesBackend(t *testing.T) {
 	backend := &faultBackend{}
-	if err := ServeWithBackend(bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, backend); err != nil {
+	emptyInput := io.NopCloser(strings.NewReader(""))
+	if err := ServeWithBackend(bufio.NewReader(emptyInput), emptyInput, &bytes.Buffer{}, backend); err != nil {
 		t.Fatal(err)
 	}
 	if backend.closeCalls != 1 {
@@ -354,22 +423,22 @@ func TestServeReadsCancelWhileConnectIsInFlight(t *testing.T) {
 	inputReader, inputWriter := io.Pipe()
 	var output bytes.Buffer
 	done := make(chan error, 1)
-	go func() { done <- ServeWithBackend(bufio.NewReader(inputReader), &output, backend) }()
+	go func() { done <- ServeWithBackend(bufio.NewReader(inputReader), inputReader, &output, backend) }()
 	write := func(record string) {
 		t.Helper()
 		if _, err := io.WriteString(inputWriter, record+"\n"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	write(fmt.Sprintf(`{"protocol_version":1,"request_id":"request.profile","payload":{"type":"apply_profile","data":%s}}`, compactProfile.Bytes()))
-	write(`{"protocol_version":1,"request_id":"request.prepare","payload":{"type":"prepare_tunnel"}}`)
-	write(`{"protocol_version":1,"request_id":"request.connect","payload":{"type":"connect_transport","data":{"transport":"quic"}}}`)
+	write(fmt.Sprintf(`{"protocol_version":2,"request_id":"request.profile","payload":{"type":"apply_profile","data":%s}}`, compactProfile.Bytes()))
+	write(`{"protocol_version":2,"request_id":"request.prepare","payload":{"type":"prepare_tunnel"}}`)
+	write(`{"protocol_version":2,"request_id":"request.connect","payload":{"type":"connect_transport","data":{"transport":"quic"}}}`)
 	select {
 	case <-backend.started:
 	case <-time.After(time.Second):
 		t.Fatal("connect did not start")
 	}
-	write(`{"protocol_version":1,"request_id":"request.cancel","payload":{"type":"cancel","data":{"operation_id":"operation.connect"}}}`)
+	write(`{"protocol_version":2,"request_id":"cancel.request.connect","payload":{"type":"cancel","data":{"target_request_id":"request.connect"}}}`)
 	select {
 	case <-backend.canceled:
 	case <-time.After(time.Second):
@@ -405,7 +474,7 @@ func TestServeContextCancellationJoinsConnectBeforeBackendClose(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeWithBackendContext(ctx, bufio.NewReader(inputReader), &output, backend)
+		done <- ServeWithBackendContext(ctx, bufio.NewReader(inputReader), inputReader, &output, backend)
 	}()
 	write := func(record string) {
 		t.Helper()
@@ -413,9 +482,9 @@ func TestServeContextCancellationJoinsConnectBeforeBackendClose(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(fmt.Sprintf(`{"protocol_version":1,"request_id":"request.profile","payload":{"type":"apply_profile","data":%s}}`, compactProfile.Bytes()))
-	write(`{"protocol_version":1,"request_id":"request.prepare","payload":{"type":"prepare_tunnel"}}`)
-	write(`{"protocol_version":1,"request_id":"request.connect","payload":{"type":"connect_transport","data":{"transport":"quic"}}}`)
+	write(fmt.Sprintf(`{"protocol_version":2,"request_id":"request.profile","payload":{"type":"apply_profile","data":%s}}`, compactProfile.Bytes()))
+	write(`{"protocol_version":2,"request_id":"request.prepare","payload":{"type":"prepare_tunnel"}}`)
+	write(`{"protocol_version":2,"request_id":"request.connect","payload":{"type":"connect_transport","data":{"transport":"quic"}}}`)
 	select {
 	case <-backend.started:
 	case <-time.After(time.Second):
@@ -439,4 +508,166 @@ func TestServeContextCancellationJoinsConnectBeforeBackendClose(t *testing.T) {
 	if backend.closeCalls != 1 {
 		t.Fatalf("expected one backend close after context cancellation, got %d", backend.closeCalls)
 	}
+}
+
+const blackholeChildEnvironment = "KYCLASH_IPC_BLACKHOLE_CHILD"
+
+func TestLoopbackBlackholeIPCChild(t *testing.T) {
+	if os.Getenv(blackholeChildEnvironment) != "1" {
+		return
+	}
+	backend, err := newLoopbackBlackholeBackend(os.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ServeWithBackend(bufio.NewReader(os.Stdin), os.Stdin, os.Stdout, backend); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type blackholeChild struct {
+	command   *exec.Cmd
+	cancel    context.CancelFunc
+	input     io.WriteCloser
+	requests  *json.Encoder
+	responses *json.Decoder
+	signals   *bufio.Reader
+}
+
+func startBlackholeChild(t *testing.T) *blackholeChild {
+	t.Helper()
+	childContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	command := exec.CommandContext(childContext, os.Args[0], "-test.run=^TestLoopbackBlackholeIPCChild$")
+	command.Env = append(os.Environ(), blackholeChildEnvironment+"=1")
+	input, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signal, err := command.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	child := &blackholeChild{
+		command:   command,
+		cancel:    cancel,
+		input:     input,
+		requests:  json.NewEncoder(input),
+		responses: json.NewDecoder(output),
+		signals:   bufio.NewReader(signal),
+	}
+	t.Cleanup(func() {
+		child.cancel()
+		_ = child.input.Close()
+		if child.command.ProcessState == nil {
+			_ = child.command.Process.Kill()
+			_ = child.command.Wait()
+		}
+	})
+	return child
+}
+
+func (child *blackholeChild) exchange(t *testing.T, request Request) Response {
+	t.Helper()
+	if err := child.requests.Encode(request); err != nil {
+		t.Fatal(err)
+	}
+	return child.read(t, request.RequestID)
+}
+
+func (child *blackholeChild) read(t *testing.T, requestID string) Response {
+	t.Helper()
+	var response Response
+	if err := child.responses.Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ProtocolVersion != ProtocolVersion || response.RequestID != requestID {
+		t.Fatalf("unexpected correlated response: %#v", response)
+	}
+	return response
+}
+
+func (child *blackholeChild) send(t *testing.T, request Request) {
+	t.Helper()
+	if err := child.requests.Encode(request); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (child *blackholeChild) waitHealthStarted(t *testing.T) {
+	t.Helper()
+	result := make(chan string, 1)
+	go func() {
+		line, _ := child.signals.ReadString('\n')
+		result <- line
+	}()
+	select {
+	case line := <-result:
+		if line != "health-started\n" {
+			t.Fatalf("unexpected child health signal: %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("child health probe did not enter loopback blackhole")
+	}
+}
+
+func (child *blackholeChild) wait(t *testing.T) {
+	t.Helper()
+	if err := child.input.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	child.cancel()
+}
+
+func assertSuccessResponse(t *testing.T, response Response) {
+	t.Helper()
+	if _, ok := response.Result["Ok"]; !ok {
+		t.Fatalf("expected successful IPC response: %#v", response)
+	}
+}
+
+func setupConnectedBlackholeChild(t *testing.T) *blackholeChild {
+	t.Helper()
+	profileData, err := os.ReadFile("../../../schemas/fixtures/network-v1.valid.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := startBlackholeChild(t)
+	for _, request := range []Request{
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.child.profile", Payload: Payload{Type: "apply_profile", Data: profileData}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.child.prepare", Payload: Payload{Type: "prepare_tunnel"}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request.child.connect", Payload: Payload{Type: "connect_transport", Data: json.RawMessage(`{"transport":"quic"}`)}},
+	} {
+		assertSuccessResponse(t, child.exchange(t, request))
+	}
+	return child
+}
+
+func TestRealChildCancelUnblocksBlackholedHealthAndPreservesIPC(t *testing.T) {
+	child := setupConnectedBlackholeChild(t)
+	child.send(t, Request{ProtocolVersion: ProtocolVersion, RequestID: "request.child.health", Payload: Payload{Type: "sample_health"}})
+	child.waitHealthStarted(t)
+	started := time.Now()
+	cancel := Request{ProtocolVersion: ProtocolVersion, RequestID: "cancel.child.health", Payload: Payload{Type: "cancel", Data: json.RawMessage(`{"target_request_id":"request.child.health"}`)}}
+	assertSuccessResponse(t, child.exchange(t, cancel))
+	if _, ok := child.read(t, "request.child.health").Result["Err"]; !ok {
+		t.Fatal("cancelled health did not return a correlated failure")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("real-child health cancellation exceeded bound: %v", elapsed)
+	}
+	assertSuccessResponse(t, child.exchange(t, Request{ProtocolVersion: ProtocolVersion, RequestID: "request.child.status", Payload: Payload{Type: "get_status"}}))
+	assertSuccessResponse(t, child.exchange(t, Request{ProtocolVersion: ProtocolVersion, RequestID: "request.child.disconnect_transport", Payload: Payload{Type: "disconnect_transport"}}))
+	assertSuccessResponse(t, child.exchange(t, Request{ProtocolVersion: ProtocolVersion, RequestID: "request.child.stop", Payload: Payload{Type: "stop_tunnel"}}))
+	assertSuccessResponse(t, child.exchange(t, Request{ProtocolVersion: ProtocolVersion, RequestID: "request.child.disconnect", Payload: Payload{Type: "disconnect"}}))
+	child.wait(t)
 }

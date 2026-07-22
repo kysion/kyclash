@@ -11,11 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"unicode"
+
+	"github.com/kysion/kyclash/network-sidecar/internal/identifier"
 )
 
 const (
-	ProtocolVersion = 1
+	ProtocolVersion = 2
 	maxMessageSize  = 64 * 1_024
 )
 
@@ -46,11 +47,17 @@ func DecodeLine(reader *bufio.Reader) (Config, error) {
 		clear(message)
 		return Config{}, ErrMessageTooLarge
 	}
-	if err != nil && !errors.Is(err, io.EOF) {
+	// Bootstrap is an LF-delimited record.  A syntactically complete JSON
+	// object followed by EOF is still a truncated wire record and must not be
+	// accepted as an authenticated bootstrap.
+	if err != nil {
 		clear(message)
+		if errors.Is(err, io.EOF) {
+			return Config{}, ErrInvalidConfig
+		}
 		return Config{}, fmt.Errorf("read bootstrap: %w", err)
 	}
-	message = bytes.TrimSuffix(message, []byte{'\n'})
+	message = message[:len(message)-1]
 	decoder := json.NewDecoder(bytes.NewReader(message))
 	decoder.DisallowUnknownFields()
 	var config Config
@@ -74,19 +81,11 @@ func DecodeLine(reader *bufio.Reader) (Config, error) {
 
 func AuthProof(config Config) string {
 	authenticator := hmac.New(sha256.New, config.AuthToken)
-	_, _ = authenticator.Write([]byte("kyclash-sidecar-bootstrap-v1\x00"))
+	_, _ = authenticator.Write([]byte("kyclash-sidecar-bootstrap-v2\x00"))
 	_, _ = authenticator.Write([]byte(config.InstanceID))
 	return hex.EncodeToString(authenticator.Sum(nil))
 }
 
 func validInstanceID(value string) bool {
-	if len(value) < 8 || len(value) > 64 {
-		return false
-	}
-	for _, character := range value {
-		if !(unicode.IsLetter(character) || unicode.IsDigit(character) || character == '-' || character == '_') || character > unicode.MaxASCII {
-			return false
-		}
-	}
-	return true
+	return identifier.Valid(value)
 }

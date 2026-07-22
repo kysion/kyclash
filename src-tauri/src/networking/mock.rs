@@ -77,16 +77,11 @@ impl MockNetworkSidecar {
             IpcRequestPayload::Disconnect => {
                 self.state.transition_to(NetworkState::Disconnecting)?;
                 self.state.transition_to(NetworkState::Disconnected)?;
-                Ok(IpcResponsePayload::Status(self.status()))
+                Ok(IpcResponsePayload::Acknowledged)
             }
-            IpcRequestPayload::Cancel { .. } => {
-                if self.state == NetworkState::Disconnected {
-                    return Ok(IpcResponsePayload::Status(self.status()));
-                }
-                self.state.transition_to(NetworkState::Disconnecting)?;
-                self.state.transition_to(NetworkState::Disconnected)?;
-                Ok(IpcResponsePayload::Status(self.status()))
-            }
+            // The synchronous mock has no concurrently active primary
+            // request, so every standalone Cancel is stale by definition.
+            IpcRequestPayload::Cancel { .. } => Err(NetworkErrorCode::InvalidStateTransition),
             IpcRequestPayload::PrepareTunnel
             | IpcRequestPayload::StopTunnel
             | IpcRequestPayload::ConnectTransport { .. }
@@ -149,15 +144,11 @@ mod tests {
             }))
         ));
 
-        let disconnected = sidecar.handle(request(IpcRequestPayload::Disconnect));
-        assert!(matches!(
-            disconnected.result,
-            Ok(IpcResponsePayload::Status(NetworkStatus {
-                state: NetworkState::Disconnected,
-                active_transport: None,
-                ..
-            }))
-        ));
+        let disconnect_request = request(IpcRequestPayload::Disconnect);
+        let disconnected = sidecar.handle(disconnect_request.clone());
+        assert_eq!(disconnected.validate_protocol(&disconnect_request), Ok(()));
+        assert!(matches!(disconnected.result, Ok(IpcResponsePayload::Acknowledged)));
+        assert_eq!(sidecar.state, NetworkState::Disconnected);
         Ok(())
     }
 
@@ -184,14 +175,15 @@ mod tests {
         ));
 
         let cancelled = sidecar.handle(request(IpcRequestPayload::Cancel {
-            operation_id: "operation.test".into(),
+            target_request_id: "request.connect".into(),
         }));
         assert!(matches!(
             cancelled.result,
-            Ok(IpcResponsePayload::Status(NetworkStatus {
-                state: NetworkState::Disconnected,
+            Err(IpcError {
+                code: NetworkErrorCode::InvalidStateTransition,
+                retryable: false,
                 ..
-            }))
+            })
         ));
 
         let restarted = MockNetworkSidecar::default();

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/kysion/kyclash/network-sidecar/internal/carrier"
 )
@@ -73,6 +74,18 @@ func (board *Switchboard) Receive(ctx context.Context) ([]byte, error) {
 	return active.Receive(ctx)
 }
 
+func (board *Switchboard) Probe(ctx context.Context) (time.Duration, error) {
+	active, err := board.current()
+	if err != nil {
+		return 0, err
+	}
+	prober, ok := active.(carrier.Prober)
+	if !ok {
+		return 0, carrier.ErrProbeUnavailable
+	}
+	return prober.Probe(ctx)
+}
+
 func (board *Switchboard) Close() error {
 	err := board.Detach()
 	if errors.Is(err, ErrNoCarrier) || errors.Is(err, net.ErrClosed) {
@@ -110,3 +123,4 @@ func (board *Switchboard) current() (carrier.Carrier, error) {
 }
 
 var _ carrier.Carrier = (*Switchboard)(nil)
+var _ carrier.Prober = (*Switchboard)(nil)

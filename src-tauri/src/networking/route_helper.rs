@@ -116,10 +116,7 @@ impl RouteHelperStatus {
 }
 
 fn valid_identifier(value: &str) -> bool {
-    (8..=64).contains(&value.len())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    super::valid_ipc_id(value)
 }
 
 pub(crate) fn valid_utun_interface(value: &str) -> bool {

@@ -1,0 +1,10 @@
+{
+  "protocol_version": 2,
+  "request_id": "cancel.0000000000000001",
+  "payload": {
+    "type": "cancel",
+    "data": {
+      "target_request_id": "request.health.123"
+    }
+  }
+}

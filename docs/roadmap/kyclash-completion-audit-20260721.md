@@ -5,12 +5,13 @@
 The locked single S1 stage remains in progress. Its architecture, isolated
 runtime proof, development UI, credential boundary, release procedure,
 branding, documentation, CI, signed-but-unnotarized arm64 development PKG, and
-route-helper v2 evidence have passed their applicable gates through S1.12,
-except that S1.04 concurrent-cancellation evidence is reopened for the locked
-stdio protocol-v2 amendment. S1.04 is therefore the first incomplete safe
-source criterion; after it closes, execution resumes at the incomplete S1.13
-VM aggregate. This audit is not a terminal completion or permission to stop
-continuous delivery while either body of safe work remains.
+route-helper v2 evidence have passed their applicable gates through S1.12.
+S1.04 is complete again after the atomic stdio protocol-v2 Rust/Go/TypeScript,
+strict-wire, race, actual-child, and lifecycle gates passed. The locked
+production restart/rematerialization implementation is now the first
+incomplete safe source criterion required by the incomplete S1.13 VM
+aggregate. This audit is not a terminal completion or permission to stop
+continuous delivery while safe work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
 route and lifecycle gates still require disposable hosts, and impaired-network
@@ -116,9 +117,19 @@ public-distribution enhancement rather than a current development blocker.
   localization and dead-code checks; 142 Rust all-feature library tests; two
   process-level sidecar tests; Clippy with all features and warnings denied; Go module
   verification, formatting, repeated race tests, and vet.
-- The network-sidecar GitHub Actions run for security-hardening commit
+- The protocol-v2 source closure gate passed on 2026-07-22: 245 Rust
+  all-feature library tests passed with the one scoped disposable-account
+  Keychain lifecycle test ignored; the 14-test stdio matrix plus the production
+  controller's blocked-cancellation case passed against freshly built
+  production and lab Go children; and Go module, formatting, normal, race,
+  vet, and shared-fixture parity gates passed. This evidence is loopback/local
+  and is not a production-endpoint claim.
+- The most recent retained pre-v2 network-sidecar GitHub Actions evidence is the
+  security-hardening run for commit
   `eaf37d8d` completed successfully, superseding the four earlier sidecar CI
-  runs. Later commits through `30ef92f1` did not change sidecar-scoped paths.
+  runs. Later commits through `30ef92f1` did not change sidecar-scoped paths;
+  the first hosted protocol-v2 result remains pending the atomic v2 push and
+  must not be inferred from that historical run.
 
 ## Remaining system, external, and activation gates
 

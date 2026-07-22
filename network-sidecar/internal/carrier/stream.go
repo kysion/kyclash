@@ -28,34 +28,50 @@ type Stream struct {
 	closed     chan struct{}
 	next       uint64
 	incoming   frame.SequenceValidator
+	probe      probeState
 }
 
 func NewStream(connection net.Conn) *Stream {
-	return &Stream{connection: connection, closed: make(chan struct{})}
+	return &Stream{connection: connection, closed: make(chan struct{}), probe: newProbeState()}
 }
 
 func (stream *Stream) Send(ctx context.Context, packet []byte) error {
+	_, err := stream.sendFrame(ctx, frame.KindWireGuardPacket, packet)
+	return err
+}
+
+func (stream *Stream) sendFrame(ctx context.Context, kind frame.Kind, payload []byte) (bool, error) {
 	stream.writeMu.Lock()
 	defer stream.writeMu.Unlock()
 	if stream.isClosed() {
-		return ErrClosed
+		return false, ErrClosed
 	}
 	if stream.next == ^uint64(0) {
-		return ErrSequenceExhaust
+		return false, ErrSequenceExhaust
 	}
 	encoded, err := frame.Encode(frame.Frame{
-		Kind:     frame.KindWireGuardPacket,
+		Kind:     kind,
 		Sequence: stream.next,
-		Payload:  packet,
+		Payload:  payload,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := stream.withWriteContext(ctx, func() error { return writeFull(stream.connection, encoded) }); err != nil {
-		return err
+	dispatched := false
+	if err := stream.withWriteContext(ctx, func() error {
+		dispatched = true
+		return writeFull(stream.connection, encoded)
+	}); err != nil {
+		return dispatched, err
 	}
 	stream.next++
-	return nil
+	return true, nil
+}
+
+func (stream *Stream) Probe(ctx context.Context) (time.Duration, error) {
+	return stream.probe.measure(ctx, stream.closed, func(ctx context.Context) (bool, error) {
+		return stream.sendFrame(ctx, frame.KindPing, nil)
+	})
 }
 
 func (stream *Stream) Receive(ctx context.Context) ([]byte, error) {
@@ -64,22 +80,40 @@ func (stream *Stream) Receive(ctx context.Context) ([]byte, error) {
 	if stream.isClosed() {
 		return nil, ErrClosed
 	}
-	var decoded frame.Frame
-	err := stream.withReadContext(ctx, func() error {
-		var decodeErr error
-		decoded, decodeErr = frame.Decode(stream.connection)
-		return decodeErr
-	})
-	if err != nil {
-		return nil, err
+	for {
+		var decoded frame.Frame
+		err := stream.withReadContext(ctx, func() error {
+			var decodeErr error
+			decoded, decodeErr = frame.Decode(stream.connection)
+			return decodeErr
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := stream.incoming.Accept(decoded.Sequence); err != nil {
+			return nil, err
+		}
+		switch decoded.Kind {
+		case frame.KindWireGuardPacket:
+			if decoded.Fragment != nil {
+				return nil, ErrUnexpectedFrame
+			}
+			return decoded.Payload, nil
+		case frame.KindPing:
+			replyContext, cancel := context.WithTimeout(ctx, time.Second)
+			_, err := stream.sendFrame(replyContext, frame.KindPong, nil)
+			cancel()
+			if err != nil {
+				return nil, err
+			}
+		case frame.KindPong:
+			stream.probe.observePong()
+		case frame.KindClose:
+			return nil, ErrClosed
+		default:
+			return nil, ErrUnexpectedFrame
+		}
 	}
-	if decoded.Kind != frame.KindWireGuardPacket || decoded.Fragment != nil {
-		return nil, ErrUnexpectedFrame
-	}
-	if err := stream.incoming.Accept(decoded.Sequence); err != nil {
-		return nil, err
-	}
-	return decoded.Payload, nil
 }
 
 func (stream *Stream) Close() error {
@@ -90,6 +124,8 @@ func (stream *Stream) Close() error {
 	})
 	return closeErr
 }
+
+var _ Prober = (*Stream)(nil)
 
 func (stream *Stream) isClosed() bool {
 	select {

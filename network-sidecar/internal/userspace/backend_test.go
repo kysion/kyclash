@@ -1,8 +1,10 @@
 package userspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -10,12 +12,66 @@ import (
 	"time"
 
 	"github.com/kysion/kyclash/network-sidecar/internal/carrier"
+	"github.com/kysion/kyclash/network-sidecar/internal/frame"
+	"github.com/kysion/kyclash/network-sidecar/internal/ipc"
 	"github.com/kysion/kyclash/network-sidecar/internal/profile"
+	"github.com/kysion/kyclash/network-sidecar/internal/wgcarrier"
 )
 
 type memoryCarrier struct {
-	closed chan struct{}
-	once   sync.Once
+	closed        chan struct{}
+	once          sync.Once
+	probeMu       sync.Mutex
+	probeLatency  []time.Duration
+	probeFailures []error
+	probeCalls    int
+}
+
+type packetOnlyCarrier struct {
+	inner *memoryCarrier
+}
+
+func (value *packetOnlyCarrier) Send(ctx context.Context, packet []byte) error {
+	return value.inner.Send(ctx, packet)
+}
+
+func (value *packetOnlyCarrier) Receive(ctx context.Context) ([]byte, error) {
+	return value.inner.Receive(ctx)
+}
+
+func (value *packetOnlyCarrier) Close() error { return value.inner.Close() }
+
+type blockingProbeCarrier struct {
+	*memoryCarrier
+	started chan struct{}
+	once    sync.Once
+}
+
+type dropPongConnection struct {
+	net.Conn
+	mu       sync.Mutex
+	dropAt   int
+	pongSeen int
+}
+
+func (connection *dropPongConnection) Write(packet []byte) (int, error) {
+	decoded, err := frame.Decode(bytes.NewReader(packet))
+	if err == nil && decoded.Kind == frame.KindPong {
+		connection.mu.Lock()
+		connection.pongSeen++
+		drop := connection.pongSeen == connection.dropAt
+		connection.mu.Unlock()
+		if drop {
+			return len(packet), nil
+		}
+	}
+	return connection.Conn.Write(packet)
+}
+
+func (value *blockingProbeCarrier) Probe(ctx context.Context) (time.Duration, error) {
+	value.once.Do(func() { close(value.started) })
+	<-ctx.Done()
+	return 0, ctx.Err()
 }
 
 func newMemoryCarrier() *memoryCarrier {
@@ -35,6 +91,22 @@ func (memory *memoryCarrier) Close() error {
 	memory.once.Do(func() { close(memory.closed) })
 	return nil
 }
+func (memory *memoryCarrier) Probe(ctx context.Context) (time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	memory.probeMu.Lock()
+	defer memory.probeMu.Unlock()
+	index := memory.probeCalls
+	memory.probeCalls++
+	if index < len(memory.probeFailures) && memory.probeFailures[index] != nil {
+		return 0, memory.probeFailures[index]
+	}
+	if index < len(memory.probeLatency) {
+		return memory.probeLatency[index], nil
+	}
+	return time.Millisecond, nil
+}
 
 func testProfile(t *testing.T) *profile.Profile {
 	t.Helper()
@@ -47,6 +119,30 @@ func testProfile(t *testing.T) *profile.Profile {
 		t.Fatal(err)
 	}
 	return decoded
+}
+
+func connectedBackend(t *testing.T, packetCarrier carrier.Carrier) *Backend {
+	t.Helper()
+	backend, err := New(make([]byte, 32), nil, "instance.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.dialer = func(context.Context, profile.Transport, profile.NormalizedEndpoint) (carrier.Carrier, error) {
+		return packetCarrier, nil
+	}
+	networkProfile := testProfile(t)
+	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare"); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := networkProfile.Endpoint(profile.QUIC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Connect(context.Background(), profile.QUIC, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	return backend
 }
 
 func TestBackendPreparesConnectsAndReconnectsExplicitCarriers(t *testing.T) {
@@ -122,8 +218,8 @@ func TestBackendConvergesAfterRepeatedReconnectCycles(t *testing.T) {
 		if err := backend.Disconnect(context.Background()); err != nil {
 			t.Fatalf("cycle %d disconnect: %v", cycle, err)
 		}
-		if backend.active != "" || backend.operationCancel != nil {
-			t.Fatalf("cycle %d left carrier state attached: active=%q cancel=%v", cycle, backend.active, backend.operationCancel != nil)
+		if backend.active != "" || backend.operationCancel.Load() != nil {
+			t.Fatalf("cycle %d left carrier state attached: active=%q cancel=%v", cycle, backend.active, backend.operationCancel.Load() != nil)
 		}
 	}
 	if err := backend.Stop(context.Background()); err != nil {
@@ -176,17 +272,198 @@ func TestBackendCancellationInterruptsDialWithoutActivatingCarrier(t *testing.T)
 		t.Fatal(err)
 	}
 	result := make(chan error, 1)
-	go func() { result <- backend.Connect(context.Background(), profile.QUIC, endpoint) }()
+	connectContext, cancelConnect := context.WithCancel(context.Background())
+	go func() { result <- backend.Connect(connectContext, profile.QUIC, endpoint) }()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("dial did not start")
 	}
-	if err := backend.Cancel("operation.test"); err != nil {
-		t.Fatal(err)
-	}
+	cancelConnect()
 	if err := <-result; !errors.Is(err, context.Canceled) || backend.active != "" {
 		t.Fatalf("cancel did not preserve disconnected carrier state: %v", err)
 	}
 	_ = backend.Close()
+}
+
+func TestBackendHealthReportsLiveLatencyJitterAndLoss(t *testing.T) {
+	memory := newMemoryCarrier()
+	memory.probeLatency = []time.Duration{10 * time.Millisecond, 14 * time.Millisecond, 18 * time.Millisecond, 22 * time.Millisecond}
+	backend := connectedBackend(t, memory)
+	health, err := backend.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !health.Reachable || health.LatencyMS != 16 || health.JitterMS != 4 || health.LossPercent != 0 || memory.probeCalls != healthProbeCount {
+		t.Fatalf("unexpected live health sample: %#v calls=%d", health, memory.probeCalls)
+	}
+}
+
+func TestBackendHealthDetectsPostConnectCarrierFailure(t *testing.T) {
+	memory := newMemoryCarrier()
+	memory.probeFailures = []error{net.ErrClosed}
+	backend := connectedBackend(t, memory)
+	health, err := backend.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Reachable || health.LatencyMS != 0 || health.JitterMS != 0 || health.LossPercent != 100 || memory.probeCalls != 1 {
+		t.Fatalf("carrier failure was not reflected in bounded health facts: %#v calls=%d", health, memory.probeCalls)
+	}
+}
+
+func TestBackendHealthReportsPartialLossMetrics(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		failureAt   int
+		wantLoss    uint8
+		wantLatency uint32
+		wantJitter  uint32
+	}{
+		{name: "seventy-five percent", failureAt: 1, wantLoss: 75, wantLatency: 10},
+		{name: "fifty percent", failureAt: 2, wantLoss: 50, wantLatency: 15, wantJitter: 10},
+		{name: "twenty-five percent", failureAt: 3, wantLoss: 25, wantLatency: 20, wantJitter: 10},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			memory := newMemoryCarrier()
+			memory.probeLatency = []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 30 * time.Millisecond, 40 * time.Millisecond}
+			memory.probeFailures = make([]error, healthProbeCount)
+			memory.probeFailures[test.failureAt] = net.ErrClosed
+			backend := connectedBackend(t, memory)
+			health, err := backend.Health(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if health.Reachable || health.LossPercent != test.wantLoss || health.LatencyMS != test.wantLatency || health.JitterMS != test.wantJitter {
+				t.Fatalf("unexpected partial-loss metrics: %#v", health)
+			}
+			if memory.probeCalls != test.failureAt+1 {
+				t.Fatalf("probe continued after ambiguous loss: calls=%d", memory.probeCalls)
+			}
+		})
+	}
+}
+
+func TestCarrierHealthReportsActualKYNPControlFrameLoss(t *testing.T) {
+	for _, test := range []struct {
+		dropAt   int
+		wantLoss uint8
+	}{
+		{dropAt: 2, wantLoss: 75},
+		{dropAt: 3, wantLoss: 50},
+		{dropAt: 4, wantLoss: 25},
+	} {
+		t.Run(fmt.Sprintf("drop-pong-%d", test.dropAt), func(t *testing.T) {
+			clientConnection, serverConnection := net.Pipe()
+			client := carrier.NewStream(clientConnection)
+			dropper := &dropPongConnection{Conn: serverConnection, dropAt: test.dropAt}
+			server := carrier.NewStream(dropper)
+			board := wgcarrier.NewSwitchboard()
+			if err := board.Attach(client); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			defer board.Shutdown()
+			defer server.Close()
+			go func() { _, _ = client.Receive(ctx) }()
+			go func() { _, _ = server.Receive(ctx) }()
+
+			health, err := sampleCarrierHealth(ctx, board)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if health.Reachable || health.LossPercent != test.wantLoss {
+				t.Fatalf("unexpected KYNP control-frame loss metrics: %#v", health)
+			}
+			dropper.mu.Lock()
+			pongSeen := dropper.pongSeen
+			dropper.mu.Unlock()
+			if pongSeen != test.dropAt {
+				t.Fatalf("unexpected pong count before fail-closed stop: %d", pongSeen)
+			}
+		})
+	}
+}
+
+func TestBackendHealthParentCancellationIsBoundedAndReleasesOperation(t *testing.T) {
+	packetCarrier := &blockingProbeCarrier{memoryCarrier: newMemoryCarrier(), started: make(chan struct{})}
+	backend := connectedBackend(t, packetCarrier)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := backend.Health(ctx)
+		result <- err
+	}()
+	select {
+	case <-packetCarrier.started:
+	case <-time.After(time.Second):
+		t.Fatal("health probe did not start")
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("parent cancellation did not reach health probe: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parent cancellation did not bound health probe")
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("health parent cancellation exceeded bound: %v", elapsed)
+	}
+	operationActive := backend.operationCancel.Load() != nil
+	if operationActive {
+		t.Fatal("health cancellation retained operation state")
+	}
+	if err := backend.Disconnect(context.Background()); err != nil {
+		t.Fatalf("disconnect failed after cancelled health: %v", err)
+	}
+}
+
+func TestBackendHealthContextCancelInterruptsAndAllowsDisconnect(t *testing.T) {
+	packetCarrier := &blockingProbeCarrier{memoryCarrier: newMemoryCarrier(), started: make(chan struct{})}
+	backend := connectedBackend(t, packetCarrier)
+	healthContext, cancelHealth := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := backend.Health(healthContext)
+		result <- err
+	}()
+	select {
+	case <-packetCarrier.started:
+	case <-time.After(time.Second):
+		t.Fatal("health probe did not start")
+	}
+	cancelHealth()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("health context cancel did not reach operation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("health context cancel did not bound operation")
+	}
+	if err := backend.Disconnect(context.Background()); err != nil {
+		t.Fatalf("disconnect failed after backend health cancel: %v", err)
+	}
+}
+
+func TestBackendHealthReturnsProbeUnavailableWithoutFabricatedMetrics(t *testing.T) {
+	backend := connectedBackend(t, &packetOnlyCarrier{inner: newMemoryCarrier()})
+	health, err := backend.Health(context.Background())
+	if !errors.Is(err, carrier.ErrProbeUnavailable) {
+		t.Fatalf("expected probe-unavailable failure, got health=%#v err=%v", health, err)
+	}
+	if health != (ipc.Health{}) {
+		t.Fatalf("probe-unavailable path fabricated metrics: %#v", health)
+	}
+}
+
+func TestSummarizeLatencySaturatesWireFacts(t *testing.T) {
+	latency, jitter := summarizeLatency([]time.Duration{0, time.Duration(uint64(^uint32(0))+10) * time.Millisecond})
+	if latency == 0 || jitter != ^uint32(0) {
+		t.Fatalf("unexpected bounded summary: latency=%d jitter=%d", latency, jitter)
+	}
 }

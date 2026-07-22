@@ -1,5 +1,5 @@
 export const NETWORK_SCHEMA_VERSION = 1 as const
-export const NETWORK_IPC_PROTOCOL_VERSION = 1 as const
+export const NETWORK_IPC_PROTOCOL_VERSION = 2 as const
 
 export type TransportKind = 'quic' | 'wss' | 'tcp'
 
@@ -139,9 +139,14 @@ export interface NetworkStateEvent {
 export type NetworkIpcRequestPayload =
   | { type: 'get_status' }
   | { type: 'apply_profile'; data: NetworkProfile }
+  | { type: 'prepare_tunnel' }
+  | { type: 'stop_tunnel' }
+  | { type: 'connect_transport'; data: { transport: TransportKind } }
+  | { type: 'disconnect_transport' }
+  | { type: 'sample_health' }
   | { type: 'connect' }
   | { type: 'disconnect' }
-  | { type: 'cancel'; data: { operation_id: string } }
+  | { type: 'cancel'; data: { target_request_id: string } }
 
 export interface NetworkIpcRequest {
   protocol_version: typeof NETWORK_IPC_PROTOCOL_VERSION
@@ -151,7 +156,17 @@ export interface NetworkIpcRequest {
 
 export type NetworkIpcResponsePayload =
   | { type: 'acknowledged' }
+  | { type: 'cancel_accepted'; data: { target_request_id: string } }
   | { type: 'status'; data: NetworkStatus }
+  | {
+      type: 'health'
+      data: {
+        reachable: boolean
+        latency_ms: number
+        jitter_ms: number
+        loss_percent: number
+      }
+    }
   | {
       type: 'tunnel_prepared'
       data: {

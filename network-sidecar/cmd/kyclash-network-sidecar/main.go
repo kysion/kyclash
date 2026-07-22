@@ -46,7 +46,11 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	if err := json.NewEncoder(stdout).Encode(response); err != nil {
 		return fmt.Errorf("write handshake: %w", err)
 	}
-	return ipc.ServeWithBackendContext(parentContext, reader, stdout, backend)
+	readerCloser, ok := stdin.(io.Closer)
+	if !ok {
+		readerCloser = io.NopCloser(stdin)
+	}
+	return ipc.ServeWithBackendContext(parentContext, reader, readerCloser, stdout, backend)
 }
 
 func execute(arguments []string, stdin io.Reader, stdout, stderr io.Writer) int {

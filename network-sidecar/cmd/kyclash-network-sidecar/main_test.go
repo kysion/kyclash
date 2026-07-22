@@ -6,13 +6,15 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/kysion/kyclash/network-sidecar/internal/bootstrap"
 )
 
 func TestRunAuthenticatesWithoutEchoingSecrets(t *testing.T) {
 	secret := bytes.Repeat([]byte{9}, 32)
 	encodedSecret := base64.StdEncoding.EncodeToString(secret)
-	input := `{"protocol_version":1,"instance_id":"instance-123","auth_token":"` + encodedSecret + `","private_key":"` + encodedSecret + `"}` + "\n" +
-		`{"protocol_version":1,"request_id":"request.stop","payload":{"type":"disconnect"}}` + "\n"
+	input := `{"protocol_version":2,"instance_id":"instance-123","auth_token":"` + encodedSecret + `","private_key":"` + encodedSecret + `"}` + "\n" +
+		`{"protocol_version":2,"request_id":"request.stop","payload":{"type":"disconnect"}}` + "\n"
 	var output bytes.Buffer
 	if err := run(nil, strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
@@ -28,7 +30,7 @@ func TestRunAuthenticatesWithoutEchoingSecrets(t *testing.T) {
 	if err := json.Unmarshal(lines[0], &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.ProtocolVersion != 1 || response.InstanceID != "instance-123" || len(response.AuthProof) != 64 {
+	if response.ProtocolVersion != bootstrap.ProtocolVersion || response.InstanceID != "instance-123" || len(response.AuthProof) != 64 {
 		t.Fatalf("unexpected handshake: %#v", response)
 	}
 }
@@ -55,13 +57,13 @@ func TestEntrypointNeverLeaksArgumentsEnvironmentOrMalformedInput(t *testing.T) 
 	}{
 		"argument": {arguments: []string{"--private-key=" + argumentSecret}},
 		"malformed bootstrap": {
-			input: `{"protocol_version":1,"instance_id":"instance-123","auth_token":"` + inputSecret + `"}` + "\n",
+			input: `{"protocol_version":2,"instance_id":"instance-123","auth_token":"` + inputSecret + `"}` + "\n",
 		},
 		"malformed IPC": {
 			input: func() string {
 				secret := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32))
-				return `{"protocol_version":1,"instance_id":"instance-123","auth_token":"` + secret + `","private_key":"` + secret + `"}` + "\n" +
-					`{"protocol_version":1,"request_id":"request.test","payload":{"type":"` + inputSecret + `"},"unknown":true}` + "\n"
+				return `{"protocol_version":2,"instance_id":"instance-123","auth_token":"` + secret + `","private_key":"` + secret + `"}` + "\n" +
+					`{"protocol_version":2,"request_id":"request.test","payload":{"type":"` + inputSecret + `"},"unknown":true}` + "\n"
 			}(),
 		},
 	} {

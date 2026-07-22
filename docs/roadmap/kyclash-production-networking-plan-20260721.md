@@ -126,10 +126,12 @@ N1A through N1D were complete at this historical checkpoint: strict shared
 data-plane contracts, the real userspace backend driving wireguard-go through
 an explicit single-carrier switchboard, the compatible loopback peer,
 fallback, timeout cleanup, crash/backoff, and repeated actual-child cycles had
-passed their gates. The concurrent-cancellation subclaim is reopened by the
-locked `kyclash-sidecar-stdio-v2-control-review-20260722.md` amendment because
-protocol v1 could not legally carry that control exception. Later N2 source
-work remains valid while this atomic protocol remediation executes first.
+passed their gates. The concurrent-cancellation subclaim was subsequently
+reopened because protocol v1 could not legally carry that control exception.
+The atomic protocol-v2 remediation locked by
+`kyclash-sidecar-stdio-v2-control-review-20260722.md` has now passed; the next
+incomplete source gate is the reviewed production restart/rematerialization
+work required by S1.13.
 
 Tasks:
 
@@ -284,24 +286,30 @@ Tasks:
    candidate and retain an operator kill switch.
 2. Replace development fixtures with the pinned production policy key and
    authorized endpoint configuration; no private signing key enters the app.
-3. Rebuild, sign, notarize, staple, and re-run the complete client/sidecar test
-   matrix from one clean commit.
+3. Rebuild, Developer ID-sign, and re-run the complete client/sidecar test
+   matrix from one clean commit. Notarization and stapling are optional
+   public-distribution hardening and are exercised only when explicitly
+   selected.
 4. Keep GitHub updater activation and Release publication as separate explicit
    transactions governed by the updater plan.
 
 Exit gate:
 
-- The notarized macOS arm64 candidate provides one-site private networking and
-  recovery through the production UI, with release approval evidence. No GitHub
-  Release is created by completing this batch alone.
+- The Developer ID-signed macOS arm64 candidate provides one-site private
+  networking and recovery through the production UI, with release approval
+  evidence. An unnotarized internal candidate retains the documented
+  Gatekeeper limitation; optional notarization does not block this gate. No
+  GitHub Release is created by completing this batch alone.
 
 ## Locked implementation decisions
 
 1. **IPC amendment:** adopt stdio as the single production sidecar transport and
-   use the reviewed protocol-v1 single-flight request/response contract, with
-   status/health polling and correlated cancellation. This matches the already-
-   hardened Go bootstrap, avoids ambiguous response/event multiplexing, avoids
-   filesystem socket ownership, and keeps secrets off argv and env.
+   use the reviewed protocol-v2 contract. Ordinary requests remain
+   single-flight; while one cancellable Connect or Health request is active,
+   Rust may send exactly one Cancel naming that request's exact wire ID. This is
+   not general multiplexing. It preserves bounded status/health polling, avoids
+   ambiguous response/event handling and filesystem socket ownership, and
+   keeps secrets off argv and env.
 2. **Privileged route executor:** use a dedicated signed KyClash route helper
    registered by `SMAppService` and reached through typed XPC.
    The inherited service IPC exposes Mihomo core lifecycle rather than a typed

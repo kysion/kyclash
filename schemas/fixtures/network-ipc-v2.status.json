@@ -1,0 +1,15 @@
+{
+  "protocol_version": 2,
+  "request_id": "request.status",
+  "result": {
+    "Ok": {
+      "type": "status",
+      "data": {
+        "state": "disconnected",
+        "active_profile_id": null,
+        "active_transport": null,
+        "last_error": null
+      }
+    }
+  }
+}

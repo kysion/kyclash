@@ -1,0 +1,12 @@
+{
+  "protocol_version": 2,
+  "request_id": "cancel.0000000000000001",
+  "result": {
+    "Ok": {
+      "type": "cancel_accepted",
+      "data": {
+        "target_request_id": "request.health.123"
+      }
+    }
+  }
+}

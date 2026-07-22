@@ -39,6 +39,7 @@ type QUIC struct {
 	nextMessage uint64
 	incoming    frame.SequenceWindow
 	reassembler *frame.Reassembler
+	probe       probeState
 }
 
 func DialQUIC(ctx context.Context, config QUICConfig) (*QUIC, error) {
@@ -76,6 +77,7 @@ func newQUIC(connection *quicgo.Conn) *QUIC {
 		connection:  connection,
 		closed:      make(chan struct{}),
 		reassembler: frame.NewReassembler(fragmentAssemblyTTL),
+		probe:       newProbeState(),
 	}
 }
 
@@ -143,6 +145,35 @@ func (carrier *QUIC) Send(ctx context.Context, packet []byte) error {
 	return nil
 }
 
+func (carrier *QUIC) sendControl(ctx context.Context, kind frame.Kind) (bool, error) {
+	carrier.writeMu.Lock()
+	defer carrier.writeMu.Unlock()
+	if carrier.isClosed() {
+		return false, ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if carrier.next == ^uint64(0) {
+		return false, ErrSequenceExhaust
+	}
+	encoded, err := frame.Encode(frame.Frame{Kind: kind, Sequence: carrier.next})
+	if err != nil {
+		return false, err
+	}
+	if err := carrier.connection.SendDatagram(encoded); err != nil {
+		return false, fmt.Errorf("send QUIC control datagram: %w", err)
+	}
+	carrier.next++
+	return true, nil
+}
+
+func (carrier *QUIC) Probe(ctx context.Context) (time.Duration, error) {
+	return carrier.probe.measure(ctx, carrier.closed, func(ctx context.Context) (bool, error) {
+		return carrier.sendControl(ctx, frame.KindPing)
+	})
+}
+
 func (carrier *QUIC) Receive(ctx context.Context) ([]byte, error) {
 	carrier.readMu.Lock()
 	defer carrier.readMu.Unlock()
@@ -158,21 +189,36 @@ func (carrier *QUIC) Receive(ctx context.Context) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if decoded.Kind != frame.KindWireGuardPacket {
-			return nil, ErrUnexpectedFrame
-		}
 		if err := carrier.incoming.Accept(decoded.Sequence); err != nil {
 			return nil, err
 		}
-		packet, complete, err := carrier.reassembler.Accept(decoded)
-		if err != nil {
-			return nil, err
-		}
-		if complete {
-			return packet, nil
+		switch decoded.Kind {
+		case frame.KindWireGuardPacket:
+			packet, complete, err := carrier.reassembler.Accept(decoded)
+			if err != nil {
+				return nil, err
+			}
+			if complete {
+				return packet, nil
+			}
+		case frame.KindPing:
+			replyContext, cancel := context.WithTimeout(ctx, time.Second)
+			_, err := carrier.sendControl(replyContext, frame.KindPong)
+			cancel()
+			if err != nil {
+				return nil, err
+			}
+		case frame.KindPong:
+			carrier.probe.observePong()
+		case frame.KindClose:
+			return nil, ErrClosed
+		default:
+			return nil, ErrUnexpectedFrame
 		}
 	}
 }
+
+var _ Prober = (*QUIC)(nil)
 
 func (carrier *QUIC) Close() error {
 	var closeErr error

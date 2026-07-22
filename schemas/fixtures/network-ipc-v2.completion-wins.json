@@ -1,0 +1,45 @@
+{
+  "primary_request": {
+    "protocol_version": 2,
+    "request_id": "request.health.123",
+    "payload": {
+      "type": "sample_health"
+    }
+  },
+  "cancel_request": {
+    "protocol_version": 2,
+    "request_id": "cancel.0000000000000001",
+    "payload": {
+      "type": "cancel",
+      "data": {
+        "target_request_id": "request.health.123"
+      }
+    }
+  },
+  "primary_response": {
+    "protocol_version": 2,
+    "request_id": "request.health.123",
+    "result": {
+      "Ok": {
+        "type": "health",
+        "data": {
+          "reachable": true,
+          "latency_ms": 12,
+          "jitter_ms": 3,
+          "loss_percent": 1
+        }
+      }
+    }
+  },
+  "cancel_response": {
+    "protocol_version": 2,
+    "request_id": "cancel.0000000000000001",
+    "result": {
+      "Err": {
+        "code": "invalid_state_transition",
+        "message": "operation already completed",
+        "retryable": false
+      }
+    }
+  }
+}

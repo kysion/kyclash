@@ -9,18 +9,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
-	"unicode"
 
+	"github.com/kysion/kyclash/network-sidecar/internal/identifier"
 	"github.com/kysion/kyclash/network-sidecar/internal/profile"
 )
 
 const (
-	ProtocolVersion = 1
+	ProtocolVersion = 2
 	maxRequestSize  = 64 * 1_024
 )
 
 var ErrInvalidRequest = errors.New("invalid IPC request")
+
+var (
+	ErrOperationJoinTimeout = errors.New("IPC operation join timeout")
+	ErrBackendCloseTimeout  = errors.New("IPC backend close timeout")
+	ErrReaderJoinTimeout    = errors.New("IPC reader join timeout")
+)
+
+const lifecycleJoinTimeout = 2 * time.Second
 
 type Request struct {
 	ProtocolVersion uint8   `json:"protocol_version"`
@@ -52,63 +61,147 @@ type Error struct {
 	Retryable bool   `json:"retryable"`
 }
 
-func Serve(reader *bufio.Reader, writer io.Writer) error {
-	return ServeWithBackend(reader, writer, contractBackend{})
+func Serve(reader *bufio.Reader, readerCloser io.Closer, writer io.Writer) error {
+	return ServeWithBackend(reader, readerCloser, writer, contractBackend{})
 }
 
-func ServeWithBackend(reader *bufio.Reader, writer io.Writer, backend Backend) error {
-	return ServeWithBackendContext(context.Background(), reader, writer, backend)
+func ServeWithBackend(reader *bufio.Reader, readerCloser io.Closer, writer io.Writer, backend Backend) error {
+	return ServeWithBackendContext(context.Background(), reader, readerCloser, writer, backend)
 }
 
 // ServeWithBackendContext is the cancellable process boundary used by the
-// real sidecar.  Cancellation is deliberately handled at the IPC owner
-// rather than inside an individual carrier: it first asks an in-flight
-// connect operation to stop, waits for that operation to join, and only then
-// runs the backend close path.  This ordering prevents a parent-death cleanup
-// from racing a userspace WireGuard close and leaving an owned device behind.
-func ServeWithBackendContext(ctx context.Context, reader *bufio.Reader, writer io.Writer, backend Backend) error {
+// real sidecar. Cancellation is deliberately handled at the IPC owner rather
+// than through a second backend cancellation channel: it cancels the exact
+// context of an in-flight connect or health operation, waits for that operation
+// to join, and only then runs disconnect or close. This ordering prevents
+// cleanup from racing userspace WireGuard work and leaving an owned device
+// behind. readerCloser must own and interrupt reader's underlying input.
+func ServeWithBackendContext(ctx context.Context, reader *bufio.Reader, readerCloser io.Closer, writer io.Writer, backend Backend) (serveErr error) {
+	if reader == nil || readerCloser == nil || backend == nil {
+		return ErrInvalidRequest
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ownerContext, cancelOwner := context.WithCancel(context.Background())
 	encoder := json.NewEncoder(writer)
 	current := newSessionWithBackend(backend)
-	defer func() { _ = backend.Close() }()
 	type decodedRequest struct {
 		request Request
 		err     error
 	}
+	type activePrimary struct {
+		operation   *cancellableOperation
+		cancel      context.CancelFunc
+		winner      atomic.Uint32
+		controlSeen bool
+		lateCancel  *Request
+	}
 	type operationResult struct {
-		response Response
-		stop     bool
+		active        *activePrimary
+		backendResult backendOperationResult
+		response      Response
+		cancelled     bool
+		err           error
 	}
 	requests := make(chan decodedRequest)
 	operations := make(chan operationResult, 1)
+	readerDone := make(chan struct{})
+	var active *activePrimary
+
+	joinActive := func() bool {
+		if active == nil {
+			return true
+		}
+		value := active
+		value.winner.CompareAndSwap(operationRaceRunning, operationRaceCancelWon)
+		value.cancel()
+		timer := time.NewTimer(lifecycleJoinTimeout)
+		defer timer.Stop()
+		select {
+		case result := <-operations:
+			active = nil
+			return result.active == value
+		case <-timer.C:
+			active = nil
+			return false
+		}
+	}
+	defer func() {
+		// Closing the owned input first interrupts a reader blocked in ReadSlice.
+		// The owner context remains live until active backend work has joined so
+		// its result cannot be dropped instead of reaching the join channel.
+		_ = readerCloser.Close()
+		if !joinActive() {
+			serveErr = errors.Join(serveErr, ErrOperationJoinTimeout)
+		}
+		cancelOwner()
+		readerTimer := time.NewTimer(lifecycleJoinTimeout)
+		select {
+		case <-readerDone:
+		case <-readerTimer.C:
+			serveErr = errors.Join(serveErr, ErrReaderJoinTimeout)
+		}
+		readerTimer.Stop()
+		closed := make(chan error, 1)
+		go func() { closed <- backend.Close() }()
+		timer := time.NewTimer(lifecycleJoinTimeout)
+		defer timer.Stop()
+		select {
+		case err := <-closed:
+			if err != nil {
+				serveErr = errors.Join(serveErr, err)
+			}
+		case <-timer.C:
+			serveErr = errors.Join(serveErr, ErrBackendCloseTimeout)
+		}
+	}()
+
 	go func() {
+		defer close(readerDone)
 		defer close(requests)
 		for {
 			request, err := decodeRequest(reader)
-			requests <- decodedRequest{request: request, err: err}
+			select {
+			case requests <- decodedRequest{request: request, err: err}:
+			case <-ownerContext.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
 		}
 	}()
-	busy := false
+	startOperation := func(operation *cancellableOperation) {
+		operationContext, cancel := context.WithCancel(ownerContext)
+		value := &activePrimary{operation: operation, cancel: cancel}
+		active = value
+		go func() {
+			backendResult := operation.run(operationContext, backend)
+			completionWon := value.winner.CompareAndSwap(operationRaceRunning, operationRaceCompletionWon)
+			result := operationResult{active: value, backendResult: backendResult, cancelled: !completionWon}
+			// The owner applies all successful completion state changes after
+			// receiving this result, so concurrent Cancel never races profile or
+			// carrier facts in the session object.
+			if !completionWon {
+				result.response, result.err = current.cancelCancellable(operation, backendResult)
+			}
+			select {
+			case operations <- result:
+			case <-ownerContext.Done():
+			}
+		}()
+	}
+	writeResponse := func(response Response) error {
+		if err := encoder.Encode(response); err != nil {
+			return fmt.Errorf("write IPC response: %w", err)
+		}
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
-			if busy {
-				// The only asynchronous request is connect_transport.  Backend
-				// cancellation is idempotent and is the same path used by an
-				// explicit IPC cancel request.
-				_ = current.backend.Cancel("operation.parent-death")
-				select {
-				case <-operations:
-					busy = false
-				case <-time.After(2 * time.Second):
-					return ctx.Err()
-				}
-			}
 			return ctx.Err()
 		case decoded, ok := <-requests:
 			if !ok {
@@ -121,38 +214,76 @@ func ServeWithBackendContext(ctx context.Context, reader *bufio.Reader, writer i
 				return decoded.err
 			}
 			request := decoded.request
-			if busy {
-				var response Response
-				if request.Payload.Type == "cancel" {
-					response, _ = current.handle(request)
+			if active != nil {
+				if request.Payload.Type != "cancel" || active.controlSeen {
+					return ErrInvalidRequest
+				}
+				targetRequestID, valid := decodeCancelTarget(request)
+				if !valid || targetRequestID != active.operation.request.RequestID {
+					return ErrInvalidRequest
+				}
+				active.controlSeen = true
+				if active.winner.CompareAndSwap(operationRaceRunning, operationRaceCancelWon) {
+					active.cancel()
+					if err := writeResponse(cancelAccepted(request.RequestID, targetRequestID)); err != nil {
+						return err
+					}
 				} else {
-					response = Response{ProtocolVersion: ProtocolVersion, RequestID: request.RequestID}
-					response, _ = invalidState(response)
-				}
-				if err := encoder.Encode(response); err != nil {
-					return fmt.Errorf("write IPC response: %w", err)
+					late := request
+					active.lateCancel = &late
 				}
 				continue
 			}
-			if request.Payload.Type == "connect_transport" {
-				busy = true
-				go func() { response, stop := current.handle(request); operations <- operationResult{response, stop} }()
+			if request.Payload.Type == "cancel" {
+				if _, valid := decodeCancelTarget(request); !valid {
+					response := Response{ProtocolVersion: ProtocolVersion, RequestID: request.RequestID}
+					response, _ = invalidData(response)
+					if err := writeResponse(response); err != nil {
+						return err
+					}
+				} else if err := writeResponse(cancelTooLate(request.RequestID)); err != nil {
+					return err
+				}
 				continue
 			}
-			response, stop := current.handle(request)
-			if err := encoder.Encode(response); err != nil {
-				return fmt.Errorf("write IPC response: %w", err)
+			if request.Payload.Type == "connect_transport" || request.Payload.Type == "sample_health" {
+				operation, response, valid := current.prepareCancellable(request)
+				if !valid {
+					if err := writeResponse(response); err != nil {
+						return err
+					}
+					continue
+				}
+				startOperation(operation)
+				continue
+			}
+			response, stop := current.handleWithContext(ctx, request)
+			if err := writeResponse(response); err != nil {
+				return err
 			}
 			if stop {
 				return nil
 			}
 		case result := <-operations:
-			busy = false
-			if err := encoder.Encode(result.response); err != nil {
-				return fmt.Errorf("write IPC response: %w", err)
+			if active == nil || result.active != active {
+				return ErrInvalidRequest
 			}
-			if result.stop {
-				return nil
+			completed := active
+			completed.cancel()
+			active = nil
+			if result.err != nil {
+				return result.err
+			}
+			if !result.cancelled {
+				result.response = current.completeCancellable(completed.operation, result.backendResult)
+			}
+			if err := writeResponse(result.response); err != nil {
+				return err
+			}
+			if !result.cancelled && completed.lateCancel != nil {
+				if err := writeResponse(cancelTooLate(completed.lateCancel.RequestID)); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -167,11 +298,13 @@ func decodeRequest(reader *bufio.Reader) (Request, error) {
 	if errors.Is(err, io.EOF) && len(message) == 0 {
 		return Request{}, io.EOF
 	}
-	if err != nil && !errors.Is(err, io.EOF) {
+	// IPC is LF-delimited.  EOF with a non-empty final fragment is truncated
+	// input even when that fragment happens to be valid JSON.
+	if err != nil {
 		clear(message)
 		return Request{}, ErrInvalidRequest
 	}
-	message = bytes.TrimSuffix(message, []byte{'\n'})
+	message = message[:len(message)-1]
 	decoder := json.NewDecoder(bytes.NewReader(message))
 	decoder.DisallowUnknownFields()
 	var request Request
@@ -191,6 +324,13 @@ func handle(request Request) (Response, bool) {
 }
 
 func (current *session) handle(request Request) (Response, bool) {
+	return current.handleWithContext(context.Background(), request)
+}
+
+func (current *session) handleWithContext(ctx context.Context, request Request) (Response, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	response := Response{ProtocolVersion: ProtocolVersion, RequestID: request.RequestID}
 	switch request.Payload.Type {
 	case "get_status":
@@ -204,12 +344,12 @@ func (current *session) handle(request Request) (Response, bool) {
 			return invalidData(response)
 		}
 		if current.activeTransport != "" {
-			if err := current.backend.Disconnect(context.Background()); err != nil {
+			if err := current.backend.Disconnect(ctx); err != nil {
 				return current.backendFailure(response)
 			}
 		}
 		if current.tunnelPrepared {
-			if err := current.backend.Stop(context.Background()); err != nil {
+			if err := current.backend.Stop(ctx); err != nil {
 				return current.backendFailure(response)
 			}
 		}
@@ -237,7 +377,7 @@ func (current *session) handle(request Request) (Response, bool) {
 		if err != nil {
 			return invalidData(response)
 		}
-		if err := current.backend.Connect(context.Background(), transport, endpoint); err != nil {
+		if err := current.backend.Connect(ctx, transport, endpoint); err != nil {
 			return current.backendFailure(response)
 		}
 		current.activeTransport = transport
@@ -245,17 +385,10 @@ func (current *session) handle(request Request) (Response, bool) {
 		response.Result = success(map[string]interface{}{"type": "status", "data": current.status()})
 		return response, false
 	case "cancel":
-		var data struct {
-			OperationID string `json:"operation_id"`
-		}
-		if !decodeData(request.Payload.Data, &data) || !validID(data.OperationID) {
+		if _, ok := decodeCancelTarget(request); !ok {
 			return invalidData(response)
 		}
-		if err := current.backend.Cancel(data.OperationID); err != nil {
-			return current.backendFailure(response)
-		}
-		response.Result = success(map[string]interface{}{"type": "acknowledged"})
-		return response, false
+		return cancelTooLate(request.RequestID), false
 	case "apply_profile":
 		decoded, ok := decodeProfile(request.Payload.Data)
 		if !ok {
@@ -275,7 +408,7 @@ func (current *session) handle(request Request) (Response, bool) {
 		if current.profile == nil || current.tunnelPrepared {
 			return invalidState(response)
 		}
-		facts, err := current.backend.Prepare(context.Background(), current.profile, request.RequestID)
+		facts, err := current.backend.Prepare(ctx, current.profile, request.RequestID)
 		if err != nil {
 			return current.backendFailure(response)
 		}
@@ -290,7 +423,7 @@ func (current *session) handle(request Request) (Response, bool) {
 		if current.activeTransport == "" {
 			return invalidState(response)
 		}
-		if err := current.backend.Disconnect(context.Background()); err != nil {
+		if err := current.backend.Disconnect(ctx); err != nil {
 			return current.backendFailure(response)
 		}
 		current.activeTransport = ""
@@ -304,7 +437,7 @@ func (current *session) handle(request Request) (Response, bool) {
 		if !current.tunnelPrepared || current.activeTransport != "" {
 			return invalidState(response)
 		}
-		if err := current.backend.Stop(context.Background()); err != nil {
+		if err := current.backend.Stop(ctx); err != nil {
 			return current.backendFailure(response)
 		}
 		current.tunnelPrepared = false
@@ -318,7 +451,7 @@ func (current *session) handle(request Request) (Response, bool) {
 		if current.activeTransport == "" {
 			return invalidState(response)
 		}
-		health, err := current.backend.Health(context.Background())
+		health, err := current.backend.Health(ctx)
 		if err != nil || !health.valid() {
 			return current.backendFailure(response)
 		}
@@ -368,13 +501,5 @@ func failure(code, message string, retryable bool) map[string]interface{} {
 }
 
 func validID(value string) bool {
-	if len(value) < 8 || len(value) > 64 {
-		return false
-	}
-	for _, character := range value {
-		if character > unicode.MaxASCII || !(unicode.IsLetter(character) || unicode.IsDigit(character) || character == '-' || character == '_' || character == '.') {
-			return false
-		}
-	}
-	return true
+	return identifier.Valid(value)
 }

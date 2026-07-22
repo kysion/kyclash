@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{NetworkErrorCode, NetworkProfile, NetworkState};
 
-pub const NETWORK_IPC_PROTOCOL_VERSION: u8 = 1;
+pub const NETWORK_IPC_PROTOCOL_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,7 +13,7 @@ pub struct IpcRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[serde(tag = "type", content = "data", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IpcRequestPayload {
     GetStatus,
     ApplyProfile(Box<NetworkProfile>),
@@ -28,7 +28,7 @@ pub enum IpcRequestPayload {
     Connect,
     Disconnect,
     Cancel {
-        operation_id: String,
+        target_request_id: String,
     },
 }
 
@@ -41,9 +41,10 @@ pub struct IpcResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[serde(tag = "type", content = "data", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IpcResponsePayload {
     Acknowledged,
+    CancelAccepted { target_request_id: String },
     Status(NetworkStatus),
     Health(NetworkHealth),
     TunnelPrepared(TunnelDeviceFacts),
@@ -62,11 +63,23 @@ pub struct TunnelDeviceFacts {
 
 impl TunnelDeviceFacts {
     pub fn validate(&self, instance_id: &str, operation_id: &str) -> Result<(), NetworkErrorCode> {
-        if self.mtu != 1420
-            || !super::route_helper::valid_utun_interface(&self.interface_name)
-            || self.instance_id != instance_id
-            || self.operation_id != operation_id
-        {
+        self.validate_owner(instance_id, operation_id)?;
+        if !super::route_helper::valid_utun_interface(&self.interface_name) {
+            return Err(NetworkErrorCode::AuthenticationFailed);
+        }
+        Ok(())
+    }
+
+    fn validate_sidecar_response(&self, instance_id: &str, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        self.validate_owner(instance_id, operation_id)?;
+        if self.interface_name != "userspace" && !super::route_helper::valid_utun_interface(&self.interface_name) {
+            return Err(NetworkErrorCode::AuthenticationFailed);
+        }
+        Ok(())
+    }
+
+    fn validate_owner(&self, instance_id: &str, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        if self.mtu != 1420 || self.instance_id != instance_id || self.operation_id != operation_id {
             return Err(NetworkErrorCode::AuthenticationFailed);
         }
         Ok(())
@@ -121,15 +134,18 @@ pub struct NetworkStateEvent {
 
 impl IpcRequest {
     pub fn validate_protocol(&self) -> Result<(), NetworkErrorCode> {
-        if self.protocol_version == NETWORK_IPC_PROTOCOL_VERSION && valid_ipc_id(&self.request_id) {
-            Ok(())
-        } else {
-            Err(if self.protocol_version == NETWORK_IPC_PROTOCOL_VERSION {
-                NetworkErrorCode::InvalidConfiguration
-            } else {
-                NetworkErrorCode::UnsupportedProtocolVersion
-            })
+        if self.protocol_version != NETWORK_IPC_PROTOCOL_VERSION {
+            return Err(NetworkErrorCode::UnsupportedProtocolVersion);
         }
+        if !valid_ipc_id(&self.request_id) {
+            return Err(NetworkErrorCode::InvalidConfiguration);
+        }
+        if let IpcRequestPayload::Cancel { target_request_id } = &self.payload
+            && (!valid_ipc_id(target_request_id) || target_request_id == &self.request_id)
+        {
+            return Err(NetworkErrorCode::InvalidConfiguration);
+        }
+        Ok(())
     }
 }
 
@@ -150,9 +166,14 @@ impl IpcResponse {
 }
 
 pub(crate) fn valid_ipc_id(value: &str) -> bool {
-    (8..=64).contains(&value.len())
-        && value
-            .bytes()
+    let bytes = value.as_bytes();
+    (8..=64).contains(&bytes.len())
+        && bytes.first() != Some(&b'.')
+        && bytes.last() != Some(&b'.')
+        && !bytes.windows(2).any(|pair| pair == b"..")
+        && bytes
+            .iter()
+            .copied()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
@@ -181,11 +202,21 @@ fn validate_response_payload(request: &IpcRequest, response: &IpcResponsePayload
             require_status(status, NetworkState::PreparingTunnel, None)
         }
         (IpcRequestPayload::ApplyProfile(_), IpcResponsePayload::Acknowledged)
-        | (IpcRequestPayload::Disconnect, IpcResponsePayload::Acknowledged)
-        | (IpcRequestPayload::Cancel { .. }, IpcResponsePayload::Acknowledged) => Ok(()),
+        | (IpcRequestPayload::Disconnect, IpcResponsePayload::Acknowledged) => Ok(()),
+        (
+            IpcRequestPayload::Cancel { target_request_id },
+            IpcResponsePayload::CancelAccepted {
+                target_request_id: accepted_target,
+            },
+        ) if valid_ipc_id(target_request_id)
+            && target_request_id != &request.request_id
+            && accepted_target == target_request_id =>
+        {
+            Ok(())
+        }
         (IpcRequestPayload::PrepareTunnel, IpcResponsePayload::TunnelPrepared(facts)) => {
             facts
-                .validate(&facts.instance_id, &request.request_id)
+                .validate_sidecar_response(&facts.instance_id, &request.request_id)
                 .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
             if !valid_ipc_id(&facts.instance_id) || (!facts.has_ipv4 && !facts.has_ipv6) {
                 return Err(NetworkErrorCode::InvalidConfiguration);
@@ -265,6 +296,15 @@ fn valid_profile_id(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct CancellationScenario {
+        primary_request: IpcRequest,
+        cancel_request: IpcRequest,
+        primary_response: IpcResponse,
+        cancel_response: IpcResponse,
+    }
+
     #[test]
     fn unknown_protocol_version_fails_closed() {
         let request = IpcRequest {
@@ -285,6 +325,11 @@ mod tests {
             "request:colon",
             "request with spaces",
             "request.{debug}",
+            ".request.test",
+            "request.test.",
+            "request..test",
+            "request/path",
+            r"request\path",
             "request.abcdefghijklmnopqrstuvwxyz.abcdefghijklmnopqrstuvwxyz.123456789",
         ] {
             let request = IpcRequest {
@@ -416,7 +461,7 @@ mod tests {
         let decoded: IpcResponse = serde_json::from_str(&encoded)?;
         assert_eq!(response, decoded);
         let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v1.status.json"))?;
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v2.status.json"))?;
         assert_eq!(serde_json::to_value(&response)?, fixture);
         Ok(())
     }
@@ -434,9 +479,150 @@ mod tests {
             })),
         };
         let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v1.health.json"))?;
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v2.health.json"))?;
         assert_eq!(serde_json::to_value(response)?, fixture);
         Ok(())
+    }
+
+    #[test]
+    fn cancel_wire_format_and_typed_acceptance_match_shared_fixtures() -> anyhow::Result<()> {
+        let request: IpcRequest =
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v2.cancel.json"))?;
+        assert_eq!(request.protocol_version, NETWORK_IPC_PROTOCOL_VERSION);
+        assert_eq!(
+            request.payload,
+            IpcRequestPayload::Cancel {
+                target_request_id: "request.health.123".into(),
+            }
+        );
+        assert_eq!(request.validate_protocol(), Ok(()));
+
+        let response: IpcResponse = serde_json::from_str(include_str!(
+            "../../../schemas/fixtures/network-ipc-v2.cancel-accepted.json"
+        ))?;
+        assert_eq!(response.validate_protocol(&request), Ok(()));
+        assert!(matches!(
+            response.result,
+            Ok(IpcResponsePayload::CancelAccepted { ref target_request_id })
+                if target_request_id == "request.health.123"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn nested_cancel_fields_are_rejected_during_deserialization() {
+        for request in [
+            r#"{"protocol_version":2,"request_id":"cancel.strict.data","payload":{"type":"cancel","data":{"target_request_id":"request.health.123","unknown":true}}}"#,
+            r#"{"protocol_version":2,"request_id":"cancel.strict.outer","payload":{"type":"cancel","data":{"target_request_id":"request.health.123"},"unknown":true}}"#,
+        ] {
+            assert!(serde_json::from_str::<IpcRequest>(request).is_err());
+        }
+        for response in [
+            r#"{"protocol_version":2,"request_id":"cancel.strict.data","result":{"Ok":{"type":"cancel_accepted","data":{"target_request_id":"request.health.123","unknown":true}}}}"#,
+            r#"{"protocol_version":2,"request_id":"cancel.strict.outer","result":{"Ok":{"type":"cancel_accepted","data":{"target_request_id":"request.health.123"},"unknown":true}}}"#,
+        ] {
+            assert!(serde_json::from_str::<IpcResponse>(response).is_err());
+        }
+    }
+
+    #[test]
+    fn v1_wire_fixtures_are_rejection_evidence_only() -> anyhow::Result<()> {
+        let status: IpcResponse =
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v1.status.json"))?;
+        let status_request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.status".into(),
+            payload: IpcRequestPayload::GetStatus,
+        };
+        assert_eq!(
+            status.validate_protocol(&status_request),
+            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+        );
+
+        let health: IpcResponse =
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-ipc-v1.health.json"))?;
+        let health_request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.health".into(),
+            payload: IpcRequestPayload::SampleHealth,
+        };
+        assert_eq!(
+            health.validate_protocol(&health_request),
+            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_race_outcomes_match_shared_fixtures() -> anyhow::Result<()> {
+        let cancel_wins: CancellationScenario = serde_json::from_str(include_str!(
+            "../../../schemas/fixtures/network-ipc-v2.cancel-wins.json"
+        ))?;
+        assert_eq!(
+            cancel_wins
+                .primary_response
+                .validate_protocol(&cancel_wins.primary_request),
+            Ok(())
+        );
+        assert_eq!(
+            cancel_wins
+                .cancel_response
+                .validate_protocol(&cancel_wins.cancel_request),
+            Ok(())
+        );
+        assert!(matches!(
+            cancel_wins.primary_response.result,
+            Err(IpcError {
+                code: NetworkErrorCode::OperationCancelled,
+                retryable: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            cancel_wins.cancel_response.result,
+            Ok(IpcResponsePayload::CancelAccepted { ref target_request_id })
+                if target_request_id == &cancel_wins.primary_request.request_id
+        ));
+
+        let completion_wins: CancellationScenario = serde_json::from_str(include_str!(
+            "../../../schemas/fixtures/network-ipc-v2.completion-wins.json"
+        ))?;
+        assert_eq!(
+            completion_wins
+                .primary_response
+                .validate_protocol(&completion_wins.primary_request),
+            Ok(())
+        );
+        assert_eq!(
+            completion_wins
+                .cancel_response
+                .validate_protocol(&completion_wins.cancel_request),
+            Ok(())
+        );
+        assert!(completion_wins.primary_response.result.is_ok());
+        assert!(matches!(
+            completion_wins.cancel_response.result,
+            Err(IpcError {
+                code: NetworkErrorCode::InvalidStateTransition,
+                retryable: false,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn cancel_requires_a_distinct_valid_wire_target() {
+        for target_request_id in ["short", "cancel.same"] {
+            let request = IpcRequest {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                request_id: "cancel.same".into(),
+                payload: IpcRequestPayload::Cancel {
+                    target_request_id: target_request_id.into(),
+                },
+            };
+            assert_eq!(request.validate_protocol(), Err(NetworkErrorCode::InvalidConfiguration));
+        }
     }
 
     #[test]
@@ -468,5 +654,37 @@ mod tests {
             facts.validate("instance.other", "request.prepare"),
             Err(NetworkErrorCode::AuthenticationFailed)
         );
+    }
+
+    #[test]
+    fn userspace_tunnel_is_valid_only_at_the_sidecar_response_boundary() {
+        let facts = TunnelDeviceFacts {
+            interface_name: "userspace".into(),
+            mtu: 1420,
+            has_ipv4: true,
+            has_ipv6: true,
+            instance_id: "instance.test".into(),
+            operation_id: "request.prepare".into(),
+        };
+        assert_eq!(
+            facts.validate_sidecar_response("instance.test", "request.prepare"),
+            Ok(())
+        );
+        assert_eq!(
+            facts.validate("instance.test", "request.prepare"),
+            Err(NetworkErrorCode::AuthenticationFailed)
+        );
+
+        let request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.prepare".into(),
+            payload: IpcRequestPayload::PrepareTunnel,
+        };
+        let response = IpcResponse {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            result: Ok(IpcResponsePayload::TunnelPrepared(facts)),
+        };
+        assert_eq!(response.validate_protocol(&request), Ok(()));
     }
 }

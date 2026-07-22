@@ -56,13 +56,30 @@ func TestQUICCarrierAuthenticatesAndReassemblesLargePacket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	clientReceived := make(chan []byte, 1)
+	clientReceiveErr := make(chan error, 1)
+	go func() {
+		value, receiveErr := client.Receive(ctx)
+		if receiveErr != nil {
+			clientReceiveErr <- receiveErr
+			return
+		}
+		clientReceived <- value
+	}()
+	if latency, err := client.Probe(ctx); err != nil || latency < 0 {
+		t.Fatalf("live QUIC ping/pong failed: latency=%v err=%v", latency, err)
+	}
 	packet := bytes.Repeat([]byte{1, 2, 3}, 1_000)
 	if err := client.Send(ctx, packet); err != nil {
 		t.Fatal(err)
 	}
-	received, err := client.Receive(ctx)
-	if err != nil {
+	var received []byte
+	select {
+	case received = <-clientReceived:
+	case err = <-clientReceiveErr:
 		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 	if !bytes.Equal(received, packet) {
 		t.Fatal("reassembled packet mismatch")

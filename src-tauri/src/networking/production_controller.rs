@@ -65,15 +65,7 @@ impl AsyncProductionRuntime for AsyncStdioSidecarRuntime {
     }
 
     async fn request(&mut self, request: IpcRequest, cancel: Arc<AtomicBool>) -> Result<IpcResponse, NetworkErrorCode> {
-        if cancel.load(Ordering::Acquire) {
-            return Err(NetworkErrorCode::OperationCancelled);
-        }
-        let result = tokio::task::block_in_place(|| self.inner.request(&request));
-        if cancel.load(Ordering::Acquire) {
-            Err(NetworkErrorCode::OperationCancelled)
-        } else {
-            result
-        }
+        tokio::task::block_in_place(|| self.inner.request_cancellable(&request, cancel.as_ref()))
     }
 
     async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
@@ -112,6 +104,7 @@ enum Command {
     Request {
         operation_id: String,
         request: IpcRequest,
+        cancel: Arc<AtomicBool>,
         timeout: Duration,
         response: oneshot::Sender<Result<IpcResponse, NetworkErrorCode>>,
     },
@@ -121,6 +114,7 @@ enum Command {
     Health {
         operation_id: String,
         request: IpcRequest,
+        cancel: Arc<AtomicBool>,
         timeout: Duration,
         response: oneshot::Sender<Result<IpcResponse, NetworkErrorCode>>,
     },
@@ -133,9 +127,16 @@ enum Command {
 }
 
 #[derive(Clone)]
+struct CancellationRegistration {
+    request_id: String,
+    cancellable: bool,
+    token: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
 pub struct ProductionControllerHandle {
     commands: mpsc::Sender<Command>,
-    cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    cancellations: Arc<Mutex<HashMap<String, CancellationRegistration>>>,
 }
 
 impl ProductionControllerHandle {
@@ -157,27 +158,38 @@ impl ProductionControllerHandle {
         if operation_id.is_empty() || timeout.is_zero() {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
-        let (send, receive) = oneshot::channel();
-        self.commands
-            .send(Command::Request {
-                operation_id,
-                request,
-                timeout,
-                response: send,
-            })
+        request.validate_protocol()?;
+        let permit = self
+            .commands
+            .reserve()
             .await
             .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
-        receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+        let cancel = self.register_cancellation(&operation_id, &request)?;
+        let (send, receive) = oneshot::channel();
+        permit.send(Command::Request {
+            operation_id: operation_id.clone(),
+            request,
+            cancel: Arc::clone(&cancel),
+            timeout,
+            response: send,
+        });
+        let result = receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable);
+        self.remove_cancellation(&operation_id, &cancel);
+        result?
     }
 
     pub fn cancel(&self, operation_id: &str) -> Result<(), NetworkErrorCode> {
-        let token = self
+        let registration = self
             .cancellations
             .lock()
             .get(operation_id)
             .cloned()
             .ok_or(NetworkErrorCode::OperationCancelled)?;
-        token.store(true, Ordering::Release);
+        if !registration.cancellable {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        debug_assert!(!registration.request_id.is_empty());
+        registration.token.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -196,20 +208,30 @@ impl ProductionControllerHandle {
         request: IpcRequest,
         timeout: Duration,
     ) -> Result<IpcResponse, NetworkErrorCode> {
-        if !matches!(request.payload, super::IpcRequestPayload::SampleHealth) {
+        if operation_id.is_empty()
+            || timeout.is_zero()
+            || !matches!(&request.payload, super::IpcRequestPayload::SampleHealth)
+        {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
-        let (send, receive) = oneshot::channel();
-        self.commands
-            .send(Command::Health {
-                operation_id,
-                request,
-                timeout,
-                response: send,
-            })
+        request.validate_protocol()?;
+        let permit = self
+            .commands
+            .reserve()
             .await
             .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
-        receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+        let cancel = self.register_cancellation(&operation_id, &request)?;
+        let (send, receive) = oneshot::channel();
+        permit.send(Command::Health {
+            operation_id: operation_id.clone(),
+            request,
+            cancel: Arc::clone(&cancel),
+            timeout,
+            response: send,
+        });
+        let result = receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable);
+        self.remove_cancellation(&operation_id, &cancel);
+        result?
     }
 
     pub async fn diagnostics(&self) -> Result<Vec<ProductionEvent>, NetworkErrorCode> {
@@ -228,6 +250,39 @@ impl ProductionControllerHandle {
             .await
             .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
         receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+    }
+
+    fn register_cancellation(
+        &self,
+        operation_id: &str,
+        request: &IpcRequest,
+    ) -> Result<Arc<AtomicBool>, NetworkErrorCode> {
+        let token = Arc::new(AtomicBool::new(false));
+        let registration = CancellationRegistration {
+            request_id: request.request_id.clone(),
+            cancellable: matches!(
+                &request.payload,
+                super::IpcRequestPayload::ConnectTransport { .. } | super::IpcRequestPayload::SampleHealth
+            ),
+            token: Arc::clone(&token),
+        };
+        let mut cancellations = self.cancellations.lock();
+        if cancellations.contains_key(operation_id) {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        cancellations.insert(operation_id.to_owned(), registration);
+        drop(cancellations);
+        Ok(token)
+    }
+
+    fn remove_cancellation(&self, operation_id: &str, token: &Arc<AtomicBool>) {
+        let mut cancellations = self.cancellations.lock();
+        if cancellations
+            .get(operation_id)
+            .is_some_and(|registration| Arc::ptr_eq(&registration.token, token))
+        {
+            cancellations.remove(operation_id);
+        }
     }
 }
 
@@ -273,7 +328,7 @@ struct ProductionController<R> {
     expected_auth_proof: String,
     state: SidecarLifecycleState,
     receiver: mpsc::Receiver<Command>,
-    cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    cancellations: Arc<Mutex<HashMap<String, CancellationRegistration>>>,
     events: VecDeque<ProductionEvent>,
     next_sequence: u64,
     crashes: u8,
@@ -291,10 +346,15 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                 Command::Request {
                     operation_id,
                     request,
+                    cancel,
                     timeout,
                     response,
                 } => {
-                    let _ = response.send(self.execute(operation_id, request, timeout).await);
+                    let result = self
+                        .execute(operation_id.clone(), request, Arc::clone(&cancel), timeout)
+                        .await;
+                    self.remove_cancellation(&operation_id, &cancel);
+                    let _ = response.send(result);
                 }
                 Command::Poll { response } => {
                     let result = self.poll().await;
@@ -303,10 +363,15 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                 Command::Health {
                     operation_id,
                     request,
+                    cancel,
                     timeout,
                     response,
                 } => {
-                    let _ = response.send(self.execute(operation_id, request, timeout).await);
+                    let result = self
+                        .execute(operation_id.clone(), request, Arc::clone(&cancel), timeout)
+                        .await;
+                    self.remove_cancellation(&operation_id, &cancel);
+                    let _ = response.send(result);
                 }
                 Command::Diagnostics { response } => {
                     let _ = response.send(self.events.iter().cloned().collect());
@@ -332,10 +397,16 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             self.state = SidecarLifecycleState::Stopped;
             self.record(ProductionEventKind::Failed, None, Some(*error));
         })?;
-        if handshake.protocol_version != NETWORK_IPC_PROTOCOL_VERSION
-            || handshake.instance_id != self.context.instance_id
-            || handshake.auth_proof != self.expected_auth_proof
-        {
+        if handshake.protocol_version != NETWORK_IPC_PROTOCOL_VERSION {
+            let _ = self.stop_runtime_bounded(None).await;
+            self.record(
+                ProductionEventKind::Failed,
+                None,
+                Some(NetworkErrorCode::UnsupportedProtocolVersion),
+            );
+            return Err(NetworkErrorCode::UnsupportedProtocolVersion);
+        }
+        if handshake.instance_id != self.context.instance_id || handshake.auth_proof != self.expected_auth_proof {
             let _ = self.stop_runtime_bounded(None).await;
             self.record(
                 ProductionEventKind::Failed,
@@ -357,18 +428,14 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         &mut self,
         operation_id: String,
         request: IpcRequest,
+        cancel: Arc<AtomicBool>,
         timeout: Duration,
     ) -> Result<IpcResponse, NetworkErrorCode> {
-        if self.state != SidecarLifecycleState::Running || self.cancellations.lock().contains_key(&operation_id) {
+        if self.state != SidecarLifecycleState::Running {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
         request.validate_protocol()?;
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.cancellations
-            .lock()
-            .insert(operation_id.clone(), Arc::clone(&cancel));
         let result = tokio::time::timeout(timeout, self.runtime.request(request.clone(), cancel)).await;
-        self.cancellations.lock().remove(&operation_id);
         match result {
             Err(_) => {
                 let _ = self.stop_runtime_bounded(Some(operation_id.clone())).await;
@@ -382,7 +449,11 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             Ok(Err(error)) => {
                 let kind = if error == NetworkErrorCode::OperationCancelled {
                     ProductionEventKind::Cancelled
+                } else if error == NetworkErrorCode::OperationTimedOut {
+                    let _ = self.stop_runtime_bounded(Some(operation_id.clone())).await;
+                    ProductionEventKind::TimedOut
                 } else {
+                    let _ = self.stop_runtime_bounded(Some(operation_id.clone())).await;
                     ProductionEventKind::Failed
                 };
                 self.record(kind, Some(operation_id), Some(error));
@@ -394,7 +465,12 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                     self.record(ProductionEventKind::Failed, Some(operation_id), Some(error));
                     return Err(error);
                 }
-                self.record(ProductionEventKind::RequestCompleted, Some(operation_id), None);
+                let response_error = response.result.as_ref().err().map(|error| error.code);
+                self.record(
+                    ProductionEventKind::RequestCompleted,
+                    Some(operation_id),
+                    response_error,
+                );
                 Ok(response)
             }
         }
@@ -412,7 +488,15 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         if self.state != SidecarLifecycleState::Running {
             return Ok(self.state);
         }
-        match self.runtime.status().await? {
+        let runtime_status = match self.runtime.status().await {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = self.stop_runtime_bounded(None).await;
+                self.record(ProductionEventKind::Failed, None, Some(error));
+                return Err(error);
+            }
+        };
+        match runtime_status {
             SidecarProcessStatus::Running => {
                 // A successfully restarted process must be observed alive on a
                 // later status poll before its consecutive-crash history is
@@ -456,12 +540,7 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                 self.record(ProductionEventKind::Stopped, None, None);
                 Ok(())
             }
-            Err(error) => {
-                if error != NetworkErrorCode::OperationTimedOut {
-                    self.record(ProductionEventKind::Stopped, None, Some(error));
-                }
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
@@ -474,13 +553,11 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             Ok(result) => result,
             Err(_) => Err(NetworkErrorCode::OperationTimedOut),
         };
-        self.state = SidecarLifecycleState::Stopped;
-        if result == Err(NetworkErrorCode::OperationTimedOut) {
-            self.record(
-                ProductionEventKind::Stopped,
-                operation_id,
-                Some(NetworkErrorCode::OperationTimedOut),
-            );
+        if let Err(error) = result {
+            self.state = SidecarLifecycleState::CrashLoop;
+            self.record(ProductionEventKind::Failed, operation_id, Some(error));
+        } else {
+            self.state = SidecarLifecycleState::Stopped;
         }
         result
     }
@@ -497,6 +574,16 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         });
         self.next_sequence = self.next_sequence.saturating_add(1);
     }
+
+    fn remove_cancellation(&self, operation_id: &str, token: &Arc<AtomicBool>) {
+        let mut cancellations = self.cancellations.lock();
+        if cancellations
+            .get(operation_id)
+            .is_some_and(|registration| Arc::ptr_eq(&registration.token, token))
+        {
+            cancellations.remove(operation_id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -509,10 +596,13 @@ mod tests {
     #[derive(Clone, Copy)]
     enum RequestMode {
         Success,
+        DelayedSuccess,
         WaitForCancel,
         Never,
         Stale,
         WrongVersion,
+        WrongHandshakeVersion,
+        StatusFailure,
         Failure,
     }
 
@@ -524,12 +614,53 @@ mod tests {
         hang_stop: bool,
     }
 
+    struct QueueBlockingRuntime {
+        request_entries: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl AsyncProductionRuntime for QueueBlockingRuntime {
+        async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
+            Ok(SidecarHandshake {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                instance_id: context.instance_id.clone(),
+                auth_proof: "proof.test".into(),
+            })
+        }
+
+        async fn request(
+            &mut self,
+            _request: IpcRequest,
+            cancel: Arc<AtomicBool>,
+        ) -> Result<IpcResponse, NetworkErrorCode> {
+            self.request_entries.fetch_add(1, Ordering::AcqRel);
+            loop {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(NetworkErrorCode::OperationCancelled);
+                }
+                tokio::task::yield_now().await;
+            }
+        }
+
+        async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
+            Ok(SidecarProcessStatus::Running)
+        }
+
+        async fn stop(&mut self) -> Result<(), NetworkErrorCode> {
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl AsyncProductionRuntime for FakeRuntime {
         async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
             self.instance_id.clone_from(&context.instance_id);
             Ok(SidecarHandshake {
-                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                protocol_version: if matches!(self.mode, RequestMode::WrongHandshakeVersion) {
+                    NETWORK_IPC_PROTOCOL_VERSION - 1
+                } else {
+                    NETWORK_IPC_PROTOCOL_VERSION
+                },
                 instance_id: context.instance_id.clone(),
                 auth_proof: "proof.test".into(),
             })
@@ -552,7 +683,12 @@ mod tests {
                     unreachable!()
                 }
                 RequestMode::Failure => return Err(NetworkErrorCode::SidecarUnavailable),
-                RequestMode::Success | RequestMode::Stale | RequestMode::WrongVersion => {}
+                RequestMode::DelayedSuccess => tokio::time::sleep(Duration::from_millis(50)).await,
+                RequestMode::Success
+                | RequestMode::Stale
+                | RequestMode::WrongVersion
+                | RequestMode::WrongHandshakeVersion
+                | RequestMode::StatusFailure => {}
             }
             let result = match request.payload {
                 IpcRequestPayload::GetStatus => Ok(IpcResponsePayload::Status(super::super::NetworkStatus {
@@ -608,8 +744,9 @@ mod tests {
                     active_transport: Some(super::super::TransportKind::Quic),
                     last_error: None,
                 })),
-                IpcRequestPayload::Disconnect | IpcRequestPayload::Cancel { .. } => {
-                    Ok(IpcResponsePayload::Acknowledged)
+                IpcRequestPayload::Disconnect => Ok(IpcResponsePayload::Acknowledged),
+                IpcRequestPayload::Cancel { target_request_id } => {
+                    Ok(IpcResponsePayload::CancelAccepted { target_request_id })
                 }
             };
             Ok(IpcResponse {
@@ -628,6 +765,9 @@ mod tests {
         }
 
         async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
+            if matches!(self.mode, RequestMode::StatusFailure) {
+                return Err(NetworkErrorCode::SidecarUnavailable);
+            }
             Ok(if self.exited.load(Ordering::Acquire) {
                 SidecarProcessStatus::Exited { success: false }
             } else {
@@ -649,6 +789,16 @@ mod tests {
             protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
             request_id: request_id.into(),
             payload: IpcRequestPayload::GetStatus,
+        }
+    }
+
+    fn connect_request(request_id: &str) -> IpcRequest {
+        IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: request_id.into(),
+            payload: IpcRequestPayload::ConnectTransport {
+                transport: super::super::TransportKind::Quic,
+            },
         }
     }
 
@@ -758,15 +908,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_reaches_the_only_inflight_operation() -> Result<(), NetworkErrorCode> {
+    async fn cancellation_reaches_the_exact_queued_or_inflight_health_operation() -> Result<(), NetworkErrorCode> {
         let (handle, _) = controller(RequestMode::WaitForCancel);
         handle.start().await?;
         let requester = handle.clone();
         let pending = tokio::spawn(async move {
             requester
-                .request(
+                .sample_health(
                     "operation.cancel".into(),
-                    request("request.cancel"),
+                    IpcRequest {
+                        protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                        request_id: "request.cancel".into(),
+                        payload: IpcRequestPayload::SampleHealth,
+                    },
                     Duration::from_secs(2),
                 )
                 .await
@@ -781,6 +935,160 @@ mod tests {
             pending.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?,
             Err(NetworkErrorCode::OperationCancelled)
         );
+        handle.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn aborting_a_queue_blocked_sender_leaves_no_ghost_cancellation_registration() -> Result<(), NetworkErrorCode>
+    {
+        let request_entries = Arc::new(AtomicUsize::new(0));
+        let context =
+            SidecarLaunchContext::new("production.queue-test".into(), vec![1; 32]).with_private_key(vec![2; 32]);
+        let handle = spawn_production_controller(
+            QueueBlockingRuntime {
+                request_entries: Arc::clone(&request_entries),
+            },
+            context,
+            "proof.test".into(),
+        );
+        handle.start().await?;
+
+        let blocker_handle = handle.clone();
+        let blocker = tokio::spawn(async move {
+            blocker_handle
+                .request(
+                    "operation.queue-blocker".into(),
+                    connect_request("request.queue-blocker"),
+                    Duration::from_secs(2),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while request_entries.load(Ordering::Acquire) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| NetworkErrorCode::OperationTimedOut)?;
+
+        let mut queued_responses = Vec::with_capacity(COMMAND_CAPACITY);
+        for _ in 0..COMMAND_CAPACITY {
+            let (response, receive) = oneshot::channel();
+            handle
+                .commands
+                .try_send(Command::Poll { response })
+                .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            queued_responses.push(receive);
+        }
+        assert_eq!(handle.commands.capacity(), 0, "command queue must be full");
+
+        let blocked_handle = handle.clone();
+        let (entered_send, entered_receive) = oneshot::channel();
+        let blocked_sender = tokio::spawn(async move {
+            let _ = entered_send.send(());
+            blocked_handle
+                .request(
+                    "operation.queue-abort".into(),
+                    connect_request("request.queue-abort.first"),
+                    Duration::from_secs(2),
+                )
+                .await
+        });
+        entered_receive
+            .await
+            .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+        tokio::task::yield_now().await;
+        assert!(
+            !blocked_sender.is_finished(),
+            "sender must be blocked on queue capacity"
+        );
+        assert!(
+            !handle.cancellations.lock().contains_key("operation.queue-abort"),
+            "a sender waiting for queue capacity must not register cancellation"
+        );
+
+        blocked_sender.abort();
+        let join_error = match blocked_sender.await {
+            Err(error) => error,
+            Ok(_) => return Err(NetworkErrorCode::InvalidStateTransition),
+        };
+        assert!(join_error.is_cancelled());
+        assert!(
+            !handle.cancellations.lock().contains_key("operation.queue-abort"),
+            "aborted sender must not leave a ghost cancellation registration"
+        );
+
+        handle.cancel("operation.queue-blocker")?;
+        assert_eq!(
+            blocker.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?,
+            Err(NetworkErrorCode::OperationCancelled)
+        );
+        for response in queued_responses {
+            assert_eq!(
+                response.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)??,
+                SidecarLifecycleState::Running
+            );
+        }
+
+        let retry_handle = handle.clone();
+        let retry = tokio::spawn(async move {
+            retry_handle
+                .request(
+                    "operation.queue-abort".into(),
+                    connect_request("request.queue-abort.retry"),
+                    Duration::from_secs(2),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while request_entries.load(Ordering::Acquire) != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| NetworkErrorCode::OperationTimedOut)?;
+        assert!(handle.cancellations.lock().contains_key("operation.queue-abort"));
+        handle.cancel("operation.queue-abort")?;
+        assert_eq!(
+            retry.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?,
+            Err(NetworkErrorCode::OperationCancelled)
+        );
+        assert!(!handle.cancellations.lock().contains_key("operation.queue-abort"));
+        handle.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn noncancellable_request_rejects_cancel_without_killing_runtime() -> Result<(), NetworkErrorCode> {
+        let (handle, stopped) = controller(RequestMode::DelayedSuccess);
+        handle.start().await?;
+        let requester = handle.clone();
+        let pending = tokio::spawn(async move {
+            requester
+                .request(
+                    "operation.noncancel".into(),
+                    request("request.noncancel"),
+                    Duration::from_secs(1),
+                )
+                .await
+        });
+        let mut observed_registration = false;
+        for _ in 0..100 {
+            match handle.cancel("operation.noncancel") {
+                Err(NetworkErrorCode::OperationCancelled) => tokio::task::yield_now().await,
+                result => {
+                    assert_eq!(result, Err(NetworkErrorCode::InvalidStateTransition));
+                    observed_registration = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            observed_registration,
+            "request was never registered for cancellation policy"
+        );
+        assert!(pending.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?.is_ok());
+        assert_eq!(stopped.load(Ordering::Acquire), 0);
+        assert_eq!(handle.poll().await?, SidecarLifecycleState::Running);
         handle.shutdown().await
     }
 
@@ -804,14 +1112,49 @@ mod tests {
                     .await,
                 Err(expected)
             );
-            if matches!(
-                mode,
-                RequestMode::Never | RequestMode::Stale | RequestMode::WrongVersion
-            ) {
-                assert_eq!(stopped.load(Ordering::Acquire), 1);
-            }
+            assert_eq!(stopped.load(Ordering::Acquire), 1);
+            assert_eq!(handle.poll().await?, SidecarLifecycleState::Stopped);
+            assert_eq!(
+                handle
+                    .request(
+                        "operation.after-fatal".into(),
+                        request("request.after-fatal"),
+                        Duration::from_secs(1)
+                    )
+                    .await,
+                Err(NetworkErrorCode::InvalidStateTransition)
+            );
+            assert_eq!(stopped.load(Ordering::Acquire), 1);
             let _ = handle.shutdown().await;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handshake_and_status_protocol_failures_stop_before_any_further_ipc() -> Result<(), NetworkErrorCode> {
+        let (wrong_handshake, stopped) = controller(RequestMode::WrongHandshakeVersion);
+        assert_eq!(
+            wrong_handshake.start().await,
+            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+        );
+        assert_eq!(stopped.load(Ordering::Acquire), 1);
+        assert_eq!(wrong_handshake.poll().await?, SidecarLifecycleState::Stopped);
+
+        let (status_failure, stopped) = controller(RequestMode::StatusFailure);
+        status_failure.start().await?;
+        assert_eq!(status_failure.poll().await, Err(NetworkErrorCode::SidecarUnavailable));
+        assert_eq!(stopped.load(Ordering::Acquire), 1);
+        assert_eq!(status_failure.poll().await?, SidecarLifecycleState::Stopped);
+        assert_eq!(
+            status_failure
+                .request(
+                    "operation.after-status-fatal".into(),
+                    request("request.after-status-fatal"),
+                    Duration::from_secs(1),
+                )
+                .await,
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
         Ok(())
     }
 
@@ -855,18 +1198,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hanging_runtime_stop_is_bounded_and_recorded_as_stopped() -> Result<(), NetworkErrorCode> {
+    async fn hanging_runtime_stop_is_bounded_and_never_claims_reusable_stopped() -> Result<(), NetworkErrorCode> {
         let (handle, stopped, _) = controller_with_stop(RequestMode::Success, false, true, Duration::from_millis(20));
         handle.start().await?;
         let shutdown = tokio::time::timeout(Duration::from_secs(1), handle.shutdown())
             .await
             .map_err(|_| NetworkErrorCode::OperationTimedOut)?;
         assert_eq!(shutdown, Err(NetworkErrorCode::OperationTimedOut));
-        assert_eq!(handle.poll().await?, SidecarLifecycleState::Stopped);
+        assert_eq!(handle.poll().await?, SidecarLifecycleState::CrashLoop);
         assert_eq!(stopped.load(Ordering::Acquire), 1);
         assert!(handle.diagnostics().await?.iter().any(|event| {
-            event.kind == ProductionEventKind::Stopped && event.error == Some(NetworkErrorCode::OperationTimedOut)
+            event.kind == ProductionEventKind::Failed && event.error == Some(NetworkErrorCode::OperationTimedOut)
         }));
+        assert_eq!(handle.start().await, Err(NetworkErrorCode::InvalidStateTransition));
         Ok(())
     }
 
@@ -887,6 +1231,8 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod stdio_adapter_tests {
+    #[cfg(feature = "networking-dev")]
+    use std::time::{Duration, Instant};
     use std::{
         path::PathBuf,
         sync::{
@@ -900,6 +1246,8 @@ mod stdio_adapter_tests {
         NetworkErrorCode, SidecarLaunchContext, StdioSidecarRuntime,
     };
     use crate::networking::IpcRequestPayload;
+    #[cfg(feature = "networking-dev")]
+    use crate::networking::{IpcResponsePayload, NetworkState, TransportKind};
 
     fn context() -> SidecarLaunchContext {
         SidecarLaunchContext::new("adapter.test".into(), vec![0x11; 32]).with_private_key(vec![0x22; 32])
@@ -922,18 +1270,130 @@ mod stdio_adapter_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn observes_cancellation_before_entering_blocking_stdio_call() {
-        let mut runtime = runtime();
+    async fn preloaded_cancellation_only_short_circuits_cancellable_requests() {
         let cancel = Arc::new(AtomicBool::new(true));
-        let request = IpcRequest {
+
+        let mut cancellable_runtime = runtime();
+        let cancellable_request = IpcRequest {
             protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
-            request_id: "request.cancel".into(),
+            request_id: "request.cancel.connect".into(),
+            payload: IpcRequestPayload::ConnectTransport {
+                transport: crate::networking::TransportKind::Quic,
+            },
+        };
+        assert_eq!(
+            cancellable_runtime
+                .request(cancellable_request, Arc::clone(&cancel))
+                .await,
+            Err(NetworkErrorCode::OperationCancelled)
+        );
+
+        let mut noncancellable_runtime = runtime();
+        let noncancellable_request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.cancel.status".into(),
             payload: IpcRequestPayload::GetStatus,
         };
         assert_eq!(
-            runtime.request(request, Arc::clone(&cancel)).await,
-            Err(NetworkErrorCode::OperationCancelled)
+            noncancellable_runtime
+                .request(noncancellable_request, Arc::clone(&cancel))
+                .await,
+            Err(NetworkErrorCode::SidecarUnavailable)
         );
         assert!(cancel.load(Ordering::Acquire));
+    }
+
+    #[cfg(feature = "networking-dev")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_reaches_actual_blocked_child_and_preserves_correlation() -> Result<(), NetworkErrorCode> {
+        let Ok(executable) = std::env::var("KYCLASH_NETWORK_LAB_SIDECAR_BIN") else {
+            return Ok(());
+        };
+        let context =
+            SidecarLaunchContext::new("adapter_actual_cancel".into(), vec![0x31; 32]).with_private_key(vec![0x32; 32]);
+        let mut stdio = StdioSidecarRuntime::new(executable.into()).with_response_timeout(Duration::from_secs(5));
+        let handshake = tokio::task::block_in_place(|| stdio.start_lab(&context))?;
+        let mut profile = handshake.lab_profile;
+        profile
+            .transports
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.transport == TransportKind::Quic)
+            .ok_or(NetworkErrorCode::InvalidConfiguration)?
+            .url = handshake.cancel_endpoint;
+        profile.validate()?;
+
+        let mut runtime = AsyncStdioSidecarRuntime::new(stdio);
+        for (request_id, payload) in [
+            (
+                "request.adapter.profile",
+                IpcRequestPayload::ApplyProfile(Box::new(profile)),
+            ),
+            ("request.adapter.prepare", IpcRequestPayload::PrepareTunnel),
+        ] {
+            let response = runtime
+                .request(
+                    IpcRequest {
+                        protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                        request_id: request_id.into(),
+                        payload,
+                    },
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .await?;
+            assert!(response.result.is_ok());
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_from_controller = Arc::clone(&cancel);
+        let canceller = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_from_controller.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let cancelled = runtime
+            .request(
+                IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: "request.adapter.connect".into(),
+                    payload: IpcRequestPayload::ConnectTransport {
+                        transport: TransportKind::Quic,
+                    },
+                },
+                cancel,
+            )
+            .await;
+        canceller.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+        assert_eq!(cancelled, Err(NetworkErrorCode::OperationCancelled));
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        let after_cancel = runtime
+            .request(
+                IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: "request.adapter.status".into(),
+                    payload: IpcRequestPayload::GetStatus,
+                },
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await?;
+        assert!(matches!(
+            after_cancel.result,
+            Ok(IpcResponsePayload::Status(status))
+                if status.state == NetworkState::PreparingTunnel && status.active_transport.is_none()
+        ));
+
+        let stopped = runtime
+            .request(
+                IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: "request.adapter.stop".into(),
+                    payload: IpcRequestPayload::StopTunnel,
+                },
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await?;
+        assert!(stopped.result.is_ok());
+        runtime.stop().await
     }
 }

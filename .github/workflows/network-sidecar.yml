@@ -7,6 +7,11 @@ on:
       - '.github/workflows/network-sidecar.yml'
       - 'docs/architecture/kyclash-network-runtime-v1.md'
       - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
+      - 'docs/roadmap/kyclash-sidecar-stdio-*.md'
+      - 'schemas/fixtures/network-ipc-*.json'
+      - 'schemas/fixtures/network-sidecar-bootstrap-*.json'
+      - 'schemas/fixtures/network-sidecar-handshake-*.json'
+      - 'src/types/networking.ts'
       - 'scripts/build-network-sidecar-macos.mjs'
       - 'scripts/prepare-macos-vm-route-fixture.sh'
       - 'scripts/macos-vm-route-helper-v2-matrix.sh'
@@ -24,6 +29,13 @@ on:
     paths:
       - 'network-sidecar/**'
       - '.github/workflows/network-sidecar.yml'
+      - 'docs/architecture/kyclash-network-runtime-v1.md'
+      - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
+      - 'docs/roadmap/kyclash-sidecar-stdio-*.md'
+      - 'schemas/fixtures/network-ipc-*.json'
+      - 'schemas/fixtures/network-sidecar-bootstrap-*.json'
+      - 'schemas/fixtures/network-sidecar-handshake-*.json'
+      - 'src/types/networking.ts'
       - 'scripts/build-network-sidecar-macos.mjs'
       - 'scripts/prepare-macos-vm-route-fixture.sh'
       - 'scripts/macos-vm-route-helper-v2-matrix.sh'
@@ -188,6 +200,7 @@ jobs:
 
   verify:
     runs-on: macos-15
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: network-sidecar
@@ -204,10 +217,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.95.0'
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.18.0'
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        working-directory: ${{ github.workspace }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify TypeScript IPC ownership
+        working-directory: ${{ github.workspace }}
+        run: pnpm typecheck
+
+      - name: Verify Rust protocol-v2 ownership
+        working-directory: ${{ github.workspace }}
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+          cargo test -p clash-verge --all-features --lib
+          cargo clippy -p clash-verge --all-targets --all-features -- -D warnings
 
       - name: Verify module and formatting
         run: |
@@ -407,6 +445,10 @@ jobs:
             KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
               cargo test --manifest-path ../src-tauri/Cargo.toml --features networking-dev --lib \
                 networking::stdio_runtime::unix::tests:: -- --test-threads=1
+            KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \
+              cargo test --manifest-path ../src-tauri/Cargo.toml --all-features --lib \
+                networking::production_controller::stdio_adapter_tests::cancellation_reaches_actual_blocked_child_and_preserves_correlation \
+                -- --exact --test-threads=1
             for cycle in 1 2 3; do
               echo "[phase] carrier repeat ${cycle}"
               KYCLASH_NETWORK_LAB_SIDECAR_BIN="$PWD/build/actual-child/kyclash-network-sidecar-lab" \

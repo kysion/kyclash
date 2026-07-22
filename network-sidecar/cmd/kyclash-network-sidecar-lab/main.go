@@ -30,6 +30,10 @@ type labHandshake struct {
 }
 
 func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
+	return runWithProbeAddress(arguments, stdin, stdout, netip.MustParseAddrPort(labserver.ProbeAddress))
+}
+
+func runWithProbeAddress(arguments []string, stdin io.Reader, stdout io.Writer, probeAddress netip.AddrPort) error {
 	if len(arguments) != 0 {
 		return errors.New("command-line arguments are not accepted")
 	}
@@ -61,7 +65,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	if err := networkProfile.Validate(); err != nil {
 		return err
 	}
-	backend, err := userspace.NewLab(config.PrivateKey, cluster.Roots(), netip.MustParseAddrPort(labserver.ProbeAddress), config.InstanceID)
+	backend, err := userspace.NewLab(config.PrivateKey, cluster.Roots(), probeAddress, config.InstanceID)
 	if err != nil {
 		return err
 	}
@@ -71,7 +75,11 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer) error {
 	if err := json.NewEncoder(stdout).Encode(response); err != nil {
 		return fmt.Errorf("write handshake: %w", err)
 	}
-	return ipc.ServeWithBackend(reader, stdout, backend)
+	readerCloser, ok := stdin.(io.Closer)
+	if !ok {
+		readerCloser = io.NopCloser(stdin)
+	}
+	return ipc.ServeWithBackend(reader, readerCloser, stdout, backend)
 }
 
 func discardPackets(ctx context.Context, connection net.PacketConn) {

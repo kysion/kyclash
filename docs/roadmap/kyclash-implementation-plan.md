@@ -342,10 +342,13 @@ Completed in the current workspace:
   byte-identical, records SHA-256 and embedded module metadata, generates a
   license-aware CycloneDX SBOM with a pinned tool, and retains evidence without
   publishing or bundling the sidecar.
-- Kept the production sidecar alive after authentication with the exact Rust v1
-  request/response envelope. Status and disconnect work, malformed or unknown
-  requests fail closed, and profile/connect/cancel return a structured
-  `sidecar_unavailable` error until real networking gates are explicitly enabled.
+- At the historical N0 checkpoint, kept the production sidecar alive after
+  authentication with the exact Rust v1 request/response envelope. Status and
+  disconnect worked, malformed or unknown requests failed closed, and
+  profile/connect/cancel returned a structured `sidecar_unavailable` error
+  until real networking gates were explicitly enabled. The locked protocol-v2
+  control review now supersedes that wire version without rewriting the
+  historical evidence.
 - Added a shared status-response fixture asserted by both Rust and Go tests so
   changes to result tagging, state spelling, nullability, or field names cannot
   silently break controller/sidecar compatibility.
@@ -471,25 +474,29 @@ had launched the argument-based mock protocol while the Go production sidecar
 accepted only stdin/stdout. That real-child protocol gate has since passed;
 current status is recorded in the S1 continuation below.
 
-N0 progress (2026-07-21): complete. The locked stdio amendment now defines a
-64-KiB-bounded, single-flight bootstrap/handshake/request/response contract,
-EOF and shutdown semantics, and Rust-owned granular transport selection. The
-production `StdioSidecarRuntime` launches the actual Go executable with empty
-argv and inherited environment, supplies zeroizing byte secrets through stdin,
-checks the canonical HMAC proof, correlates request IDs, terminates ambiguous
-or unauthenticated sessions, and performs graceful disconnect. A shared
-bootstrap fixture is decoded by both languages. Actual-child tests prove
-authenticated status/shutdown and proof-mismatch termination without socket,
-route, Keychain, utun, or external network I/O.
+N0 progress (2026-07-21): complete. The locked stdio successor now defines a
+64-KiB-bounded protocol-v2 bootstrap/handshake/request/response contract,
+ordinary single-flight requests, and the one exact-target Cancel exception for
+an active Connect or Health request. EOF and shutdown semantics and Rust-owned
+granular transport selection remain unchanged. The production
+`StdioSidecarRuntime` launches the actual Go executable with empty argv and
+inherited environment, supplies zeroizing byte secrets through stdin, checks
+the canonical v2 HMAC proof, correlates and fully drains both race responses,
+terminates ambiguous or unauthenticated sessions, and performs graceful
+disconnect. Shared bootstrap and handshake/HMAC fixtures are decoded by both
+languages. Actual-child tests prove authenticated status/shutdown and
+proof-mismatch termination without socket, route, Keychain, utun, or external
+network I/O.
 
-N1 data-plane progress remains complete except for the reopened stdio
-protocol-v2 cancellation amendment. The real child validates profiles,
-enforces granular tunnel/carrier state order and explicit break-before-make,
-and carries encrypted payload traffic over QUIC, WSS, and TLS/TCP. Existing
-UDP-blackhole fail-stop, bounded timeout/child cleanup, crash-loop backoff, and
-repeated-cycle evidence remains valid. Concurrent cancellation must now pass
-the locked `kyclash-sidecar-stdio-v2-control-review-20260722.md` contract before
-it is reclaimed. The aggregate system criterion remains in progress at S1.13.
+N1 data-plane progress is complete, including the locked stdio protocol-v2
+cancellation amendment. The real child validates profiles, enforces granular
+tunnel/carrier state order and explicit break-before-make, and carries
+encrypted payload traffic over QUIC, WSS, and TLS/TCP. Shared v2 fixtures,
+strict JSON and downgrade refusal, exact Connect/Health cancellation races,
+both response orders, bounded timeout/child reap, crash-loop backoff, and
+post-cancel carrier reuse pass across Rust and Go. The aggregate system
+criterion remains in progress at S1.13, with the locked production
+restart/rematerialization implementation as its next source gate.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and

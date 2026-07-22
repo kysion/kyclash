@@ -14,9 +14,11 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kysion/kyclash/network-sidecar/internal/carrier"
+	"github.com/kysion/kyclash/network-sidecar/internal/identifier"
 	"github.com/kysion/kyclash/network-sidecar/internal/ipc"
 	"github.com/kysion/kyclash/network-sidecar/internal/profile"
 	"github.com/kysion/kyclash/network-sidecar/internal/wgcarrier"
@@ -34,15 +36,17 @@ type Backend struct {
 	network         *netstack.Net
 	switchboard     *wgcarrier.Switchboard
 	active          profile.Transport
-	connectDelay    time.Duration
 	closed          bool
 	dialer          func(context.Context, profile.Transport, profile.NormalizedEndpoint) (carrier.Carrier, error)
-	operationCancel context.CancelFunc
-	cancelRequested bool
+	operationCancel atomic.Pointer[operationCancellation]
 	probeAddress    netip.AddrPort
 	instanceID      string
 	interfaceName   string
 	ownerOperation  string
+}
+
+type operationCancellation struct {
+	cancel context.CancelFunc
 }
 
 func New(privateKey []byte, labRoots *x509.CertPool, instanceID string) (*Backend, error) {
@@ -121,25 +125,24 @@ func (backend *Backend) Prepare(_ context.Context, networkProfile *profile.Profi
 }
 
 func (backend *Backend) Connect(ctx context.Context, transport profile.Transport, endpoint profile.NormalizedEndpoint) error {
-	started := time.Now()
 	backend.mu.Lock()
-	if backend.closed || backend.wireGuard == nil || backend.switchboard == nil || backend.active != "" || backend.operationCancel != nil {
+	if backend.closed || backend.wireGuard == nil || backend.switchboard == nil || backend.active != "" || backend.operationCancel.Load() != nil {
 		backend.mu.Unlock()
 		return ErrInvalidState
 	}
-	if backend.cancelRequested {
-		backend.cancelRequested = false
-		backend.mu.Unlock()
-		return context.Canceled
-	}
 	dialContext, cancel := context.WithCancel(ctx)
-	backend.operationCancel = cancel
+	operation := &operationCancellation{cancel: cancel}
+	if !backend.operationCancel.CompareAndSwap(nil, operation) {
+		cancel()
+		backend.mu.Unlock()
+		return ErrInvalidState
+	}
 	backend.mu.Unlock()
 
 	packetCarrier, err := backend.dialer(dialContext, transport, endpoint)
 	cancel()
+	backend.operationCancel.CompareAndSwap(operation, nil)
 	backend.mu.Lock()
-	backend.operationCancel = nil
 	if err != nil {
 		backend.mu.Unlock()
 		return err
@@ -158,60 +161,152 @@ func (backend *Backend) Connect(ctx context.Context, transport profile.Transport
 		return fmt.Errorf("start WireGuard device: %w", err)
 	}
 	backend.active = transport
-	backend.connectDelay = time.Since(started)
 	return nil
 }
 
 func (backend *Backend) Health(ctx context.Context) (ipc.Health, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	backend.mu.Lock()
-	if backend.closed || backend.active == "" || backend.wireGuard == nil {
+	if backend.closed || backend.active == "" || backend.wireGuard == nil || backend.switchboard == nil || backend.operationCancel.Load() != nil {
 		backend.mu.Unlock()
 		return ipc.Health{}, ErrInvalidState
 	}
-	network, probe := backend.network, backend.probeAddress
+	operationContext, cancel := context.WithTimeout(ctx, healthOperationTimeout)
+	operation := &operationCancellation{cancel: cancel}
+	if !backend.operationCancel.CompareAndSwap(nil, operation) {
+		cancel()
+		backend.mu.Unlock()
+		return ipc.Health{}, ErrInvalidState
+	}
+	network, probe, board := backend.network, backend.probeAddress, backend.switchboard
 	backend.mu.Unlock()
+	defer func() {
+		cancel()
+		backend.operationCancel.CompareAndSwap(operation, nil)
+	}()
 	if probe.IsValid() {
-		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		defer cancel()
 		var connection net.Conn
 		var err error
-		for connection == nil {
-			connection, err = network.DialContextTCPAddrPort(ctx, probe)
+		for {
+			var candidate net.Conn
+			candidate, err = network.DialContextTCPAddrPort(operationContext, probe)
 			if err == nil {
+				connection = candidate
 				break
 			}
 			select {
 			case <-time.After(10 * time.Millisecond):
-			case <-ctx.Done():
-				return ipc.Health{}, err
+			case <-operationContext.Done():
+				return ipc.Health{}, operationContext.Err()
 			}
 		}
 		defer connection.Close()
+		stopDeadline := context.AfterFunc(operationContext, func() {
+			_ = connection.SetDeadline(time.Now())
+		})
+		defer stopDeadline()
 		payload := []byte("kyclash-health-v1")
 		if _, err = connection.Write(payload); err != nil {
+			if operationContext.Err() != nil {
+				return ipc.Health{}, operationContext.Err()
+			}
 			return ipc.Health{}, err
 		}
 		response := make([]byte, len(payload))
 		if _, err = io.ReadFull(connection, response); err != nil || string(response) != string(payload) {
+			if operationContext.Err() != nil {
+				return ipc.Health{}, operationContext.Err()
+			}
 			return ipc.Health{}, ErrInvalidState
 		}
 	}
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	latency := backend.connectDelay.Milliseconds()
-	if latency < 0 {
-		latency = 0
+	return sampleCarrierHealth(operationContext, board)
+}
+
+const (
+	healthOperationTimeout = 12 * time.Second
+	healthProbeCount       = 4
+	healthProbeTimeout     = time.Second
+)
+
+func sampleCarrierHealth(ctx context.Context, board *wgcarrier.Switchboard) (ipc.Health, error) {
+	if board == nil {
+		return ipc.Health{}, ErrInvalidState
 	}
-	if latency > int64(^uint32(0)) {
-		latency = int64(^uint32(0))
+	samples := make([]time.Duration, 0, healthProbeCount)
+	lost := 0
+	for index := 0; index < healthProbeCount; index++ {
+		probeContext, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+		latency, err := board.Probe(probeContext)
+		cancel()
+		if err == nil {
+			samples = append(samples, latency)
+			continue
+		}
+		if ctx.Err() != nil {
+			return ipc.Health{}, ctx.Err()
+		}
+		if errors.Is(err, carrier.ErrProbeUnavailable) {
+			return ipc.Health{}, err
+		}
+		// KYNP v1 ping/pong intentionally has no correlation payload. Stop at
+		// the first missing response and count the remaining bounded sample as
+		// lost so a delayed pong can never be treated as a new measurement.
+		lost += healthProbeCount - index
+		break
 	}
-	return ipc.Health{Reachable: true, LatencyMS: uint32(latency)}, nil
+	latency, jitter := summarizeLatency(samples)
+	return ipc.Health{
+		Reachable:   lost == 0,
+		LatencyMS:   latency,
+		JitterMS:    jitter,
+		LossPercent: uint8(lost * 100 / healthProbeCount),
+	}, nil
+}
+
+func summarizeLatency(samples []time.Duration) (uint32, uint32) {
+	if len(samples) == 0 {
+		return 0, 0
+	}
+	var total, deltaTotal time.Duration
+	for index, sample := range samples {
+		if sample < 0 {
+			sample = 0
+		}
+		total += sample
+		if index != 0 {
+			delta := sample - samples[index-1]
+			if delta < 0 {
+				delta = -delta
+			}
+			deltaTotal += delta
+		}
+	}
+	latency := total / time.Duration(len(samples))
+	var jitter time.Duration
+	if len(samples) > 1 {
+		jitter = deltaTotal / time.Duration(len(samples)-1)
+	}
+	return boundedMilliseconds(latency), boundedMilliseconds(jitter)
+}
+
+func boundedMilliseconds(value time.Duration) uint32 {
+	milliseconds := value.Milliseconds()
+	if milliseconds <= 0 {
+		return 0
+	}
+	if milliseconds > int64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(milliseconds)
 }
 
 func (backend *Backend) Disconnect(context.Context) error {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if backend.closed || backend.wireGuard == nil || backend.switchboard == nil || backend.active == "" {
+	if backend.closed || backend.wireGuard == nil || backend.switchboard == nil || backend.active == "" || backend.operationCancel.Load() != nil {
 		return ErrInvalidState
 	}
 	if err := backend.wireGuard.Down(); err != nil {
@@ -226,7 +321,7 @@ func (backend *Backend) Disconnect(context.Context) error {
 func (backend *Backend) Stop(context.Context) error {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if backend.closed || backend.wireGuard == nil || backend.active != "" {
+	if backend.closed || backend.wireGuard == nil || backend.active != "" || backend.operationCancel.Load() != nil {
 		return ErrInvalidState
 	}
 	backend.wireGuard.Close()
@@ -241,22 +336,6 @@ func (backend *Backend) Stop(context.Context) error {
 	return nil
 }
 
-func (backend *Backend) Cancel(string) error {
-	backend.mu.Lock()
-	cancel := backend.operationCancel
-	if cancel == nil && backend.active == "" && !backend.closed {
-		backend.cancelRequested = true
-		backend.mu.Unlock()
-		return nil
-	}
-	backend.mu.Unlock()
-	if cancel == nil {
-		return ErrInvalidState
-	}
-	cancel()
-	return nil
-}
-
 func (backend *Backend) Close() error {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
@@ -264,9 +343,8 @@ func (backend *Backend) Close() error {
 		return nil
 	}
 	backend.closed = true
-	if backend.operationCancel != nil {
-		backend.operationCancel()
-		backend.operationCancel = nil
+	if operation := backend.operationCancel.Swap(nil); operation != nil {
+		operation.cancel()
 	}
 	if backend.wireGuard != nil {
 		backend.wireGuard.Close()
@@ -280,22 +358,13 @@ func (backend *Backend) Close() error {
 	backend.network = nil
 	backend.switchboard = nil
 	backend.active = ""
-	backend.cancelRequested = false
 	backend.interfaceName = ""
 	backend.ownerOperation = ""
 	return nil
 }
 
 func validOwnerID(value string) bool {
-	if len(value) < 8 || len(value) > 64 {
-		return false
-	}
-	for _, character := range value {
-		if character > 127 || !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.') {
-			return false
-		}
-	}
-	return true
+	return identifier.Valid(value)
 }
 
 func addressFamilies(networkProfile *profile.Profile) (bool, bool) {
