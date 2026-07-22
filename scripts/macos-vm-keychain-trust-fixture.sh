@@ -13,6 +13,7 @@ readonly SERVICE="net.kysion.kyclash.test"
 readonly SYSTEM_KEYCHAIN="/Library/Keychains/System.keychain"
 readonly ROOT_CERT_NAME="loopback-trust-root.pem"
 readonly ROOT_KEY_NAME="loopback-trust-root.key"
+readonly ROOT_SERIAL_NAME="loopback-trust-root.srl"
 readonly LEAF_CERT_NAME="loopback-leaf.pem"
 readonly LEAF_KEY_NAME="loopback-leaf.key"
 readonly ROOT_CONFIG_NAME="loopback-root.cnf"
@@ -112,6 +113,7 @@ parse_args() {
   RUN_ROOT="$BASE_DIR/$RUN_ID"
   ROOT_CERT_PATH="$RUN_ROOT/$ROOT_CERT_NAME"
   ROOT_KEY_PATH="$RUN_ROOT/$ROOT_KEY_NAME"
+  ROOT_SERIAL_PATH="$RUN_ROOT/$ROOT_SERIAL_NAME"
   LEAF_CERT_PATH="$RUN_ROOT/$LEAF_CERT_NAME"
   LEAF_KEY_PATH="$RUN_ROOT/$LEAF_KEY_NAME"
   ROOT_CONFIG_PATH="$RUN_ROOT/$ROOT_CONFIG_NAME"
@@ -278,6 +280,7 @@ load_manifest() {
   # later reappearance is foreign state: fail closed and preserve it for
   # forensic review instead of silently deleting it during cleanup.
   [ ! -e "$ROOT_KEY_PATH" ] && [ ! -L "$ROOT_KEY_PATH" ] || die 73
+  [ ! -e "$ROOT_SERIAL_PATH" ] && [ ! -L "$ROOT_SERIAL_PATH" ] || die 73
   [ "$(manifest_value schema_version)" = 1 ] || die 73
   [ "$(manifest_value run_id)" = "$RUN_ID" ] || die 73
   [ "$(manifest_value service)" = "$SERVICE" ] || die 73
@@ -342,7 +345,7 @@ prepare_failure_cleanup() {
   # manual review instead of broad deletion.
   local path
   for path in "$ROOT_CONFIG_PATH" "$LEAF_CONFIG_PATH" "$LEAF_CSR_PATH" "$ROOT_CERT_PATH" \
-    "$ROOT_KEY_PATH" "$LEAF_CERT_PATH" "$LEAF_KEY_PATH" "$MANIFEST_PATH"; do
+    "$ROOT_KEY_PATH" "$ROOT_SERIAL_PATH" "$LEAF_CERT_PATH" "$LEAF_KEY_PATH" "$MANIFEST_PATH"; do
     [ ! -e "$path" ] && continue
     [ ! -L "$path" ] && [ -f "$path" ] || return 0
     [ "$(stat -f '%l' "$path" 2>/dev/null || true)" = 1 ] || return 0
@@ -430,8 +433,9 @@ EOF
   /bin/chmod 600 "$LEAF_CERT_PATH"
   # The CA signing key is needed only for the leaf-signing command above. It
   # is never consumed by the peer and must not survive fixture preparation.
-  /bin/rm -f "$ROOT_KEY_PATH" "$ROOT_CONFIG_PATH" "$LEAF_CONFIG_PATH" "$LEAF_CSR_PATH" "$ROOT_CERT_PATH.srl"
+  /bin/rm -f "$ROOT_KEY_PATH" "$ROOT_CONFIG_PATH" "$LEAF_CONFIG_PATH" "$LEAF_CSR_PATH" "$ROOT_SERIAL_PATH"
   [ ! -e "$ROOT_KEY_PATH" ] && [ ! -L "$ROOT_KEY_PATH" ] || die 73
+  [ ! -e "$ROOT_SERIAL_PATH" ] && [ ! -L "$ROOT_SERIAL_PATH" ] || die 73
 
   /usr/bin/openssl x509 -in "$ROOT_CERT_PATH" -noout -checkend 0 >/dev/null 2>&1 || die 1
   /usr/bin/openssl x509 -in "$LEAF_CERT_PATH" -noout -checkend 0 >/dev/null 2>&1 || die 1
@@ -454,6 +458,7 @@ EOF
   trap - EXIT INT TERM
   file_shape "$ROOT_CERT_PATH" 600
   [ ! -e "$ROOT_KEY_PATH" ] || die 73
+  [ ! -e "$ROOT_SERIAL_PATH" ] || die 73
   file_shape "$LEAF_CERT_PATH" 600
   file_shape "$LEAF_KEY_PATH" 600
   file_shape "$MANIFEST_PATH" 600

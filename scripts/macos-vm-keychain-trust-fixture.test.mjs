@@ -97,6 +97,8 @@ test('fixture keeps the exact trust and cleanup boundary', () => {
   assert.match(source, /run_root_cleanup=deferred-to-work-vm-revert/u)
   assert.match(source, /kyclash_keychain_trust_fixture=scoped-cleanup-passed/u)
   assert.match(source, /rm -f "\$ROOT_KEY_PATH"/u)
+  assert.match(source, /rm -f[^\n]*"\$ROOT_SERIAL_PATH"/u)
+  assert.doesNotMatch(source, /ROOT_CERT_PATH\.srl/u)
   assert.match(
     source,
     /if credential_present; then\n\s+die 73\n\s+elif \[ -e "\$PUBLIC_KEY_PATH" \]/u,
