@@ -80,6 +80,13 @@ test('fixture keeps the exact trust and cleanup boundary', () => {
     /local expectation="\$1" phase="\$2" output error\n\s+output="\$RUN_ROOT\/probe-\$phase-output\.txt"/u,
   )
   assert.match(source, /dump-trust-settings -d/u)
+  assert.match(source, /root_sha1_fingerprint/u)
+  assert.match(source, /trust-settings-export -d/u)
+  assert.match(source, /plutil -extract "trustList\.\$sha1" xml1/u)
+  assert.doesNotMatch(
+    source,
+    /dump-trust-settings[\s\S]{0,800}\$1 == "SHA-256"/u,
+  )
   assert.match(source, /policy_expiry_ceiling_epoch/u)
   assert.match(source, /stat -f '%d' \/var/u)
   assert.doesNotMatch(source, /stat -f '%d:%i' \/var/u)

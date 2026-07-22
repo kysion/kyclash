@@ -38,6 +38,7 @@ readonly NETWORKING_PEER_NAME="kyclash-networking-system-lab"
 readonly PEER_KEY_NAME="wg-private.key"
 readonly PEER_MANIFEST_NAME="peer-manifest.json"
 readonly PEER_DESCRIPTOR_NAME="guest-descriptor.json"
+readonly ADMIN_TRUST_EXPORT_NAME="admin-trust-settings.plist"
 
 usage() {
   cat >&2 <<'EOF'
@@ -132,6 +133,7 @@ parse_args() {
   POLICY_PREFLIGHT_PATH="$RUN_ROOT/$POLICY_PREFLIGHT_NAME"
   POLICY_PREFLIGHT_OUTPUT_PATH="$RUN_ROOT/$POLICY_PREFLIGHT_OUTPUT_NAME"
   PROBE_PATH="$RUN_ROOT/$PROBE_NAME"
+  ADMIN_TRUST_EXPORT_PATH="$RUN_ROOT/$ADMIN_TRUST_EXPORT_NAME"
   ACCOUNT="kyclash.vm.lab.$RUN_ID"
 }
 
@@ -192,6 +194,11 @@ root_fingerprint() {
     /usr/bin/shasum -a 256 | /usr/bin/awk '{print tolower($1)}'
 }
 
+root_sha1_fingerprint() {
+  /usr/bin/openssl x509 -in "$ROOT_CERT_PATH" -outform DER 2>/dev/null |
+    /usr/bin/shasum -a 1 | /usr/bin/awk '{print toupper($1)}'
+}
+
 leaf_fingerprint() {
   /usr/bin/openssl x509 -in "$LEAF_CERT_PATH" -outform DER 2>/dev/null |
     /usr/bin/shasum -a 256 | /usr/bin/awk '{print tolower($1)}'
@@ -210,7 +217,10 @@ certificate_count() {
 }
 
 admin_trust_count() {
-  local fingerprint="$1" dump exit_code
+  local fingerprint="$1" dump exit_code sha1 count
+  [ "$fingerprint" = "$(root_fingerprint)" ] || die 73
+  sha1="$(root_sha1_fingerprint)"
+  echo "$sha1" | /usr/bin/grep -Eq '^[0-9A-F]{40}$' || die 73
   exit_code=0
   dump="$(/usr/bin/sudo -n /usr/bin/security dump-trust-settings -d 2>&1)" || exit_code="$?"
   if [ "$exit_code" -ne 0 ]; then
@@ -218,13 +228,17 @@ admin_trust_count() {
     printf '0\n'
     return
   fi
-  printf '%s\n' "$dump" | /usr/bin/awk -v wanted="$fingerprint" '
-    $1 == "SHA-256" && $2 == "hash:" {
-      value = tolower($3)
-      if (value == wanted) count++
-    }
-    END { print count + 0 }
-  '
+  [ ! -e "$ADMIN_TRUST_EXPORT_PATH" ] && [ ! -L "$ADMIN_TRUST_EXPORT_PATH" ] || die 73
+  /usr/bin/security trust-settings-export -d "$ADMIN_TRUST_EXPORT_PATH" >/dev/null 2>&1 || die 69
+  file_shape "$ADMIN_TRUST_EXPORT_PATH" 600
+  count=0
+  if /usr/bin/plutil -extract "trustList.$sha1" xml1 -o /dev/null \
+    "$ADMIN_TRUST_EXPORT_PATH" >/dev/null 2>&1; then
+    count=1
+  fi
+  /bin/rm -f "$ADMIN_TRUST_EXPORT_PATH"
+  [ ! -e "$ADMIN_TRUST_EXPORT_PATH" ] && [ ! -L "$ADMIN_TRUST_EXPORT_PATH" ] || die 73
+  printf '%s\n' "$count"
 }
 
 credential_present() {
