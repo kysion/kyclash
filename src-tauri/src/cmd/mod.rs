@@ -14,6 +14,8 @@ pub mod network;
 pub mod networking;
 #[cfg(feature = "networking-production")]
 pub mod networking_production;
+#[cfg(feature = "networking-userspace-lab-app")]
+pub mod networking_userspace_lab;
 pub mod profile;
 pub mod proxy;
 pub mod runtime;
@@ -36,6 +38,8 @@ pub use network::*;
 pub use networking::*;
 #[cfg(feature = "networking-production")]
 pub use networking_production::*;
+#[cfg(feature = "networking-userspace-lab-app")]
+pub use networking_userspace_lab::*;
 pub use profile::*;
 pub use proxy::*;
 pub use runtime::*;

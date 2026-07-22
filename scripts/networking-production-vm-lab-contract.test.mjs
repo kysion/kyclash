@@ -75,9 +75,11 @@ test('production system-lab candidates keep the real Tauri App context', () => {
     'utf8',
   )
   const labOnlyPattern =
-    /all\(\s*feature = "networking-system-lab",\s*not\(feature = "networking-production"\)\s*\)/gu
+    /all\(\s*feature = "networking-system-lab",\s*not\(feature = "networking-production"\),\s*not\(feature = "networking-userspace-lab-app"\)\s*\)/gu
   assert.equal(buildScript.match(labOnlyPattern)?.length, 2)
   assert.equal(appSource.match(labOnlyPattern)?.length, 3)
+  assert.match(buildScript, /feature = "networking-userspace-lab-app"/u)
+  assert.match(appSource, /feature = "networking-userspace-lab-app"/u)
   assert.match(appSource, /builder\.build\(tauri::generate_context!\(\)\)/u)
 })
 
@@ -89,6 +91,37 @@ test('production networking UI keeps polling connected and fallback states', () 
   assert.match(page, /'connected_primary',\s*'degraded_fallback'/u)
   assert.match(page, /pollingStates\.has\(status\.state\)/u)
   assert.match(page, /cancellableStates\.has\(status\.state\)/u)
+})
+
+test('userspace lab App is an explicit non-production resource profile', () => {
+  const overlay = JSON.parse(
+    fs.readFileSync(
+      path.join(
+        root,
+        'src-tauri',
+        'tauri.networking.userspace-lab.macos.conf.json',
+      ),
+      'utf8',
+    ),
+  )
+  assert.equal(
+    overlay.bundle.macOS.files['Resources/kyclash-network-sidecar-lab'],
+    'sidecar/kyclash-network-sidecar-lab-aarch64-apple-darwin',
+  )
+  const appPage = fs.readFileSync(
+    path.join(root, 'src', 'pages', 'networking-dev.tsx'),
+    'utf8',
+  )
+  assert.match(appPage, /LAB · userspace/u)
+  assert.match(appPage, /QUIC → WSS → TCP/u)
+  assert.match(appPage, /does not create utun/u)
+  const rust = fs.readFileSync(
+    path.join(root, 'src-tauri', 'src', 'cmd', 'networking_userspace_lab.rs'),
+    'utf8',
+  )
+  assert.match(rust, /kyclash-network-sidecar-lab/u)
+  assert.match(rust, /routes_installed: false/u)
+  assert.match(rust, /SidecarRuntime as _/u)
 })
 
 test('production VM contract exposes a guest-to-host public pull only', () => {

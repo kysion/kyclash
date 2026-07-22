@@ -157,6 +157,12 @@ mod app_init {
             cmd::connect_networking_dev,
             #[cfg(feature = "networking-dev")]
             cmd::disconnect_networking_dev,
+            #[cfg(feature = "networking-userspace-lab-app")]
+            cmd::get_networking_userspace_lab_status,
+            #[cfg(feature = "networking-userspace-lab-app")]
+            cmd::connect_networking_userspace_lab,
+            #[cfg(feature = "networking-userspace-lab-app")]
+            cmd::disconnect_networking_userspace_lab,
             #[cfg(feature = "networking-production")]
             cmd::initialize_networking,
             #[cfg(feature = "networking-production")]
@@ -461,13 +467,21 @@ pub fn run() {
 
     #[cfg(any(
         feature = "clippy",
-        all(feature = "networking-system-lab", not(feature = "networking-production")),
+        all(
+            feature = "networking-system-lab",
+            not(feature = "networking-production"),
+            not(feature = "networking-userspace-lab-app")
+        ),
         all(test, feature = "networking-dev")
     ))]
     let context = tauri::test::mock_context(tauri::test::noop_assets());
     #[cfg(any(
         feature = "clippy",
-        all(feature = "networking-system-lab", not(feature = "networking-production")),
+        all(
+            feature = "networking-system-lab",
+            not(feature = "networking-production"),
+            not(feature = "networking-userspace-lab-app")
+        ),
         all(test, feature = "networking-dev")
     ))]
     let app = builder.build(context).unwrap_or_else(|e| {
@@ -478,7 +492,11 @@ pub fn run() {
 
     #[cfg(not(any(
         feature = "clippy",
-        all(feature = "networking-system-lab", not(feature = "networking-production")),
+        all(
+            feature = "networking-system-lab",
+            not(feature = "networking-production"),
+            not(feature = "networking-userspace-lab-app")
+        ),
         all(test, feature = "networking-dev")
     )))]
     let app = builder.build(tauri::generate_context!()).unwrap_or_else(|e| {

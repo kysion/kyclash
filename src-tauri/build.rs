@@ -3,8 +3,12 @@ fn main() {
 
     #[cfg(any(
         feature = "clippy",
-        feature = "networking-dev",
-        all(feature = "networking-system-lab", not(feature = "networking-production"))
+        all(feature = "networking-dev", not(feature = "networking-userspace-lab-app")),
+        all(
+            feature = "networking-system-lab",
+            not(feature = "networking-production"),
+            not(feature = "networking-userspace-lab-app")
+        )
     ))]
     {
         println!("cargo:warning=Skipping tauri_build for non-application validation");
@@ -12,8 +16,12 @@ fn main() {
 
     #[cfg(not(any(
         feature = "clippy",
-        feature = "networking-dev",
-        all(feature = "networking-system-lab", not(feature = "networking-production"))
+        all(feature = "networking-dev", not(feature = "networking-userspace-lab-app")),
+        all(
+            feature = "networking-system-lab",
+            not(feature = "networking-production"),
+            not(feature = "networking-userspace-lab-app")
+        )
     )))]
     tauri_build::build();
 }

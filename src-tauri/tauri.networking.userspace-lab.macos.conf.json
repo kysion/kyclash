@@ -1,0 +1,11 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "macOS": {
+      "files": {
+        "Resources/kyclash-network-sidecar-lab": "sidecar/kyclash-network-sidecar-lab-aarch64-apple-darwin"
+      },
+      "minimumSystemVersion": "13.0"
+    }
+  }
+}

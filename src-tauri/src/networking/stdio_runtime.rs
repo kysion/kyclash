@@ -112,7 +112,7 @@ mod unix {
 
     impl LocalProcessLauncher {
         #[must_use]
-        pub fn new(executable: PathBuf) -> Self {
+        pub const fn new(executable: PathBuf) -> Self {
             Self { executable }
         }
     }
@@ -469,27 +469,26 @@ mod unix {
                 .checked_add(1)
                 .ok_or(NetworkErrorCode::InvalidStateTransition)?;
             self.next_generation = generation;
-            let mut process = self.launcher.launch(generation)?;
-            if process.generation() != generation {
+            let process = self.launcher.launch(generation)?;
+            let process_generation = process.generation();
+            self.generation = Some(process_generation);
+            self.child = Some(process);
+            if process_generation != generation {
                 // A launcher must never hand an older generation back to the
                 // runtime.  Reap only the exact returned handle, then refuse
                 // the session; do not guess by PID or process name.
-                let _ = terminate_child_handle(&mut Some(process));
+                let _ = self.terminate_child();
                 return Err(NetworkErrorCode::InvalidStateTransition);
             }
-            self.generation = Some(generation);
-            let Some(mut stdin) = process.take_stdin() else {
-                let _ = terminate_child_handle(&mut Some(process));
+            let Some(mut stdin) = self.child.as_mut().and_then(|process| process.take_stdin()) else {
                 let _ = self.terminate_child();
                 return Err(NetworkErrorCode::SidecarUnavailable);
             };
-            let Some(stdout) = process.take_stdout() else {
+            let Some(stdout) = self.child.as_mut().and_then(|process| process.take_stdout()) else {
                 drop(stdin);
-                let _ = terminate_child_handle(&mut Some(process));
                 let _ = self.terminate_child();
                 return Err(NetworkErrorCode::SidecarUnavailable);
             };
-            self.child = Some(process);
             let (sender, receiver) = mpsc::channel();
             std::thread::spawn(move || read_records(stdout, sender));
             let bootstrap = BootstrapRecord {
@@ -862,7 +861,13 @@ mod unix {
 
         impl Write for FakeWriter {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.writes.lock().expect("fake writer lock").extend_from_slice(bytes);
+                {
+                    let mut writes = self
+                        .writes
+                        .lock()
+                        .map_err(|_| std::io::Error::other("fake writer lock poisoned"))?;
+                    writes.extend_from_slice(bytes);
+                }
                 Ok(bytes.len())
             }
 
@@ -887,10 +892,10 @@ mod unix {
 
         impl Read for FakeReader {
             fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-                if self.reads > 0 {
-                    if let Some(delay) = self.delay_after_first.take() {
-                        thread::sleep(delay);
-                    }
+                if self.reads > 0
+                    && let Some(delay) = self.delay_after_first.take()
+                {
+                    thread::sleep(delay);
                 }
                 self.reads = self.reads.saturating_add(1);
                 if self.pending.is_empty() {
@@ -1022,7 +1027,7 @@ mod unix {
                 instance_id: context.instance_id.clone(),
                 auth_proof: sidecar_auth_proof(context.auth_token(), &context.instance_id),
             })
-            .expect("fake handshake serialization")
+            .unwrap_or_default()
         }
 
         fn fake_runtime_with_spec(
@@ -1078,8 +1083,14 @@ mod unix {
             assert!(matches!(response.result, Ok(IpcResponsePayload::Status(_))));
             let _ = runtime.stop();
 
-            let writes = String::from_utf8(metrics.writes.lock().expect("fake writes lock").clone())
-                .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            let writes = String::from_utf8(
+                metrics
+                    .writes
+                    .lock()
+                    .map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+                    .clone(),
+            )
+            .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
             assert!(writes.contains("\"protocol_version\":2"));
             assert!(writes.contains("\"request_id\":\"request.status\""));
             wait_for_drop(&metrics.stdin_drops);
@@ -1171,8 +1182,11 @@ mod unix {
                 Err(NetworkErrorCode::SidecarUnavailable)
             );
             assert!(process.is_some());
-            process.as_mut().expect("quarantined fake process").polls_before_exit = Some(1);
-            process.as_mut().expect("quarantined fake process").kill_fails = false;
+            let Some(process_ref) = process.as_mut() else {
+                return Err(NetworkErrorCode::SidecarUnavailable);
+            };
+            process_ref.polls_before_exit = Some(1);
+            process_ref.kill_fails = false;
             terminate_child_handle(&mut process)?;
             assert!(process.is_none());
             assert_eq!(metrics.kill_calls.load(Ordering::Acquire), 2);

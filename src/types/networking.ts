@@ -87,6 +87,40 @@ export interface NetworkingDevStatus {
   last_error: NetworkErrorCode | null
 }
 
+export interface NetworkingUserspaceLabTransportCheck {
+  transport: TransportKind
+  reachable: boolean
+  latency_ms: number
+  jitter_ms: number
+  loss_percent: number
+}
+
+/**
+ * Status returned only by the explicit no-sign userspace lab App.  The
+ * `routes_installed: false` and `tunnel_kind` fields are part of the UI
+ * contract so a lab run cannot be mistaken for production networking.
+ */
+export interface NetworkingUserspaceLabStatus {
+  runtime_mode: 'userspace_lab'
+  tunnel_kind: 'userspace_netstack'
+  network_state: NetworkState
+  sidecar_state: 'stopped' | 'starting' | 'running' | 'backoff' | 'crash_loop'
+  site_id: string
+  site_display_name: string
+  private_routes: string[]
+  routes_installed: false
+  tunnel_interface: 'userspace' | null
+  active_transport: TransportKind | null
+  health: {
+    reachable: boolean
+    latency_ms: number
+    jitter_ms: number
+    loss_percent: number
+  } | null
+  transport_checks: NetworkingUserspaceLabTransportCheck[]
+  last_error: NetworkErrorCode | null
+}
+
 export interface ProductionNetworkStatus {
   state: NetworkState
   sidecar_state: 'stopped' | 'starting' | 'running' | 'backoff' | 'crash_loop'

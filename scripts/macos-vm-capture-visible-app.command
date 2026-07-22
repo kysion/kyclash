@@ -6,7 +6,8 @@ umask 077
 readonly SCRIPT_DIR="${0:A:h}"
 readonly SCREENSHOT_PATH="${SCRIPT_DIR}/kyclash-visible.png"
 readonly STATUS_PATH="${SCRIPT_DIR}/capture-status.txt"
-readonly APP_EXECUTABLE="/Applications/KyClash.app/Contents/MacOS/clash-verge"
+readonly APP_PATH="${KYCLASH_CAPTURE_APP:-/Applications/KyClash.app}"
+readonly APP_EXECUTABLE="${KYCLASH_CAPTURE_EXECUTABLE:-${APP_PATH}/Contents/MacOS/clash-verge}"
 
 fail() {
   if [[ -L "${STATUS_PATH}" ]]; then
@@ -49,7 +50,7 @@ esac
 # screencapture from the SSH bootstrap cannot see the Aqua display or inherit
 # Terminal's Screen Recording grant.  `open` activates the already-running App
 # without requiring Automation permission for System Events.
-/usr/bin/open -a "/Applications/KyClash.app" >/dev/null 2>&1 || fail 'unable-to-activate-app'
+/usr/bin/open -a "${APP_PATH}" >/dev/null 2>&1 || fail 'unable-to-activate-app'
 /bin/sleep 2
 /usr/sbin/screencapture -x -D 1 -t png "${SCREENSHOT_PATH}" || fail 'screencapture-failed'
 [[ -f "${SCREENSHOT_PATH}" && ! -L "${SCREENSHOT_PATH}" && -s "${SCREENSHOT_PATH}" ]] ||

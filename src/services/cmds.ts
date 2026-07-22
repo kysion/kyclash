@@ -430,6 +430,29 @@ export const disconnectNetworkingDev = async () => {
   )
 }
 
+/**
+ * The userspace lab is a separate, explicitly feature-gated App command
+ * surface. It starts only the bundled loopback lab sidecar and never invokes
+ * the production controller, route helper, Keychain, or system tunnel.
+ */
+export const getNetworkingUserspaceLabStatus = async () => {
+  return invoke<import('@/types/networking').NetworkingUserspaceLabStatus>(
+    'get_networking_userspace_lab_status',
+  )
+}
+
+export const connectNetworkingUserspaceLab = async () => {
+  return invoke<import('@/types/networking').NetworkingUserspaceLabStatus>(
+    'connect_networking_userspace_lab',
+  )
+}
+
+export const disconnectNetworkingUserspaceLab = async () => {
+  return invoke<import('@/types/networking').NetworkingUserspaceLabStatus>(
+    'disconnect_networking_userspace_lab',
+  )
+}
+
 export const getNetworkingStatus = async () => {
   return invoke<import('@/types/networking').ProductionNetworkStatus>(
     'get_networking_status',

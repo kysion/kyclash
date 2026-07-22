@@ -26,6 +26,8 @@
     "updater:verify-signature": "cargo run -p clash-verge --features updater-verifier --bin kyclash-updater-verify --",
     "release:ownership-check": "node scripts/assert-updater-disabled.mjs --check",
     "network-sidecar:macos": "node scripts/build-network-sidecar-macos.mjs",
+    "network-sidecar:macos:userspace-lab": "node scripts/build-networking-userspace-lab-sidecar-macos.mjs",
+    "macos:userspace-lab:app": "node scripts/build-macos-userspace-lab-app.mjs",
     "route-helper:macos": "node scripts/build-route-helper-macos.mjs",
     "tunnel-broker:macos": "node scripts/build-tunnel-broker-macos.mjs",
     "tunnel-broker:self-test": "node scripts/build-tunnel-broker-macos.mjs --self-test && node --test scripts/tunnel-broker-contract.test.mjs",

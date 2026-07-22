@@ -1,5 +1,7 @@
-// kyclash-network-sidecar-lab is a networking-dev integration executable. It
-// is never bundled with KyClash and cannot bind outside loopback.
+// kyclash-network-sidecar-lab is an explicitly feature-gated userspace lab
+// executable. It may be bundled only in the no-sign userspace-lab App
+// profile; production packaging/verifiers reject that resource. It cannot
+// bind outside loopback.
 package main
 
 import (

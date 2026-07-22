@@ -34,7 +34,28 @@ const allowedManifestKeys = [
   'sha256',
   'team_id',
 ]
-const manifest = JSON.parse(fs.readFileSync(trustPath, 'utf8'))
+const expectedRequirement =
+  'identifier "net.kysion.kyclash.network-sidecar" and anchor apple generic and certificate leaf[subject.OU] = "RQUQ8Y3S9H"'
+const hasBuildInputs = fs.existsSync(sidecar) && fs.existsSync(trustPath)
+// Generated sidecars are intentionally ignored by git. Keep the protocol
+// self-test runnable from a clean checkout without pretending that a synthetic
+// manifest is production trust evidence; the normal scaffold build below
+// still requires the real sidecar and public trust manifest.
+const manifest = hasBuildInputs
+  ? JSON.parse(fs.readFileSync(trustPath, 'utf8'))
+  : selfTest
+    ? {
+        schema_version: 1,
+        sha256: '0'.repeat(64),
+        architecture: 'arm64',
+        team_id: 'RQUQ8Y3S9H',
+        designated_requirement: expectedRequirement,
+      }
+    : (() => {
+        throw new Error(
+          'sidecar and trust manifest are required for a scaffold build',
+        )
+      })()
 if (
   JSON.stringify(Object.keys(manifest).sort()) !==
   JSON.stringify(allowedManifestKeys)
@@ -48,17 +69,21 @@ if (manifest.team_id !== 'RQUQ8Y3S9H')
   throw new Error('sidecar trust manifest Team ID is not locked')
 if (!/^[0-9a-f]{64}$/.test(manifest.sha256))
   throw new Error('sidecar trust manifest SHA-256 is invalid')
-const expectedRequirement =
-  'identifier "net.kysion.kyclash.network-sidecar" and anchor apple generic and certificate leaf[subject.OU] = "RQUQ8Y3S9H"'
 if (manifest.designated_requirement !== expectedRequirement)
   throw new Error('sidecar designated requirement is not locked')
 
-const actualSHA256 = crypto
-  .createHash('sha256')
-  .update(fs.readFileSync(sidecar))
-  .digest('hex')
-if (actualSHA256 !== manifest.sha256)
-  throw new Error('sidecar bytes do not match the public trust manifest')
+if (hasBuildInputs) {
+  const actualSHA256 = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sidecar))
+    .digest('hex')
+  if (actualSHA256 !== manifest.sha256)
+    throw new Error('sidecar bytes do not match the public trust manifest')
+} else if (!selfTest) {
+  throw new Error(
+    'sidecar and trust manifest are required for a scaffold build',
+  )
+}
 
 fs.mkdirSync(buildRoot, { recursive: true })
 const swiftString = (value) => JSON.stringify(value)

@@ -19,14 +19,23 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { BasePage } from '@/components/base'
 import {
+  connectNetworkingUserspaceLab,
   connectNetworkingDev,
+  disconnectNetworkingUserspaceLab,
   disconnectNetworkingDev,
+  getNetworkingUserspaceLabStatus,
   getNetworkingDevStatus,
 } from '@/services/cmds'
-import type { NetworkingDevStatus } from '@/types/networking'
+import type {
+  NetworkingDevStatus,
+  NetworkingUserspaceLabStatus,
+} from '@/types/networking'
+
+const userspaceLabBuild = import.meta.env.VITE_NETWORKING_SYSTEM_LAB === 'true'
+type DisplayStatus = NetworkingDevStatus | NetworkingUserspaceLabStatus
 
 const NetworkingDevPage = () => {
-  const [status, setStatus] = useState<NetworkingDevStatus>()
+  const [status, setStatus] = useState<DisplayStatus>()
   const [error, setError] = useState<string>()
   const [loading, setLoading] = useState(false)
 
@@ -34,7 +43,11 @@ const NetworkingDevPage = () => {
     setLoading(true)
     setError(undefined)
     try {
-      setStatus(await getNetworkingDevStatus())
+      setStatus(
+        await (userspaceLabBuild
+          ? getNetworkingUserspaceLabStatus()
+          : getNetworkingDevStatus()),
+      )
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -43,7 +56,7 @@ const NetworkingDevPage = () => {
   }, [])
 
   const runAction = useCallback(
-    async (action: () => Promise<NetworkingDevStatus>) => {
+    async (action: () => Promise<DisplayStatus>) => {
       setLoading(true)
       setError(undefined)
       try {
@@ -92,7 +105,11 @@ const NetworkingDevPage = () => {
 
   return (
     <BasePage
-      title="KyClash Network (Development)"
+      title={
+        userspaceLabBuild
+          ? 'KyClash Network (LAB · userspace)'
+          : 'KyClash Network (Development)'
+      }
       header={
         <Button
           color="inherit"
@@ -105,11 +122,21 @@ const NetworkingDevPage = () => {
       }
     >
       <Stack spacing={2}>
-        <Alert severity="warning">
-          Isolated development simulation. Connect and disconnect operate only
-          on the in-process mock; no tunnel, route, DNS, interface, credential,
-          or external endpoint is touched.
-        </Alert>
+        {userspaceLabBuild ? (
+          <Alert severity="warning">
+            <strong>LAB / USERSPACE ONLY.</strong> Connect starts the bundled Go
+            loopback lab sidecar and exercises QUIC → WSS → TCP with a userspace
+            WireGuard netstack. It does not create utun, install routes, call
+            the route helper, read Keychain, change DNS, or use a production
+            endpoint. The displayed private CIDRs are metadata only.
+          </Alert>
+        ) : (
+          <Alert severity="warning">
+            Isolated development simulation. Connect and disconnect operate only
+            on the in-process mock; no tunnel, route, DNS, interface,
+            credential, or external endpoint is touched.
+          </Alert>
+        )}
         {error && <Alert severity="error">{error}</Alert>}
         <Card variant="outlined">
           <CardContent>
@@ -152,14 +179,37 @@ const NetworkingDevPage = () => {
               </Box>
               <Box>
                 <Typography color="text.secondary" variant="caption">
-                  Mock health
+                  {userspaceLabBuild ? 'Last lab health' : 'Mock health'}
                 </Typography>
                 <Typography>
                   {status?.health
-                    ? `${status.health.latency_ms} ms latency · ${status.health.jitter_ms} ms jitter · ${status.health.packet_loss_percent}% loss`
+                    ? `${status.health.latency_ms} ms latency · ${status.health.jitter_ms} ms jitter · ${'loss_percent' in status.health ? status.health.loss_percent : status.health.packet_loss_percent}% loss`
                     : 'unavailable while disconnected'}
                 </Typography>
               </Box>
+              {userspaceLabBuild && status && 'transport_checks' in status && (
+                <Box>
+                  <Typography color="text.secondary" variant="caption">
+                    Actual carrier checks (break-before-make)
+                  </Typography>
+                  <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
+                    {(['quic', 'wss', 'tcp'] as const).map((transport) => {
+                      const check = status.transport_checks.find(
+                        (value) => value.transport === transport,
+                      )
+                      return (
+                        <Chip
+                          key={transport}
+                          color={check?.reachable ? 'success' : 'default'}
+                          label={`${transport.toUpperCase()}: ${check?.reachable ? 'passed' : 'pending'}`}
+                          size="small"
+                          variant="outlined"
+                        />
+                      )
+                    })}
+                  </Stack>
+                </Box>
+              )}
               <Box>
                 <Typography color="text.secondary" variant="caption">
                   Private routes (planned only)
@@ -187,19 +237,33 @@ const NetworkingDevPage = () => {
               <Stack direction="row" spacing={1}>
                 <Button
                   disabled={loading || status?.network_state !== 'disconnected'}
-                  onClick={() => void runAction(connectNetworkingDev)}
+                  onClick={() =>
+                    void runAction(
+                      userspaceLabBuild
+                        ? connectNetworkingUserspaceLab
+                        : connectNetworkingDev,
+                    )
+                  }
                   startIcon={<PowerSettingsNewRounded />}
                   variant="contained"
                 >
-                  Connect mock
+                  {userspaceLabBuild
+                    ? 'Connect · run QUIC → WSS → TCP'
+                    : 'Connect mock'}
                 </Button>
                 <Button
                   disabled={loading || status?.network_state === 'disconnected'}
-                  onClick={() => void runAction(disconnectNetworkingDev)}
+                  onClick={() =>
+                    void runAction(
+                      userspaceLabBuild
+                        ? disconnectNetworkingUserspaceLab
+                        : disconnectNetworkingDev,
+                    )
+                  }
                   startIcon={<LinkOffRounded />}
                   variant="outlined"
                 >
-                  Disconnect mock
+                  {userspaceLabBuild ? 'Disconnect lab' : 'Disconnect mock'}
                 </Button>
                 <Button
                   disabled={loading || !status}

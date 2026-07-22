@@ -477,6 +477,15 @@ const assertNoProductionResources = (app) => {
   const resources = path.join(app, 'Contents/Resources')
   if (!fs.existsSync(resources)) return
   requireDirectory(resources, resources)
+  const userspaceLabSidecar = path.join(
+    resources,
+    'kyclash-network-sidecar-lab',
+  )
+  if (fs.existsSync(userspaceLabSidecar)) {
+    throw new Error(
+      'production package must reject the explicit userspace-lab sidecar resource',
+    )
+  }
   exactDirectoryEntries(
     resources,
     [

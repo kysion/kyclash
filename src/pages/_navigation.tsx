@@ -35,6 +35,7 @@ type NavigationItem = {
     | (typeof navigationItems)[keyof typeof navigationItems]['label']
     | 'KyClash Network'
     | 'KyClash Network (Dev)'
+    | 'KyClash Network (LAB · userspace)'
   path: string
   icon: ReactNode[]
   Component: ComponentType
@@ -84,10 +85,14 @@ const standardNavItems: NavigationItem[] = [
 ]
 
 const networkingDevItems: NavigationItem[] =
-  import.meta.env.VITE_NETWORKING_DEV === 'true'
+  import.meta.env.VITE_NETWORKING_DEV === 'true' ||
+  import.meta.env.VITE_NETWORKING_SYSTEM_LAB === 'true'
     ? [
         {
-          label: 'KyClash Network (Dev)',
+          label:
+            import.meta.env.VITE_NETWORKING_SYSTEM_LAB === 'true'
+              ? 'KyClash Network (LAB · userspace)'
+              : 'KyClash Network (Dev)',
           path: '/networking-dev',
           icon: [<MonitorHeartOutlinedIcon key="mui" />],
           Component: NetworkingDevPage,

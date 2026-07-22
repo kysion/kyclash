@@ -34,6 +34,10 @@ networking-keychain-lab = []
 # Builds the fixed-scope lab binaries without packaging application resources.
 # This feature is never enabled by normal application or release builds.
 networking-system-lab = ["tauri/test", "dep:aws-lc-rs"]
+# Explicit no-sign App profile for the loopback userspace data-plane lab.  It
+# deliberately implies the existing lab-only stdio surface and is never part
+# of a normal or production feature set.
+networking-userspace-lab-app = ["networking-dev", "networking-system-lab"]
 updater-verifier = []
 
 [[bin]]

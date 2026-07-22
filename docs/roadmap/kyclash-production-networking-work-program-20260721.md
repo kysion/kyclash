@@ -102,6 +102,15 @@ disposable-VM candidate and its fail-closed package classification. The first
 incomplete aggregate criterion remains S1.13.
 Overall S1 status: in progress.
 
+Guest App checkpoint (2026-07-23): the explicit no-sign
+`networking-userspace-lab-app` candidate was visibly launched in the selected
+`VirtualMac2,1` guest and its Connect action completed the actual bundled
+userspace sidecar sequence QUIC -> WSS -> TCP with break-before-make checks.
+This closes the App-visible userspace evidence slice only; it intentionally
+does not claim Darwin `utun`, private-route installation, tunnel-broker/XPC, or
+production endpoint readiness. The redacted record is
+`docs/testing/kyclash-userspace-lab-app-vm-20260723.md`.
+
 Hosted CI continuation (2026-07-22): the replacement macOS verify run
 `29932701242` (GitHub Actions run #69) is fully successful. It keeps the
 shipped one-second userspace probe deadline, applies a separate
