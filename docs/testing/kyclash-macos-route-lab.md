@@ -134,6 +134,11 @@ It uses an in-memory executor and a temporary private journal to cover normal
 IPv4/IPv6 apply and cleanup, duplicate/replayed lease messages, exact route
 conflicts, injected add and rollback failures, heartbeat/lease expiry,
 connection invalidation, helper restart reconciliation, and corrupt-journal
-fail-closed behavior. The
-privileged VM's complete route/conflict/restart matrix and Mihomo coexistence
-remain separate gates.
+fail-closed behavior. The signed privileged VM has now also passed dual-stack
+normal apply/rollback, exact IPv4/IPv6 and more-specific IPv4 conflict refusal.
+The current helper fails closed on every non-default overlap, so the historical
+less-specific IPv4/IPv6 probe is superseded and is not accepted coexistence
+evidence. A typed active-Mihomo-interface ownership amendment is required
+before less-specific coverage may be allowed. The complete production-journal
+corruption/restart matrix and packaged Mihomo coexistence remain separate
+gates; see `kyclash-macos-virtualization-lab.md` for the evidence boundary.

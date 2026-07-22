@@ -59,8 +59,8 @@ stopping points.
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
 | S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
-| S1.12 | route lease/recovery | in progress; injected failure matrix passes, signed VM begin/apply/status/rollback and helper restart pass, privileged full matrix remains |
-| S1.13 | Mihomo coexistence VM matrix | pending; depends on real helper/XPC route execution |
+| S1.12 | route lease/recovery | in progress; injected failure matrix and signed VM dual-stack normal/conflict/recovery probes pass, privileged journal-corruption/restart matrix remains |
+| S1.13 | Mihomo coexistence VM matrix | pending; the current helper fails closed on every non-default overlap; a typed active-Mihomo-interface ownership amendment and the packaged Mihomo matrix remain |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
@@ -576,13 +576,16 @@ lease, requires an exact prepared reply, applies only that reference, and
 rolls it back on any embedded error, unexpected state, disconnect, or drop.
 The helper now persists a private journal before each fixed `/sbin/route`
 mutation, tracks pending/applied CIDRs, expires leases after bounded heartbeat
-silence, and rolls back on XPC invalidation. VM mutation/restart evidence and
-rejects destinations returned by the fixed read-only `route -n get` lookup,
-while explicitly allowing the ordinary default underlay route and an absent
-IPv6 table, before writing the first mutation. The helper's read-only self-test
-is now part of the macOS CI compile gate. A read-only VM probe confirmed
-macOS reports an uninstalled private IPv4 route as `destination: default` and
-an absent IPv6 route as `not in table`; both now pass the availability guard.
+silence, and rolls back on XPC invalidation. The availability guard now uses a
+normalized explicit IPv4 netmask/IPv6 lookup plus a read-only routing-table
+overlap scan. The current candidate fails closed on every non-default overlap
+(exact, more-specific, or less-specific); only the ordinary default underlay is
+ignored. The less-specific Mihomo exception is a locked target only after a
+typed active-Mihomo-interface ownership amendment is carried through the
+boundary, and is not current acceptance evidence. The helper's read-only
+parser/overlap self-test is now part of the macOS CI compile gate. A signed VM
+probe confirmed dual-stack normal apply/rollback, exact IPv4/IPv6 conflict
+refusal, and a more-specific `/25` refusal without writing a journal.
 The resumed interactive disposable VM has now re-run the scoped route
 transaction lab: normal cycle, abort-after-apply (exit 134), and journal
 recovery all passed, with no final `192.0.2.0/24` route. The redacted journal
@@ -603,8 +606,10 @@ rollback failure and retry, heartbeat/lease expiry, helper restart
 reconciliation, and corrupt-journal fail-closed behavior; it never invokes
 `/sbin/route`. The CI compile gate runs both the read-only route probe and this
 injected coordinator matrix. The
-privileged VM's complete IPv4/IPv6/conflict/journal-corruption/restart matrix
-and packaged Mihomo coexistence scenarios remain open for S1.13.
+redacted dual-stack/conflict evidence is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/route-helper-dual-conflict-20260722.txt`.
+The privileged VM's complete journal-corruption/restart matrix and packaged
+Mihomo coexistence scenarios remain open for S1.13.
 
 Deliverables:
 
@@ -628,12 +633,25 @@ Merge unit: `feat(macos): lease transactional private routes`.
 
 #### S1.13 — disposable-VM system and Mihomo matrix (formerly N4C)
 
+Status (2026-07-22): pending. The signed VM helper/XPC client passes the
+dual-stack normal transaction, exact IPv4/IPv6 conflict refusal, and a
+more-specific IPv4 route refusal. The current helper intentionally rejects
+all non-default overlap, including a less-specific `128.0.0.0/1` or `fd00::/8`
+covering route; the historical broad-route probe is superseded and is not
+current coexistence acceptance evidence. A typed active-Mihomo-interface
+ownership amendment must land before less-specific coexistence can be tested
+or accepted. The packaged Mihomo TUN, private-service reachability, helper
+restart, journal corruption, guest reboot, and unknown-VPN matrix are still
+required before this package closes.
+
 Scenarios:
 
 - IPv4 and IPv6 normal connect/disconnect and private-service reachability.
 - Sidecar, app, and helper abort; helper restart; guest reboot; journal
   corruption; pre-existing exact/more-specific/unknown-VPN conflicts.
-- Packaged Mihomo TUN active with allowed less-specific coverage.
+- Packaged Mihomo TUN active; after the typed active-Mihomo-interface ownership
+  amendment, prove allowed less-specific coverage, unknown-VPN refusal, and
+  complete cleanup.
 - Refusal of default-route takeover and any route not owned by the transaction.
 
 Exit evidence:

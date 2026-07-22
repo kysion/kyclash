@@ -205,8 +205,10 @@ Completed in the current workspace:
   route table. Its mutation methods always refuse with `PermissionDenied`.
 - Added fault coverage for journal failure before mutation, journal failure
   after mutation, durable pending-route recovery, corruption, and restart.
-- Added an explicit Mihomo TUN coexistence policy: only a configured active
-  Mihomo interface may contribute a less-specific covering route. Unknown VPN
+- Locked the Mihomo TUN coexistence target: only a configured active Mihomo
+  interface may eventually contribute a less-specific covering route. The
+  typed active-interface ownership amendment is not present in the current
+  helper; until it lands, every non-default overlap fails closed. Unknown VPN
   interfaces and exact or more-specific routes always fail closed; `utun*`
   names never imply ownership by themselves.
 - Added the IPv4/IPv6 coexistence matrix for Mihomo split routes, unknown VPN
@@ -234,9 +236,10 @@ Completed in the current workspace:
 
 Remaining authorization-dependent validation:
 
-- Execute Mihomo coexistence scenarios in the local disposable macOS VM. The
-  production adapter remains read-only and Iteration 3 is not release-closed
-  until that separate integration evidence exists.
+- After the typed active-Mihomo-interface ownership amendment, execute Mihomo
+  coexistence scenarios in the local disposable macOS VM. The production
+  adapter remains read-only and Iteration 3 is not release-closed until that
+  separate integration evidence exists.
 
 Exit criteria:
 

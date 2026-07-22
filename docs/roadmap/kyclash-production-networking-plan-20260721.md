@@ -236,9 +236,10 @@ Tasks:
 5. Run fixed isolated VM scenarios for normal disconnect, failure at every
    boundary, sidecar abort, app abort, helper restart, machine reboot, route
    conflict, and journal corruption.
-6. Start the packaged Mihomo TUN in the disposable VM and prove allowed
-   less-specific coverage, rejection of unknown VPN ownership, no default-route
-   takeover, and complete cleanup for IPv4 and IPv6.
+6. After the typed active-Mihomo-interface ownership amendment, start the
+   packaged Mihomo TUN in the disposable VM and prove allowed less-specific
+   coverage, rejection of unknown VPN ownership, no default-route takeover,
+   and complete cleanup for IPv4 and IPv6.
 
 Exit gate:
 

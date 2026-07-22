@@ -274,6 +274,42 @@ controller-kill observations; both standalone and combined production-sidecar
 utun forced-termination subcases are now recorded. S1.10 is complete; the
 privileged route and Mihomo coexistence work continues under S1.12/S1.13.
 
+## Installed App and signed route-helper matrix — 2026-07-22
+
+The corrected Developer ID PKG is installed at `/Applications/KyClash.app` in
+the disposable guest and has been launched visibly with the KyClash brand,
+Mihomo child, and singleton listener alive. The current installed-package
+capture is retained at
+`target/macos-vm-lab/evidence/app-launch-20260722/kyclash-installed-pkg-live-20260722.png`
+with SHA-256
+`5630fa3513fbddf96af38c3a78eedf43bd3f327eb42ed2971fc5edf3c83cdea9`.
+
+The same guest then ran the signed production route helper and typed client on
+an owned `utun4`. The final helper SHA-256 was
+`39bf4758ad3b346947621f9288c7ec81c2127e50d0787670daede9e4e10c056a`.
+The matrix proved:
+
+- dual-stack `begin/apply/status/rollback` succeeds with final route absence;
+- exact IPv4 and IPv6 pre-existing routes return `route_conflict`;
+- a more-specific `192.0.2.128/25` route also returns `route_conflict` even
+  though the network-base lookup resolves through the default underlay;
+- the current helper fails closed on every non-default overlap, including
+  less-specific `128.0.0.0/1` and `fd00::/8` coverage. The historical
+  less-specific probe is superseded and is not current coexistence acceptance
+  evidence; a typed active-Mihomo-interface ownership amendment is required
+  before such coverage may be allowed;
+- no fixed test route, helper journal, helper process, or test utun remained
+  after scoped cleanup.
+
+The lookup parser and fail-closed overlap policy are also covered by the
+helper's read-only self-test. The raw command/results file is retained only as
+historical trace at
+`target/macos-vm-lab/evidence/app-launch-20260722/route-helper-dual-conflict-20260722.txt`;
+it must not be cited as current less-specific coexistence evidence. This
+advances S1.12 only and does not substitute for the typed ownership amendment,
+packaged Mihomo TUN, journal-corruption/restart, guest-reboot, or
+private-service reachability matrix.
+
 ## Disposable test cycle
 
 ```bash

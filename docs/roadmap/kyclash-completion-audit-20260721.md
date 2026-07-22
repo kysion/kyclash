@@ -270,3 +270,27 @@ passed deep strict signature verification, read the manifest, matched its hash
 to the nested sidecar, and launched `/Applications/KyClash.app` with its Mihomo
 child and singleton listener. The earlier notarized bytes remain historical
 evidence and are not claimed for this current candidate.
+
+## Visible App and production route overlap continuation — 2026-07-22
+
+The corrected signed PKG is installed in the disposable macOS guest and
+`/Applications/KyClash.app` is visibly running with the KyClash brand, Mihomo
+child, and singleton listener. A separate host-side launch of the signed bundle
+also rendered a `KyClash` window and returned a healthy Mihomo `/version`
+response. This closes the question of whether the current App bundle can be
+started; it does not imply that the default-off production networking feature
+has been enabled in the release candidate.
+
+The signed route helper now normalizes IPv4 CIDRs into explicit netmask
+lookups, scans the read-only route table, and fails closed on every non-default
+overlap (exact, more-specific, or less-specific); only the ordinary default
+underlay is ignored. Its parser/overlap self-test and injected coordinator
+matrix cover that fail-closed policy. In the disposable VM, a typed dual-stack
+transaction passed on owned `utun4`; exact IPv4/IPv6 and more-specific IPv4
+conflicts failed closed without a journal. The historical
+`128.0.0.0/1`/`fd00::/8` coexistence probe is superseded and is not current
+acceptance evidence. A typed active-Mihomo-interface ownership amendment is
+pending before less-specific coexistence can be allowed. Scoped cleanup found
+no test route, journal, helper, or test utun. The packaged Mihomo,
+corruption/restart/reboot, private-service, physical sleep/wake, and real
+network-switch gates remain open.
