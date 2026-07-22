@@ -289,9 +289,11 @@ The corrected signed PKG is installed in the disposable macOS guest and
 `/Applications/KyClash.app` is visibly running with the KyClash brand, Mihomo
 child, and singleton listener. A separate host-side launch of the signed bundle
 also rendered a `KyClash` window and returned a healthy Mihomo `/version`
-response. This closes the question of whether the current App bundle can be
-started; it does not imply that the default-off production networking feature
-has been enabled in the release candidate.
+response. The latest host candidate after pushed commit `be3c9f39` is recorded
+in `docs/testing/kyclash-macos-arm64-pkg-20260721.md`; this closes the question
+of whether the current App bundle can be started, but does not imply that the
+default-off production networking feature has been enabled in the release
+candidate.
 
 The signed route helper now normalizes IPv4 CIDRs into explicit netmask
 lookups and scans the read-only route table. Its v2 boundary fails closed on

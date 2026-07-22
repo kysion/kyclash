@@ -99,3 +99,29 @@ evidence, not as an accepted rollback artifact. Reinstalling the corrected
 current candidate restored non-admin deep signature verification and the live
 installed application. A compatible retained rollback artifact remains an
 open lifecycle requirement.
+
+## Latest source candidate after `be3c9f39` — 2026-07-22
+
+The current source commit `be3c9f39` was rebuilt with the authorized local
+Developer ID identities after the production-networking and route-helper
+changes were pushed. This is an internal GitHub/no-App-Store candidate; it is
+Developer ID signed but intentionally not notarized or stapled.
+
+Artifacts and hashes:
+
+- App executable (`Contents/MacOS/clash-verge`):
+  `adc83faefbac6a16a16bb64af15b8071db54907157b1e42578351c88ce74a40d`
+- Nested network sidecar:
+  `51a219f3481fdc3698a03768761f0557e2db3672c222b95746f370a7edadee6d`
+- Nested route helper:
+  `06aaa494e30d3bda31fc5b0c6fd33c90776c96d2e83e1b524b93386bc784c87e`
+- PKG (`68512053` bytes):
+  `0a95bb3933eb19625e555a9005b852a4c6511d4dd7d6aee1b67fa0dae0c17fb4`
+
+`scripts/verify-macos-package.mjs aarch64-apple-darwin` passed for this exact
+candidate: deep strict app signature, nested sidecar/helper signatures and
+Team ID `RQUQ8Y3S9H`, trust-manifest hash, plist, and Developer ID Installer
+signature with a trusted timestamp. Host LaunchServices then started the same
+bundle with a visible `KyClash` window; the Mihomo control socket returned
+`v1.19.29`. Gatekeeper/notarization remains a public-distribution enhancement,
+not a current no-Store/GitHub internal-test stop condition.

@@ -769,18 +769,24 @@ trust manifest had inherited source mode `0600`; after `pkgbuild` changed its
 owner to `root:wheel`, the normal app user could not read the sealed resource
 or complete deep signature verification. Commit `8bd179d1` fixes the producer
 to enforce `0644` after every write and makes package verification fail on any
-other mode. The rebuilt Developer ID-signed internal candidate has SHA-256
-`b06d0c64bce8b50459875bf905ade2a244d17537f8a22e34ca270b008ed434f1`.
-It upgraded successfully in the disposable guest; as the non-admin test user,
+other mode. The previous corrected Developer ID-signed internal candidate had
+SHA-256 `b06d0c64bce8b50459875bf905ade2a244d17537f8a22e34ca270b008ed434f1`.
+After commit `be3c9f39` was pushed, the latest exact internal candidate was
+rebuilt and has PKG SHA-256
+`0a95bb3933eb19625e555a9005b852a4c6511d4dd7d6aee1b67fa0dae0c17fb4`.
+Its app executable, sidecar, and helper hashes are recorded in
+`docs/testing/kyclash-macos-arm64-pkg-20260721.md`. The previous candidate
+upgraded successfully in the disposable guest; as the non-admin test user,
 the receipt, `0644` manifest, exact sidecar hash match, nested Team ID, and
 deep strict app signature all passed. LaunchServices then ran the installed
 `/Applications/KyClash.app`, its Mihomo child, and singleton listener while
 the previous lab-copy process was absent. Redacted evidence and the visible
 installed-app capture are retained under
 `target/macos-vm-lab/evidence/app-launch-20260722/`. Performance baselines,
-fresh-install/rollback/uninstall/reboot evidence, and the remaining exact-byte
-lifecycle matrix remain open. Notarization was intentionally not required for
-this internal candidate.
+fresh-install/rollback/uninstall/reboot evidence, and the latest exact-byte VM
+lifecycle matrix remain open. The latest candidate passed the host package
+audit and visible LaunchServices smoke. Notarization was intentionally not
+required for either internal candidate.
 
 The retained historical notarized package was then exercised as a rollback
 artifact. Its installer transaction succeeded, but its application did not
