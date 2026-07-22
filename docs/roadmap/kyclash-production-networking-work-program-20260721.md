@@ -63,7 +63,7 @@ stopping points.
 | S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
 | S1.12 | route lease/recovery | complete; v2 wire/journal migration, injected failure coverage, signed dual-stack VM transaction, conflict refusal, helper restart, journal-corruption fail-closed, and final-absence evidence passed |
-| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary and signed synthetic-Mihomo v2 matrix pass; a fail-closed packaged-Mihomo/live-control VM executor and static CI gate are implemented, while its VM run, reachability, reboot, and full coexistence cleanup evidence remain |
+| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary, signed synthetic-Mihomo v2 matrix, and the fail-closed packaged-Mihomo/live-control VM executor pass in the disposable VM; production live-source execution, reachability, reboot, and full coexistence cleanup evidence remain |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
@@ -745,6 +745,18 @@ completed ten rounds. The Rust process-level actual-child matrix also passed
 with freshly built temporary Go binaries, covering IPC health traffic,
 explicit QUIC/WSS/TCP sequencing, and cancellation. Evidence is recorded in
 `docs/testing/kyclash-network-reliability-20260722.md`.
+
+The production service monitor now also performs the locked runtime fallback
+instead of tearing the entire connection down at the first health threshold.
+It retains the owned utun and route lease, heartbeats that lease, explicitly
+disconnects and observes the failed carrier absent, and then attempts only the
+remaining ordered fallbacks. Focused tests prove QUIC failure followed by WSS
+failure reaches TCP only after two disconnects, with no route reapply or
+rollback during the successful switch. Exhausting all carriers converges
+through route rollback, tunnel stop, and secret release with the stable
+`fallback_transport_unavailable` reason. Production Go live health sampling
+and actual-child cancellation remain open and are not inferred from these
+injected-runtime tests.
 
 The consolidated short CI matrix is now configured in the macOS sidecar
 workflow (its first post-change hosted result is pending); stable reason-code

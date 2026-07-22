@@ -42,6 +42,7 @@ struct MonitorCleanupContext {
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     request_sequence: Arc<AtomicU64>,
     timeout: Duration,
+    profile: NetworkProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,9 +570,11 @@ impl ProductionNetworkingService {
             lifecycle: Arc::clone(&lifecycle),
             request_sequence: Arc::clone(&request_sequence),
             timeout,
+            profile: self.profile.clone(),
         };
         let handle = tokio::spawn(async move {
             let mut consecutive_health_failures = 0_u8;
+            let mut active_transport = transport;
             loop {
                 tokio::time::sleep(interval).await;
                 if task_cancelled.load(Ordering::Acquire) {
@@ -601,7 +604,9 @@ impl ProductionNetworkingService {
                         .await;
                     break;
                 }
-                match monitor_carrier_health(&controller, &request_sequence, &operation_id, transport, timeout).await {
+                match monitor_carrier_health(&controller, &request_sequence, &operation_id, active_transport, timeout)
+                    .await
+                {
                     Ok(health) => {
                         consecutive_health_failures = 0;
                         let mut current = status.lock();
@@ -619,8 +624,35 @@ impl ProductionNetworkingService {
                     {
                         consecutive_health_failures = consecutive_health_failures.saturating_add(1);
                         if consecutive_health_failures >= health_failure_threshold {
-                            monitor_failure_cleanup(&monitor_cleanup, &operation_id, error).await;
-                            break;
+                            match monitor_fallback_after_health_failure(
+                                &monitor_cleanup,
+                                &operation_id,
+                                active_transport,
+                                error,
+                                &task_cancelled,
+                            )
+                            .await
+                            {
+                                Ok((fallback, health)) => {
+                                    active_transport = fallback;
+                                    consecutive_health_failures = 0;
+                                    let mut current = status.lock();
+                                    if current.operation_id.as_deref() != Some(operation_id.as_str()) {
+                                        break;
+                                    }
+                                    current.state = NetworkState::DegradedFallback;
+                                    current.active_transport = Some(fallback);
+                                    current.health = Some(health);
+                                    current.last_error = Some(error);
+                                }
+                                Err(NetworkErrorCode::OperationCancelled) if task_cancelled.load(Ordering::Acquire) => {
+                                    break;
+                                }
+                                Err(fallback_error) => {
+                                    monitor_failure_cleanup(&monitor_cleanup, &operation_id, fallback_error).await;
+                                    break;
+                                }
+                            }
                         }
                     }
                     Err(error) => {
@@ -696,6 +728,150 @@ async fn monitor_carrier_health(
         });
     }
     Ok(health)
+}
+
+async fn monitor_fallback_after_health_failure(
+    context: &MonitorCleanupContext,
+    operation_id: &str,
+    failed_transport: TransportKind,
+    failure: NetworkErrorCode,
+    cancelled: &AtomicBool,
+) -> Result<(TransportKind, NetworkHealth), NetworkErrorCode> {
+    let _lifecycle = context.lifecycle.lock().await;
+    ensure_monitor_operation_active(context, operation_id, cancelled)?;
+    {
+        let mut current = context.status.lock();
+        current.state = NetworkState::Reconnecting;
+        current.last_error = Some(failure);
+    }
+
+    monitor_route_heartbeat(context, operation_id).await?;
+    monitor_disconnect_carrier(context, operation_id).await?;
+    {
+        let mut current = context.status.lock();
+        if current.operation_id.as_deref() != Some(operation_id) {
+            return Err(NetworkErrorCode::OperationCancelled);
+        }
+        current.active_transport = None;
+        current.health = None;
+    }
+
+    let ordered = std::iter::once(context.profile.transports.primary)
+        .chain(context.profile.transports.fallbacks.iter().copied())
+        .collect::<Vec<_>>();
+    let failed_index = ordered
+        .iter()
+        .position(|transport| *transport == failed_transport)
+        .ok_or(NetworkErrorCode::InvalidConfiguration)?;
+    if failed_index + 1 >= ordered.len() {
+        return Err(NetworkErrorCode::FallbackTransportUnavailable);
+    }
+
+    for transport in ordered.into_iter().skip(failed_index + 1) {
+        ensure_monitor_operation_active(context, operation_id, cancelled)?;
+        monitor_route_heartbeat(context, operation_id).await?;
+        let request_id = next_request_id(&context.request_sequence, transport_action("carrier", transport))?;
+        let connect = controller_request_network_status(
+            &context.controller,
+            operation_id,
+            request_id,
+            IpcRequestPayload::ConnectTransport { transport },
+            context.timeout,
+        )
+        .await
+        .and_then(|status| validate_connected_status(&status, &context.profile, transport));
+        if connect.is_ok() {
+            match monitor_carrier_health(
+                &context.controller,
+                &context.request_sequence,
+                operation_id,
+                transport,
+                context.timeout,
+            )
+            .await
+            {
+                Ok(health) => return Ok((transport, health)),
+                Err(NetworkErrorCode::OperationCancelled) => {
+                    return Err(NetworkErrorCode::OperationCancelled);
+                }
+                Err(_) => {}
+            }
+        } else if connect == Err(NetworkErrorCode::OperationCancelled) {
+            return Err(NetworkErrorCode::OperationCancelled);
+        }
+
+        // A connect or health request may have completed remotely after its
+        // local deadline.  Confirm the carrier is absent before advancing to
+        // the next fallback; never make two carriers concurrently active.
+        monitor_disconnect_carrier(context, operation_id).await?;
+        {
+            let mut current = context.status.lock();
+            if current.operation_id.as_deref() != Some(operation_id) {
+                return Err(NetworkErrorCode::OperationCancelled);
+            }
+            current.active_transport = None;
+            current.health = None;
+        }
+    }
+    Err(NetworkErrorCode::FallbackTransportUnavailable)
+}
+
+fn ensure_monitor_operation_active(
+    context: &MonitorCleanupContext,
+    operation_id: &str,
+    cancelled: &AtomicBool,
+) -> Result<(), NetworkErrorCode> {
+    if cancelled.load(Ordering::Acquire)
+        || context.status.lock().operation_id.as_deref() != Some(operation_id)
+        || context.status.lock().state == NetworkState::Disconnecting
+    {
+        Err(NetworkErrorCode::OperationCancelled)
+    } else {
+        Ok(())
+    }
+}
+
+async fn monitor_route_heartbeat(context: &MonitorCleanupContext, operation_id: &str) -> Result<(), NetworkErrorCode> {
+    let routes = Arc::clone(&context.routes);
+    let operation_id = operation_id.to_owned();
+    tokio::time::timeout(
+        context.timeout,
+        tokio::task::spawn_blocking(move || routes.lock().heartbeat(&operation_id)),
+    )
+    .await
+    .map_err(|_| NetworkErrorCode::RouteRollbackFailed)?
+    .map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+}
+
+async fn monitor_disconnect_carrier(
+    context: &MonitorCleanupContext,
+    operation_id: &str,
+) -> Result<(), NetworkErrorCode> {
+    let request_id = next_request_id(&context.request_sequence, "carrier.disconnect")?;
+    match controller_request_network_status(
+        &context.controller,
+        operation_id,
+        request_id,
+        IpcRequestPayload::DisconnectTransport,
+        context.timeout,
+    )
+    .await
+    {
+        Ok(status) => validate_carrier_disconnected(&status),
+        Err(NetworkErrorCode::InvalidStateTransition) => {
+            let request_id = next_request_id(&context.request_sequence, "carrier.status")?;
+            let status = controller_request_network_status(
+                &context.controller,
+                operation_id,
+                request_id,
+                IpcRequestPayload::GetStatus,
+                context.timeout,
+            )
+            .await?;
+            validate_carrier_disconnected(&status)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn monitor_failure_cleanup(context: &MonitorCleanupContext, operation_id: &str, failure: NetworkErrorCode) {
@@ -818,11 +994,23 @@ async fn controller_request_status(
     payload: IpcRequestPayload,
     timeout: Duration,
 ) -> Result<(), NetworkErrorCode> {
+    controller_request_network_status(controller, operation_id, request_id, payload, timeout)
+        .await
+        .map(drop)
+}
+
+async fn controller_request_network_status(
+    controller: &ProductionControllerHandle,
+    operation_id: &str,
+    request_id: String,
+    payload: IpcRequestPayload,
+    timeout: Duration,
+) -> Result<NetworkStatus, NetworkErrorCode> {
     let response = controller
         .request(operation_id.to_owned(), request(request_id, payload), timeout)
         .await?;
     match response.result.map_err(|error| error.code)? {
-        IpcResponsePayload::Status(_) => Ok(()),
+        IpcResponsePayload::Status(status) => Ok(status),
         _ => Err(NetworkErrorCode::InvalidStateTransition),
     }
 }
@@ -1044,6 +1232,8 @@ mod tests {
         inner: Runtime,
         health_failure: Arc<AtomicBool>,
         sidecar_exited: Arc<AtomicBool>,
+        unhealthy_transports: Vec<TransportKind>,
+        active_transport: Option<TransportKind>,
     }
 
     #[async_trait]
@@ -1057,8 +1247,15 @@ mod tests {
             request: IpcRequest,
             cancel: Arc<AtomicBool>,
         ) -> Result<IpcResponse, NetworkErrorCode> {
+            let requested_transport = match &request.payload {
+                IpcRequestPayload::ConnectTransport { transport } => Some(*transport),
+                _ => None,
+            };
             if self.health_failure.load(Ordering::Acquire)
                 && matches!(&request.payload, IpcRequestPayload::SampleHealth)
+                && self
+                    .active_transport
+                    .is_some_and(|transport| self.unhealthy_transports.contains(&transport))
             {
                 self.inner.events.lock().push("carrier:health:failed".into());
                 return Ok(IpcResponse {
@@ -1072,7 +1269,16 @@ mod tests {
                     })),
                 });
             }
-            self.inner.request(request, cancel).await
+            let disconnecting = matches!(&request.payload, IpcRequestPayload::DisconnectTransport);
+            let response = self.inner.request(request, cancel).await?;
+            if response.result.is_ok() {
+                if let Some(transport) = requested_transport {
+                    self.active_transport = Some(transport);
+                } else if disconnecting {
+                    self.active_transport = None;
+                }
+            }
+            Ok(response)
         }
 
         async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
@@ -1308,7 +1514,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn running_health_failure_rolls_routes_back_before_bounded_cleanup() -> anyhow::Result<()> {
+    async fn all_runtime_carriers_failing_rolls_routes_back_before_bounded_cleanup() -> anyhow::Result<()> {
         let events = Arc::new(Mutex::new(Vec::new()));
         let health_failure = Arc::new(AtomicBool::new(false));
         let controller = spawn_production_controller(
@@ -1319,6 +1525,8 @@ mod tests {
                 },
                 health_failure: Arc::clone(&health_failure),
                 sidecar_exited: Arc::new(AtomicBool::new(false)),
+                unhealthy_transports: vec![TransportKind::Quic, TransportKind::Wss, TransportKind::Tcp],
+                active_transport: None,
             },
             SidecarLaunchContext::new("instance.test".into(), vec![11; 32]).with_private_key(vec![12; 32]),
             "proof".into(),
@@ -1344,7 +1552,7 @@ mod tests {
             loop {
                 let current = service.status();
                 if current.state == NetworkState::Disconnected
-                    && current.last_error == Some(NetworkErrorCode::PrimaryTransportUnavailable)
+                    && current.last_error == Some(NetworkErrorCode::FallbackTransportUnavailable)
                 {
                     break;
                 }
@@ -1365,14 +1573,101 @@ mod tests {
                 .iter()
                 .filter(|event| event.as_str() == "carrier:health:failed")
                 .count(),
-            3,
-            "cleanup must wait for the configured consecutive health threshold"
+            5,
+            "primary uses the configured threshold before each fallback is gated once"
         );
         assert!(position("carrier:health:failed")? < position("routes:rollback")?);
-        assert!(position("routes:rollback")? < position("carrier:disconnect")?);
         assert!(position("routes:rollback")? < position("tunnel:stop")?);
         assert!(position("routes:rollback")? < position("secret:clear")?);
         drop(events);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_health_failure_switches_quic_wss_tcp_break_before_make() -> anyhow::Result<()> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let health_failure = Arc::new(AtomicBool::new(false));
+        let controller = spawn_production_controller(
+            MonitoredRuntime {
+                inner: Runtime {
+                    events: Arc::clone(&events),
+                    fail_quic: false,
+                },
+                health_failure: Arc::clone(&health_failure),
+                sidecar_exited: Arc::new(AtomicBool::new(false)),
+                unhealthy_transports: vec![TransportKind::Quic, TransportKind::Wss],
+                active_transport: None,
+            },
+            SidecarLaunchContext::new("instance.test".into(), vec![15; 32]).with_private_key(vec![16; 32]),
+            "proof".into(),
+        );
+        let profile: NetworkProfile = serde_json::from_str(PROFILE)?;
+        let mut service = ProductionNetworkingService::new(
+            controller,
+            profile,
+            Box::new(Routes(Arc::clone(&events))),
+            "instance.test".into(),
+            42,
+        )
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        service.route_heartbeat_interval = Duration::from_millis(20);
+        service
+            .connect("operation.monitor.fallback".into())
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        events.lock().clear();
+        health_failure.store(true, Ordering::Release);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let current = service.status();
+                if current.state == NetworkState::DegradedFallback
+                    && current.active_transport == Some(TransportKind::Tcp)
+                    && current.last_error == Some(NetworkErrorCode::PrimaryTransportUnavailable)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+
+        {
+            let events = events.lock();
+            let position = |value: &str| {
+                events
+                    .iter()
+                    .position(|event| event == value)
+                    .ok_or_else(|| anyhow::anyhow!("missing event {value}"))
+            };
+            let disconnects = events
+                .iter()
+                .enumerate()
+                .filter_map(|(index, event)| (event == "carrier:disconnect").then_some(index))
+                .collect::<Vec<_>>();
+            assert!(disconnects.len() >= 2);
+            assert!(disconnects[0] < position("carrier:connect:Wss")?);
+            assert!(disconnects[1] < position("carrier:connect:Tcp")?);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.as_str() == "carrier:health:failed")
+                    .count(),
+                4
+            );
+            assert!(!events.iter().any(|event| event == "routes:rollback"));
+            assert_eq!(
+                events.iter().filter(|event| event.as_str() == "routes:apply").count(),
+                0
+            );
+            drop(events);
+        }
+
+        service
+            .disconnect("operation.monitor.fallback.disconnect".into())
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert!(events.lock().iter().any(|event| event == "routes:rollback"));
         Ok(())
     }
 
@@ -1388,6 +1683,8 @@ mod tests {
                 },
                 health_failure: Arc::new(AtomicBool::new(false)),
                 sidecar_exited: Arc::clone(&sidecar_exited),
+                unhealthy_transports: vec![TransportKind::Quic, TransportKind::Wss, TransportKind::Tcp],
+                active_transport: None,
             },
             SidecarLaunchContext::new("instance.test".into(), vec![13; 32]).with_private_key(vec![14; 32]),
             "proof".into(),

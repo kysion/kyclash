@@ -29,6 +29,10 @@ easy to miss in a short happy-path run:
   pair reordering, UDP refusal, TLS identity refusal, replay, fragment expiry,
   packet-size bounds, IPC cancellation, and Rust break-before-make tests remain
   enabled.
+- The production Rust monitor now advances only in the configured QUIC -> WSS
+  -> TCP order after a consecutive-health threshold. Each old carrier is
+  explicitly observed disconnected before the next connect, while the stable
+  utun and owned route lease are retained and heartbeated.
 
 ## Commands and results
 
@@ -94,6 +98,19 @@ KYCLASH_NETWORK_LAB_SIDECAR_BIN=/tmp/kyclash-s114-child/kyclash-network-sidecar-
 The test passed in 1.84 seconds and covered the actual IPC child, userspace
 WireGuard health traffic, explicit QUIC/WSS/TCP sequencing, and cancellation.
 
+The focused production-service monitor suite also passed:
+
+```bash
+cargo test -p clash-verge --all-features --lib \
+  networking::production_service::tests
+```
+
+Eight tests passed. The runtime-health case injects three failed QUIC samples,
+then a failed WSS health gate, and proves TCP is connected only after the QUIC
+and WSS disconnect observations. Routes are applied only once and remain
+active across the successful carrier switch. A separate all-carriers-failed
+case proves final route rollback precedes tunnel stop and secret release.
+
 The Linux `tc netem`/nftables harness was inspected in non-mutating mode on the
 same host:
 
@@ -135,4 +152,6 @@ repeatable locally; the existing hosted race/netem results remain retained in
 CI. S1.14 remains open for a reviewed compatible server under sustained
 impairment, macOS sleep/wake and physical network-interface changes, and the
 production Rust-to-Go command boundary once the S1.10–S1.13 system gates are
-closed. No fallback is enabled implicitly inside Go.
+closed. Production Go health must still detect a post-connect carrier failure,
+and production stdio cancellation must reach the actual child while a request
+is blocked. No fallback is enabled implicitly inside Go.
