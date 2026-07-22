@@ -76,9 +76,13 @@ the replacement generation may observe authoritative `idle`. The Objective-C
 first-wins terminal-generation and precise transport-status boundary (XPC-B)
 is now locally closed in `96064f84`; strict arm64/x86_64 builds, analyzer,
 ABI-layout checks, deterministic self-tests, and independent review passed.
-The first incomplete source criterion is now XPC-C: Rust-owned replacement,
-same-generation read-only reconciliation, and frozen-owner retention. The first
-incomplete aggregate criterion remains S1.13. Overall S1 status: in progress.
+XPC-C is locally closed in the current source unit: Rust owns one bounded
+replacement, performs same-generation read-only reconciliation, preserves a
+frozen owner on failed recovery, and never replays a mutation on a fresh
+generation. Focused and full Rust library tests, Clippy, formatting, and diff
+checks pass. The first incomplete source criterion is now the production-feature
+live-source/typed-service cleanup path; the first incomplete aggregate criterion
+remains S1.13. Overall S1 status: in progress.
 
 ### Work-package dependency chain
 

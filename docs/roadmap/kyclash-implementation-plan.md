@@ -499,8 +499,11 @@ criterion remains in progress at S1.13. The exact policy-identity portion of
 the locked production restart/rematerialization implementation is complete;
 the helper accepted-connection barrier and Objective-C first-wins terminal
 generation boundary are now closed source gates in the XPC
-generation/rematerialization chain; Rust-owned replacement/reconciliation is
-the next source gate.
+generation/rematerialization chain. Rust XPC-C is also locally closed: it owns
+one bounded replacement, performs read-only discovery reconciliation on the
+same generation, retains frozen ownership on failed recovery, and never
+replays route mutations on a fresh generation. The next source gate is the
+production-feature live-source and typed service-lifecycle path.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and
@@ -526,12 +529,13 @@ Legacy revision-only records migrate only on a higher authenticated revision.
 Initialization remains single-flight and installs only a deferred factory, so
 this source evidence does not claim an App launch, XPC connection, Keychain
 read, sidecar, utun, or route mutation. The Swift helper accepted-connection
-barrier and Objective-C XPC-B terminal-generation/transport-status boundary
-are now closed. The current source unit is Rust XPC-C: replaceable generations,
-one bounded same-generation read-only discovery reconciliation, and frozen-owner
-retention without replaying route mutations. The sidecar cancellation amendment
-is committed as `8811dda9` with local full-race and 20-round soak evidence;
-hosted replacement verification remains pending.
+barrier, Objective-C XPC-B terminal-generation/transport-status boundary, and
+Rust XPC-C replacement/reconciliation boundary are now closed source units.
+XPC-C has local focused and full-library test, Clippy, formatting, and diff
+evidence; it does not claim a live production endpoint. The sidecar cancellation
+amendment is committed as `8811dda9` with local full-race and 20-round soak
+evidence. Hosted run `29923178571` still has a red macOS race verification
+step, so the hosted gate remains open.
 
 The route-helper v2 lease/journal implementation and signed disposable-VM
 matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,
@@ -541,8 +545,9 @@ final route/journal/lease absence. S1.13 is the first incomplete VM aggregate.
 Its packaged-Mihomo/live-control matrix and a separate signed App-managed
 `utun4093` GUI/lifecycle matrix pass in the disposable VM. The remaining gate
 is the production-feature Rust live-source path, private-service reachability,
-app/sidecar/helper abort, reboot/retry, and aggregate foreign-state cleanup;
-ordinary App evidence is not represented as production-controller evidence.
+app/sidecar/helper abort, reboot/retry, typed service retirement, and aggregate
+foreign-state cleanup; ordinary App evidence is not represented as
+production-controller evidence.
 
 ## Later platform order
 

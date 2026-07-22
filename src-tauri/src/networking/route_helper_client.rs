@@ -1,4 +1,9 @@
-use std::{ffi::CString, sync::Mutex};
+use std::{
+    ffi::CString,
+    sync::Mutex,
+    thread,
+    time::{Duration, Instant},
+};
 
 use super::{
     MihomoTunSnapshot, NetworkErrorCode, NetworkProfile, ProductionRouteBoundary, ROUTE_HELPER_PROTOCOL_VERSION,
@@ -12,6 +17,112 @@ struct NativeReply {
     protocol_version: i32,
     state: i32,
     error_code: i32,
+}
+
+const DISCOVERY_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
+const DISCOVERY_INITIAL_BACKOFF: Duration = Duration::from_millis(25);
+const DISCOVERY_MAX_BACKOFF: Duration = Duration::from_millis(200);
+const DISCOVERY_MAX_ATTEMPTS: u16 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteHelperCallError {
+    Terminal(NetworkErrorCode),
+    Local(NetworkErrorCode),
+}
+
+impl RouteHelperCallError {
+    const fn code(self) -> NetworkErrorCode {
+        match self {
+            Self::Terminal(error) | Self::Local(error) => error,
+        }
+    }
+
+    const fn terminates_generation(self) -> bool {
+        matches!(self, Self::Terminal(_))
+    }
+}
+
+trait RouteHelperGeneration: Send {
+    fn discover(&self) -> Result<RouteHelperStatus, RouteHelperCallError>;
+    fn begin(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, RouteHelperCallError>;
+    fn recover(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, RouteHelperCallError>;
+    fn apply(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError>;
+    fn rollback(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError>;
+    fn heartbeat(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError>;
+}
+
+trait RouteHelperGenerationFactory: Send {
+    fn create(&mut self) -> Result<Box<dyn RouteHelperGeneration>, NetworkErrorCode>;
+}
+
+#[derive(Clone, Copy)]
+struct DiscoveryPolicy {
+    total_timeout: Duration,
+    initial_backoff: Duration,
+    maximum_backoff: Duration,
+    maximum_attempts: u16,
+}
+
+impl DiscoveryPolicy {
+    const PRODUCTION: Self = Self {
+        total_timeout: DISCOVERY_TOTAL_TIMEOUT,
+        initial_backoff: DISCOVERY_INITIAL_BACKOFF,
+        maximum_backoff: DISCOVERY_MAX_BACKOFF,
+        maximum_attempts: DISCOVERY_MAX_ATTEMPTS,
+    };
+}
+
+trait DiscoveryTimer {
+    fn expired(&self) -> bool;
+    fn wait(&mut self, delay: Duration) -> bool;
+}
+
+struct WallClockDiscoveryTimer {
+    deadline: Instant,
+}
+
+impl WallClockDiscoveryTimer {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + timeout,
+        }
+    }
+}
+
+impl DiscoveryTimer for WallClockDiscoveryTimer {
+    fn expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    fn wait(&mut self, delay: Duration) -> bool {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        thread::sleep(delay.min(remaining));
+        !self.expired()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconciliationError {
+    Deadline,
+    Call(RouteHelperCallError),
+    Status(NetworkErrorCode),
+}
+
+impl ReconciliationError {
+    const fn code(self) -> NetworkErrorCode {
+        match self {
+            Self::Deadline => NetworkErrorCode::OperationTimedOut,
+            Self::Call(error) => error.code(),
+            Self::Status(error) => error,
+        }
+    }
+
+    const fn terminates_generation(self) -> bool {
+        matches!(self, Self::Call(error) if error.terminates_generation())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -75,11 +186,11 @@ impl RouteHelperClient {
         Err(NetworkErrorCode::SidecarUnavailable)
     }
 
-    pub fn discover(&self) -> Result<RouteHelperStatus, NetworkErrorCode> {
+    fn discover_call(&self) -> Result<RouteHelperStatus, RouteHelperCallError> {
         let _guard = self
             .request_lock
             .lock()
-            .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            .map_err(|_| RouteHelperCallError::Terminal(NetworkErrorCode::SidecarUnavailable))?;
         #[cfg(target_os = "macos")]
         {
             // SAFETY: `native` owns a live bridge client until Drop and takes no caller data.
@@ -89,55 +200,89 @@ impl RouteHelperClient {
             )
         }
         #[cfg(not(target_os = "macos"))]
-        Err(NetworkErrorCode::SidecarUnavailable)
+        Err(RouteHelperCallError::Terminal(NetworkErrorCode::SidecarUnavailable))
+    }
+
+    fn begin_call(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        self.owner_request_call(0, owner)
+    }
+
+    fn recover_call(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        self.owner_request_call(1, owner)
+    }
+
+    fn apply_call(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        self.reference_request_call(0, reference)
+    }
+
+    fn rollback_call(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        self.reference_request_call(1, reference)
+    }
+
+    fn heartbeat_call(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        self.reference_request_call(2, reference)
+    }
+
+    /// Preserve the pre-generation public client surface for lab callers and
+    /// external integration tests.  Generation management consumes the typed
+    /// internal error so only the boundary decides whether a call is terminal.
+    pub fn discover(&self) -> Result<RouteHelperStatus, NetworkErrorCode> {
+        self.discover_call().map_err(RouteHelperCallError::code)
     }
 
     pub fn begin(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, NetworkErrorCode> {
-        self.owner_request(0, owner)
+        self.begin_call(owner).map_err(RouteHelperCallError::code)
     }
 
     pub fn recover(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, NetworkErrorCode> {
-        self.owner_request(1, owner)
+        self.recover_call(owner).map_err(RouteHelperCallError::code)
     }
 
     pub fn apply(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, NetworkErrorCode> {
-        self.reference_request(0, reference)
+        self.apply_call(reference).map_err(RouteHelperCallError::code)
     }
 
     pub fn rollback(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, NetworkErrorCode> {
-        self.reference_request(1, reference)
+        self.rollback_call(reference).map_err(RouteHelperCallError::code)
     }
 
     pub fn heartbeat(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, NetworkErrorCode> {
-        self.reference_request(2, reference)
+        self.heartbeat_call(reference).map_err(RouteHelperCallError::code)
     }
 
     pub fn status(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, NetworkErrorCode> {
-        self.reference_request(3, reference)
+        self.reference_request_call(3, reference)
+            .map_err(RouteHelperCallError::code)
     }
 
-    fn owner_request(&self, method: i32, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, NetworkErrorCode> {
-        owner.validate()?;
+    fn owner_request_call(
+        &self,
+        method: i32,
+        owner: &RouteLeaseOwner,
+    ) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        owner.validate().map_err(RouteHelperCallError::Local)?;
         let _guard = self
             .request_lock
             .lock()
-            .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
-        let lease = c_string(&owner.lease_id)?;
-        let operation = c_string(&owner.operation_id)?;
-        let instance = c_string(&owner.sidecar_instance_id)?;
-        let interface_name = c_string(&owner.tunnel.interface_name)?;
-        let tunnel_operation = c_string(&owner.tunnel.operation_id)?;
+            .map_err(|_| RouteHelperCallError::Terminal(NetworkErrorCode::SidecarUnavailable))?;
+        let lease = c_string(&owner.lease_id).map_err(RouteHelperCallError::Local)?;
+        let operation = c_string(&owner.operation_id).map_err(RouteHelperCallError::Local)?;
+        let instance = c_string(&owner.sidecar_instance_id).map_err(RouteHelperCallError::Local)?;
+        let interface_name = c_string(&owner.tunnel.interface_name).map_err(RouteHelperCallError::Local)?;
+        let tunnel_operation = c_string(&owner.tunnel.operation_id).map_err(RouteHelperCallError::Local)?;
         let cidrs = owner
             .private_cidrs
             .iter()
             .map(|value| c_string(value))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(RouteHelperCallError::Local)?;
         let cidr_pointers = cidrs.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
         let mihomo_interfaces = owner
             .active_mihomo_tun_interfaces
             .iter()
             .map(|value| c_string(value))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(RouteHelperCallError::Local)?;
         let mihomo_interface_pointers = mihomo_interfaces.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
         #[cfg(target_os = "macos")]
         {
@@ -179,22 +324,22 @@ impl RouteHelperClient {
                 mihomo_interface_pointers,
                 cidr_pointers,
             );
-            Err(NetworkErrorCode::SidecarUnavailable)
+            Err(RouteHelperCallError::Terminal(NetworkErrorCode::SidecarUnavailable))
         }
     }
 
-    fn reference_request(
+    fn reference_request_call(
         &self,
         method: i32,
         reference: &RouteLeaseReference,
-    ) -> Result<RouteHelperStatus, NetworkErrorCode> {
-        reference.validate()?;
+    ) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        reference.validate().map_err(RouteHelperCallError::Local)?;
         let _guard = self
             .request_lock
             .lock()
-            .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
-        let lease = c_string(&reference.lease_id)?;
-        let operation = c_string(&reference.operation_id)?;
+            .map_err(|_| RouteHelperCallError::Terminal(NetworkErrorCode::SidecarUnavailable))?;
+        let lease = c_string(&reference.lease_id).map_err(RouteHelperCallError::Local)?;
+        let operation = c_string(&reference.operation_id).map_err(RouteHelperCallError::Local)?;
         #[cfg(target_os = "macos")]
         {
             // SAFETY: Both pointers reference validated CStrings retained for the entire
@@ -215,8 +360,42 @@ impl RouteHelperClient {
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (method, lease, operation);
-            Err(NetworkErrorCode::SidecarUnavailable)
+            Err(RouteHelperCallError::Terminal(NetworkErrorCode::SidecarUnavailable))
         }
+    }
+}
+
+impl RouteHelperGeneration for RouteHelperClient {
+    fn discover(&self) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        Self::discover_call(self)
+    }
+
+    fn begin(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        Self::begin_call(self, owner)
+    }
+
+    fn recover(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        Self::recover_call(self, owner)
+    }
+
+    fn apply(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        Self::apply_call(self, reference)
+    }
+
+    fn rollback(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        Self::rollback_call(self, reference)
+    }
+
+    fn heartbeat(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        Self::heartbeat_call(self, reference)
+    }
+}
+
+struct NativeRouteHelperGenerationFactory;
+
+impl RouteHelperGenerationFactory for NativeRouteHelperGenerationFactory {
+    fn create(&mut self) -> Result<Box<dyn RouteHelperGeneration>, NetworkErrorCode> {
+        RouteHelperClient::connect().map(|client| Box::new(client) as Box<dyn RouteHelperGeneration>)
     }
 }
 
@@ -231,56 +410,208 @@ impl Drop for RouteHelperClient {
     }
 }
 
+fn discover_authoritative_idle(
+    client: &dyn RouteHelperGeneration,
+    policy: DiscoveryPolicy,
+) -> Result<(), ReconciliationError> {
+    let mut timer = WallClockDiscoveryTimer::new(policy.total_timeout);
+    discover_authoritative_idle_with_timer(client, policy, &mut timer)
+}
+
+fn discover_authoritative_idle_with_timer(
+    client: &dyn RouteHelperGeneration,
+    policy: DiscoveryPolicy,
+    timer: &mut dyn DiscoveryTimer,
+) -> Result<(), ReconciliationError> {
+    let mut backoff = policy.initial_backoff;
+    let mut attempts = 0_u16;
+    loop {
+        if timer.expired() || attempts >= policy.maximum_attempts {
+            return Err(ReconciliationError::Deadline);
+        }
+        attempts += 1;
+        match client.discover() {
+            Ok(status) if is_typed_not_ready(&status) => {
+                if attempts >= policy.maximum_attempts || !timer.wait(backoff) {
+                    return Err(ReconciliationError::Deadline);
+                }
+                backoff = backoff.saturating_mul(2).min(policy.maximum_backoff);
+            }
+            Ok(status) => {
+                if timer.expired() {
+                    return Err(ReconciliationError::Deadline);
+                }
+                return require_authoritative_idle(&status).map_err(ReconciliationError::Status);
+            }
+            Err(error) => return Err(ReconciliationError::Call(error)),
+        }
+    }
+}
+
 pub struct XpcProductionRouteBoundary {
-    client: RouteHelperClient,
+    client: Option<Box<dyn RouteHelperGeneration>>,
+    factory: Box<dyn RouteHelperGenerationFactory>,
+    discovery_policy: DiscoveryPolicy,
     active: Option<RouteLeaseReference>,
     active_owner: Option<RouteLeaseOwner>,
     recovery_required: bool,
+    mutations_blocked: bool,
+    reconciliation_error: Option<NetworkErrorCode>,
 }
 
 impl XpcProductionRouteBoundary {
     pub fn connect() -> Result<Self, NetworkErrorCode> {
-        let client = RouteHelperClient::connect()?;
-        let discovered = client.discover()?;
+        Self::connect_with_factory(
+            Box::new(NativeRouteHelperGenerationFactory),
+            DiscoveryPolicy::PRODUCTION,
+        )
+    }
+
+    fn connect_with_factory(
+        mut factory: Box<dyn RouteHelperGenerationFactory>,
+        discovery_policy: DiscoveryPolicy,
+    ) -> Result<Self, NetworkErrorCode> {
+        let client = factory.create()?;
         // A fresh process does not possess the frozen owner envelope needed to
         // prove ownership of a durable journal left by an older process. It
         // must fail closed instead of synthesising an owner from new input.
-        require_helper_status(&discovered, RouteHelperState::Idle)?;
+        discover_authoritative_idle(client.as_ref(), discovery_policy).map_err(ReconciliationError::code)?;
         Ok(Self {
-            client,
+            client: Some(client),
+            factory,
+            discovery_policy,
             active: None,
             active_owner: None,
             recovery_required: false,
+            mutations_blocked: false,
+            reconciliation_error: None,
         })
     }
 
-    fn rollback_after_error(&mut self, reference: &RouteLeaseReference, primary: NetworkErrorCode) -> NetworkErrorCode {
-        match self
-            .client
-            .rollback(reference)
-            .and_then(|status| require_helper_status(&status, RouteHelperState::Idle))
-        {
-            Ok(()) => {
-                self.active = None;
-                self.active_owner = None;
-                self.recovery_required = false;
-                primary
+    fn live_client(&self) -> Result<&dyn RouteHelperGeneration, NetworkErrorCode> {
+        if self.mutations_blocked {
+            return Err(self
+                .reconciliation_error
+                .unwrap_or(NetworkErrorCode::InvalidStateTransition));
+        }
+        self.client.as_deref().ok_or(NetworkErrorCode::SidecarUnavailable)
+    }
+
+    fn clear_frozen_owner(&mut self) {
+        self.active = None;
+        self.active_owner = None;
+        self.recovery_required = false;
+        self.mutations_blocked = false;
+        self.reconciliation_error = None;
+    }
+
+    const fn freeze_without_replacement(&mut self, error: NetworkErrorCode) -> NetworkErrorCode {
+        self.recovery_required = true;
+        self.mutations_blocked = true;
+        self.reconciliation_error = Some(error);
+        error
+    }
+
+    fn reconcile_terminal_generation(&mut self, primary: NetworkErrorCode) -> NetworkErrorCode {
+        self.recovery_required = true;
+        self.mutations_blocked = true;
+        self.reconciliation_error = Some(primary);
+
+        // Destroy exactly the terminal native generation before constructing
+        // its one replacement. No mutation is ever replayed on the replacement.
+        drop(self.client.take());
+        let fresh = match self.factory.create() {
+            Ok(client) => client,
+            Err(error) => {
+                self.reconciliation_error = Some(error);
+                return primary;
             }
-            Err(rollback_error) => {
-                // Preserve the exact owner/reference pair. A later retry may
-                // recover only this frozen envelope.
-                self.recovery_required = true;
-                rollback_error
+        };
+        self.client = Some(fresh);
+        let reconciliation = match self.client.as_deref() {
+            Some(client) => discover_authoritative_idle(client, self.discovery_policy),
+            None => Err(ReconciliationError::Call(RouteHelperCallError::Terminal(
+                NetworkErrorCode::SidecarUnavailable,
+            ))),
+        };
+        match reconciliation {
+            Ok(()) => {
+                self.clear_frozen_owner();
+            }
+            Err(error) => {
+                self.reconciliation_error = Some(error.code());
+                if error.terminates_generation() {
+                    drop(self.client.take());
+                }
             }
         }
+        primary
+    }
+
+    fn handle_call_error(&mut self, error: RouteHelperCallError) -> NetworkErrorCode {
+        if error.terminates_generation() {
+            self.reconcile_terminal_generation(error.code())
+        } else {
+            // Local validation failures happen before an IPC message is sent.
+            // They must not poison a live native generation or authorize a
+            // replacement; the caller may retry with corrected input.
+            error.code()
+        }
+    }
+
+    fn rollback_after_helper_error(
+        &mut self,
+        reference: &RouteLeaseReference,
+        primary: NetworkErrorCode,
+    ) -> NetworkErrorCode {
+        let rollback = match self.live_client() {
+            Ok(client) => client.rollback(reference),
+            Err(error) => {
+                self.recovery_required = true;
+                self.reconciliation_error = Some(error);
+                return primary;
+            }
+        };
+        match rollback {
+            Ok(status) => {
+                if is_typed_not_ready(&status) {
+                    self.freeze_without_replacement(NetworkErrorCode::SidecarUnavailable);
+                } else {
+                    match require_helper_status(&status, RouteHelperState::Idle) {
+                        Ok(()) => self.clear_frozen_owner(),
+                        Err(error) => {
+                            self.recovery_required = true;
+                            self.reconciliation_error = Some(error);
+                        }
+                    }
+                }
+            }
+            Err(error) if error.terminates_generation() => {
+                self.reconcile_terminal_generation(primary);
+            }
+            Err(RouteHelperCallError::Local(_)) => {
+                // No native request was sent, so retain the live generation
+                // and preserve the original typed operation error.
+            }
+            Err(error) => {
+                self.freeze_without_replacement(error.code());
+            }
+        }
+        primary
     }
 
     fn recover_active(&mut self) -> Result<RouteHelperState, NetworkErrorCode> {
         let owner = self
             .active_owner
-            .as_ref()
+            .clone()
             .ok_or(NetworkErrorCode::InvalidStateTransition)?;
-        let recovered = self.client.recover(owner)?;
+        let recovered = match self.live_client()?.recover(&owner) {
+            Ok(status) => status,
+            Err(error) => return Err(self.handle_call_error(error)),
+        };
+        if is_typed_not_ready(&recovered) {
+            return Err(self.freeze_without_replacement(NetworkErrorCode::SidecarUnavailable));
+        }
         if let Some(error) = recovered.error_code {
             return Err(error);
         }
@@ -303,6 +634,7 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
         profile_revision: u64,
         mihomo: &MihomoTunSnapshot,
     ) -> Result<(), NetworkErrorCode> {
+        self.live_client()?;
         let owner = RouteLeaseOwner {
             protocol_version: ROUTE_HELPER_PROTOCOL_VERSION,
             lease_id: operation_id.to_owned(),
@@ -338,29 +670,44 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
             }
             self.active = Some(reference.clone());
             self.active_owner = Some(owner.clone());
-            let begin = match self.client.begin(&owner) {
+            let begin = match self.live_client()?.begin(&owner) {
                 Ok(status) => status,
+                Err(RouteHelperCallError::Local(error)) => {
+                    // The owner was validated before this call and no native
+                    // mutation was sent when local conversion fails. Drop the
+                    // staged Rust-only owner and leave the generation live.
+                    self.active = None;
+                    self.active_owner = None;
+                    return Err(error);
+                }
                 Err(error) => {
-                    return Err(self.rollback_after_error(&reference, error));
+                    return Err(self.handle_call_error(error));
                 }
             };
+            if is_typed_not_ready(&begin) {
+                return Err(self.freeze_without_replacement(NetworkErrorCode::SidecarUnavailable));
+            }
             if let Err(error) = require_helper_status(&begin, RouteHelperState::Prepared) {
-                return Err(self.rollback_after_error(&reference, error));
+                return Err(self.rollback_after_helper_error(&reference, error));
             }
         }
-        let applied = match self.client.apply(&reference) {
+        let applied = match self.live_client()?.apply(&reference) {
             Ok(status) => status,
             Err(error) => {
-                return Err(self.rollback_after_error(&reference, error));
+                return Err(self.handle_call_error(error));
             }
         };
+        if is_typed_not_ready(&applied) {
+            return Err(self.freeze_without_replacement(NetworkErrorCode::SidecarUnavailable));
+        }
         if let Err(error) = require_helper_status(&applied, RouteHelperState::Applied) {
-            return Err(self.rollback_after_error(&reference, error));
+            return Err(self.rollback_after_helper_error(&reference, error));
         }
         Ok(())
     }
 
     fn heartbeat(&mut self, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        self.live_client()?;
         if self.recovery_required {
             match self.recover_active()? {
                 RouteHelperState::Applied => {}
@@ -372,23 +719,25 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
             .active
             .as_ref()
             .filter(|reference| reference.operation_id == operation_id)
+            .cloned()
             .ok_or(NetworkErrorCode::InvalidStateTransition)?;
-        match self.client.heartbeat(reference) {
+        match self.live_client()?.heartbeat(&reference) {
             Ok(status) => {
+                if is_typed_not_ready(&status) {
+                    return Err(self.freeze_without_replacement(NetworkErrorCode::SidecarUnavailable));
+                }
                 let result = require_helper_status(&status, RouteHelperState::Applied);
                 if result.is_err() {
                     self.recovery_required = true;
                 }
                 result
             }
-            Err(error) => {
-                self.recovery_required = true;
-                Err(error)
-            }
+            Err(error) => Err(self.handle_call_error(error)),
         }
     }
 
     fn rollback(&mut self, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        self.live_client()?;
         let Some(reference) = self.active.clone() else {
             return Ok(());
         };
@@ -399,13 +748,15 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
             // Recovery authenticates the frozen owner before a rollback retry.
             self.recover_active()?;
         }
-        let status = match self.client.rollback(&reference) {
+        let status = match self.live_client()?.rollback(&reference) {
             Ok(status) => status,
             Err(error) => {
-                self.recovery_required = true;
-                return Err(error);
+                return Err(self.handle_call_error(error));
             }
         };
+        if is_typed_not_ready(&status) {
+            return Err(self.freeze_without_replacement(NetworkErrorCode::SidecarUnavailable));
+        }
         if let Err(error) = require_helper_status(&status, RouteHelperState::Idle) {
             self.recovery_required = true;
             return Err(error);
@@ -419,8 +770,10 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
 
 impl Drop for XpcProductionRouteBoundary {
     fn drop(&mut self) {
-        if let Some(reference) = self.active.as_ref() {
-            let _ = self.client.rollback(reference);
+        if !self.mutations_blocked
+            && let (Some(client), Some(reference)) = (self.client.as_deref(), self.active.as_ref())
+        {
+            let _ = client.rollback(reference);
         }
     }
 }
@@ -429,12 +782,27 @@ fn c_string(value: &str) -> Result<CString, NetworkErrorCode> {
     CString::new(value).map_err(|_| NetworkErrorCode::InvalidConfiguration)
 }
 
-fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<RouteHelperStatus, NetworkErrorCode> {
-    if reply.transport_status != 0 {
-        return Err(NetworkErrorCode::SidecarUnavailable);
+fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<RouteHelperStatus, RouteHelperCallError> {
+    match reply.transport_status {
+        0 => {}
+        1 => return Err(RouteHelperCallError::Terminal(NetworkErrorCode::OperationTimedOut)),
+        2..=4 | 6 => return Err(RouteHelperCallError::Terminal(NetworkErrorCode::SidecarUnavailable)),
+        5 => {
+            return Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::UnsupportedProtocolVersion,
+            ));
+        }
+        7 => return Err(RouteHelperCallError::Local(NetworkErrorCode::InvalidConfiguration)),
+        _ => {
+            return Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::UnsupportedProtocolVersion,
+            ));
+        }
     }
     if reply.protocol_version != i32::from(ROUTE_HELPER_PROTOCOL_VERSION) {
-        return Err(NetworkErrorCode::UnsupportedProtocolVersion);
+        return Err(RouteHelperCallError::Terminal(
+            NetworkErrorCode::UnsupportedProtocolVersion,
+        ));
     }
     let state = match reply.state {
         0 => RouteHelperState::Idle,
@@ -442,7 +810,11 @@ fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<Rou
         2 => RouteHelperState::Applied,
         3 => RouteHelperState::RollingBack,
         4 => RouteHelperState::FailedClosed,
-        _ => return Err(NetworkErrorCode::UnsupportedProtocolVersion),
+        _ => {
+            return Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::UnsupportedProtocolVersion,
+            ));
+        }
     };
     let error_code = match reply.error_code {
         0 => None,
@@ -454,7 +826,11 @@ fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<Rou
         6..=7 => Some(NetworkErrorCode::RouteRollbackFailed),
         8 => Some(NetworkErrorCode::RouteJournalCorrupted),
         9 => Some(NetworkErrorCode::RouteConflict),
-        _ => return Err(NetworkErrorCode::UnsupportedProtocolVersion),
+        _ => {
+            return Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::UnsupportedProtocolVersion,
+            ));
+        }
     };
     let status = RouteHelperStatus {
         protocol_version: ROUTE_HELPER_PROTOCOL_VERSION,
@@ -462,8 +838,15 @@ fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<Rou
         operation_id,
         error_code,
     };
-    status.validate()?;
+    status.validate().map_err(RouteHelperCallError::Terminal)?;
     Ok(status)
+}
+
+fn is_typed_not_ready(status: &RouteHelperStatus) -> bool {
+    status.protocol_version == ROUTE_HELPER_PROTOCOL_VERSION
+        && status.state == RouteHelperState::FailedClosed
+        && status.operation_id.is_none()
+        && status.error_code == Some(NetworkErrorCode::SidecarUnavailable)
 }
 
 fn require_helper_status(status: &RouteHelperStatus, expected: RouteHelperState) -> Result<(), NetworkErrorCode> {
@@ -476,9 +859,212 @@ fn require_helper_status(status: &RouteHelperStatus, expected: RouteHelperState)
     Ok(())
 }
 
+fn require_authoritative_idle(status: &RouteHelperStatus) -> Result<(), NetworkErrorCode> {
+    if status.operation_id.is_some() {
+        return Err(NetworkErrorCode::InvalidStateTransition);
+    }
+    require_helper_status(status, RouteHelperState::Idle)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
     use super::*;
+
+    type MockReply = Result<RouteHelperStatus, RouteHelperCallError>;
+
+    #[derive(Default)]
+    struct MockGenerationCounts {
+        discover: AtomicUsize,
+        begin: AtomicUsize,
+        recover: AtomicUsize,
+        apply: AtomicUsize,
+        rollback: AtomicUsize,
+        heartbeat: AtomicUsize,
+        drops: AtomicUsize,
+    }
+
+    struct MockGenerationState {
+        counts: MockGenerationCounts,
+        discover: Mutex<VecDeque<MockReply>>,
+        begin: Mutex<VecDeque<MockReply>>,
+        recover: Mutex<VecDeque<MockReply>>,
+        apply: Mutex<VecDeque<MockReply>>,
+        rollback: Mutex<VecDeque<MockReply>>,
+        heartbeat: Mutex<VecDeque<MockReply>>,
+    }
+
+    impl MockGenerationState {
+        fn scripted(discover: Vec<MockReply>, begin: Vec<MockReply>, apply: Vec<MockReply>) -> Arc<Self> {
+            Arc::new(Self {
+                counts: MockGenerationCounts::default(),
+                discover: Mutex::new(discover.into()),
+                begin: Mutex::new(begin.into()),
+                recover: Mutex::new(VecDeque::new()),
+                apply: Mutex::new(apply.into()),
+                rollback: Mutex::new(VecDeque::new()),
+                heartbeat: Mutex::new(VecDeque::new()),
+            })
+        }
+
+        fn next(queue: &Mutex<VecDeque<MockReply>>) -> MockReply {
+            let Ok(mut queue) = queue.lock() else {
+                return Err(RouteHelperCallError::Local(NetworkErrorCode::SidecarUnavailable));
+            };
+            queue.pop_front().unwrap_or(Err(RouteHelperCallError::Local(
+                NetworkErrorCode::InvalidStateTransition,
+            )))
+        }
+    }
+
+    struct MockGeneration {
+        state: Arc<MockGenerationState>,
+    }
+
+    impl RouteHelperGeneration for MockGeneration {
+        fn discover(&self) -> MockReply {
+            self.state.counts.discover.fetch_add(1, Ordering::SeqCst);
+            MockGenerationState::next(&self.state.discover)
+        }
+
+        fn begin(&self, _owner: &RouteLeaseOwner) -> MockReply {
+            self.state.counts.begin.fetch_add(1, Ordering::SeqCst);
+            MockGenerationState::next(&self.state.begin)
+        }
+
+        fn recover(&self, _owner: &RouteLeaseOwner) -> MockReply {
+            self.state.counts.recover.fetch_add(1, Ordering::SeqCst);
+            MockGenerationState::next(&self.state.recover)
+        }
+
+        fn apply(&self, _reference: &RouteLeaseReference) -> MockReply {
+            self.state.counts.apply.fetch_add(1, Ordering::SeqCst);
+            MockGenerationState::next(&self.state.apply)
+        }
+
+        fn rollback(&self, _reference: &RouteLeaseReference) -> MockReply {
+            self.state.counts.rollback.fetch_add(1, Ordering::SeqCst);
+            MockGenerationState::next(&self.state.rollback)
+        }
+
+        fn heartbeat(&self, _reference: &RouteLeaseReference) -> MockReply {
+            self.state.counts.heartbeat.fetch_add(1, Ordering::SeqCst);
+            MockGenerationState::next(&self.state.heartbeat)
+        }
+    }
+
+    impl Drop for MockGeneration {
+        fn drop(&mut self) {
+            self.state.counts.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct MockFactory {
+        generations: VecDeque<Arc<MockGenerationState>>,
+        creates: Arc<AtomicUsize>,
+    }
+
+    impl MockFactory {
+        fn new(generations: Vec<Arc<MockGenerationState>>, creates: Arc<AtomicUsize>) -> Self {
+            Self {
+                generations: generations.into(),
+                creates,
+            }
+        }
+    }
+
+    impl RouteHelperGenerationFactory for MockFactory {
+        fn create(&mut self) -> Result<Box<dyn RouteHelperGeneration>, NetworkErrorCode> {
+            self.creates.fetch_add(1, Ordering::SeqCst);
+            self.generations
+                .pop_front()
+                .map(|state| Box::new(MockGeneration { state }) as Box<dyn RouteHelperGeneration>)
+                .ok_or(NetworkErrorCode::SidecarUnavailable)
+        }
+    }
+
+    struct RecordingTimer {
+        waits: Vec<Duration>,
+    }
+
+    impl DiscoveryTimer for RecordingTimer {
+        fn expired(&self) -> bool {
+            false
+        }
+
+        fn wait(&mut self, delay: Duration) -> bool {
+            self.waits.push(delay);
+            true
+        }
+    }
+
+    fn status(
+        state: RouteHelperState,
+        operation_id: Option<&str>,
+        error_code: Option<NetworkErrorCode>,
+    ) -> RouteHelperStatus {
+        RouteHelperStatus {
+            protocol_version: ROUTE_HELPER_PROTOCOL_VERSION,
+            state,
+            operation_id: operation_id.map(str::to_owned),
+            error_code,
+        }
+    }
+
+    fn idle() -> RouteHelperStatus {
+        status(RouteHelperState::Idle, None, None)
+    }
+
+    fn not_ready() -> RouteHelperStatus {
+        status(
+            RouteHelperState::FailedClosed,
+            None,
+            Some(NetworkErrorCode::SidecarUnavailable),
+        )
+    }
+
+    fn prepared(operation_id: &str) -> RouteHelperStatus {
+        status(RouteHelperState::Prepared, Some(operation_id), None)
+    }
+
+    fn test_policy(maximum_attempts: u16) -> DiscoveryPolicy {
+        DiscoveryPolicy {
+            total_timeout: Duration::from_secs(1),
+            initial_backoff: Duration::ZERO,
+            maximum_backoff: Duration::ZERO,
+            maximum_attempts,
+        }
+    }
+
+    fn test_profile() -> Option<NetworkProfile> {
+        serde_json::from_str(include_str!("../../../schemas/fixtures/network-v1.valid.json")).ok()
+    }
+
+    fn test_tunnel(operation_id: &str) -> TunnelDeviceFacts {
+        TunnelDeviceFacts {
+            interface_name: "utun42".into(),
+            mtu: 1420,
+            has_ipv4: true,
+            has_ipv6: true,
+            instance_id: "instance.test".into(),
+            operation_id: format!("{operation_id}.prepare"),
+        }
+    }
+
+    fn assert_no_mutation_calls(state: &MockGenerationState) {
+        assert_eq!(state.counts.begin.load(Ordering::SeqCst), 0);
+        assert_eq!(state.counts.recover.load(Ordering::SeqCst), 0);
+        assert_eq!(state.counts.apply.load(Ordering::SeqCst), 0);
+        assert_eq!(state.counts.rollback.load(Ordering::SeqCst), 0);
+        assert_eq!(state.counts.heartbeat.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn native_reply_mapping_fails_closed_on_unknown_values() {
@@ -492,7 +1078,9 @@ mod tests {
                 },
                 None,
             ),
-            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+            Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::UnsupportedProtocolVersion
+            ))
         );
         assert_eq!(
             native_status(
@@ -504,7 +1092,9 @@ mod tests {
                 },
                 None,
             ),
-            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+            Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::UnsupportedProtocolVersion
+            ))
         );
         assert_eq!(
             native_status(
@@ -516,7 +1106,33 @@ mod tests {
                 },
                 None,
             ),
-            Err(NetworkErrorCode::SidecarUnavailable)
+            Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::UnsupportedProtocolVersion
+            ))
+        );
+        assert_eq!(
+            native_status(
+                NativeReply {
+                    transport_status: 1,
+                    protocol_version: -1,
+                    state: -1,
+                    error_code: -1,
+                },
+                None,
+            ),
+            Err(RouteHelperCallError::Terminal(NetworkErrorCode::OperationTimedOut))
+        );
+        assert_eq!(
+            native_status(
+                NativeReply {
+                    transport_status: 7,
+                    protocol_version: -1,
+                    state: -1,
+                    error_code: -1,
+                },
+                None,
+            ),
+            Err(RouteHelperCallError::Local(NetworkErrorCode::InvalidConfiguration))
         );
         assert_eq!(
             native_status(
@@ -554,8 +1170,330 @@ mod tests {
                 },
                 None,
             ),
-            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+            Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::UnsupportedProtocolVersion
+            ))
         );
+    }
+
+    #[test]
+    fn typed_not_ready_is_only_the_read_only_discover_shape() {
+        let discover = status(
+            RouteHelperState::FailedClosed,
+            None,
+            Some(NetworkErrorCode::SidecarUnavailable),
+        );
+        assert!(is_typed_not_ready(&discover));
+        assert!(!is_typed_not_ready(&RouteHelperStatus {
+            operation_id: Some("operation.test".into()),
+            ..discover
+        }));
+        assert!(!is_typed_not_ready(&RouteHelperStatus {
+            state: RouteHelperState::Idle,
+            ..discover
+        }));
+    }
+
+    #[test]
+    fn authoritative_idle_cannot_claim_an_operation_owner() {
+        assert_eq!(require_authoritative_idle(&idle()), Ok(()));
+        assert_eq!(
+            require_authoritative_idle(&status(RouteHelperState::Idle, Some("operation.test"), None)),
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+    }
+
+    #[test]
+    fn initial_discovery_retries_not_ready_on_one_generation() {
+        let generation = MockGenerationState::scripted(vec![Ok(not_ready()), Ok(idle())], vec![], vec![]);
+        let creates = Arc::new(AtomicUsize::new(0));
+        {
+            let result = XpcProductionRouteBoundary::connect_with_factory(
+                Box::new(MockFactory::new(vec![Arc::clone(&generation)], Arc::clone(&creates))),
+                test_policy(3),
+            );
+            assert!(result.is_ok());
+            let Ok(boundary) = result else {
+                return;
+            };
+            assert_eq!(creates.load(Ordering::SeqCst), 1);
+            assert_eq!(generation.counts.discover.load(Ordering::SeqCst), 2);
+            assert!(!boundary.mutations_blocked);
+        }
+        assert_eq!(generation.counts.drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn discovery_backoff_and_attempt_count_are_bounded() {
+        let generation =
+            MockGenerationState::scripted(vec![Ok(not_ready()), Ok(not_ready()), Ok(not_ready())], vec![], vec![]);
+        let client = MockGeneration {
+            state: Arc::clone(&generation),
+        };
+        let policy = DiscoveryPolicy {
+            total_timeout: Duration::from_secs(1),
+            initial_backoff: Duration::from_millis(5),
+            maximum_backoff: Duration::from_millis(20),
+            maximum_attempts: 3,
+        };
+        let mut timer = RecordingTimer { waits: Vec::new() };
+        assert_eq!(
+            discover_authoritative_idle_with_timer(&client, policy, &mut timer),
+            Err(ReconciliationError::Deadline)
+        );
+        assert_eq!(generation.counts.discover.load(Ordering::SeqCst), 3);
+        assert_eq!(timer.waits, vec![Duration::from_millis(5), Duration::from_millis(10)]);
+    }
+
+    #[test]
+    fn initial_terminal_discovery_never_materializes_a_replacement() {
+        let initial = MockGenerationState::scripted(
+            vec![Err(RouteHelperCallError::Terminal(NetworkErrorCode::OperationTimedOut))],
+            vec![],
+            vec![],
+        );
+        let unused = MockGenerationState::scripted(vec![Ok(idle())], vec![], vec![]);
+        let creates = Arc::new(AtomicUsize::new(0));
+        let result = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(
+                vec![Arc::clone(&initial), Arc::clone(&unused)],
+                Arc::clone(&creates),
+            )),
+            test_policy(3),
+        );
+        assert_eq!(result.err(), Some(NetworkErrorCode::OperationTimedOut));
+        assert_eq!(creates.load(Ordering::SeqCst), 1);
+        assert_eq!(initial.counts.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(unused.counts.discover.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn mutating_transport_failure_reconciles_once_without_replay() {
+        let operation = "operation.test";
+        let initial = MockGenerationState::scripted(
+            vec![Ok(idle())],
+            vec![Err(RouteHelperCallError::Terminal(NetworkErrorCode::OperationTimedOut))],
+            vec![],
+        );
+        let fresh = MockGenerationState::scripted(vec![Ok(not_ready()), Ok(idle())], vec![], vec![]);
+        let creates = Arc::new(AtomicUsize::new(0));
+        let result = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(
+                vec![Arc::clone(&initial), Arc::clone(&fresh)],
+                Arc::clone(&creates),
+            )),
+            test_policy(3),
+        );
+        assert!(result.is_ok());
+        let Ok(mut boundary) = result else {
+            return;
+        };
+        let profile = test_profile();
+        assert!(profile.is_some());
+        let Some(profile) = profile else {
+            return;
+        };
+
+        assert_eq!(
+            boundary.apply(
+                &profile,
+                operation,
+                &test_tunnel(operation),
+                42,
+                &MihomoTunSnapshot::inactive(),
+            ),
+            Err(NetworkErrorCode::OperationTimedOut)
+        );
+        assert_eq!(creates.load(Ordering::SeqCst), 2);
+        assert_eq!(initial.counts.begin.load(Ordering::SeqCst), 1);
+        assert_eq!(initial.counts.rollback.load(Ordering::SeqCst), 0);
+        assert_eq!(initial.counts.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(fresh.counts.discover.load(Ordering::SeqCst), 2);
+        assert_no_mutation_calls(&fresh);
+        assert!(boundary.active.is_none());
+        assert!(boundary.active_owner.is_none());
+        assert!(!boundary.recovery_required);
+        assert!(!boundary.mutations_blocked);
+    }
+
+    #[test]
+    fn fresh_transport_failure_retains_frozen_owner_and_cannot_recurse() {
+        let operation = "operation.test";
+        let initial = MockGenerationState::scripted(
+            vec![Ok(idle())],
+            vec![Ok(prepared(operation))],
+            vec![Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::SidecarUnavailable,
+            ))],
+        );
+        let fresh = MockGenerationState::scripted(
+            vec![Err(RouteHelperCallError::Terminal(NetworkErrorCode::OperationTimedOut))],
+            vec![],
+            vec![],
+        );
+        let creates = Arc::new(AtomicUsize::new(0));
+        let result = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(
+                vec![Arc::clone(&initial), Arc::clone(&fresh)],
+                Arc::clone(&creates),
+            )),
+            test_policy(3),
+        );
+        assert!(result.is_ok());
+        let Ok(mut boundary) = result else {
+            return;
+        };
+        let profile = test_profile();
+        assert!(profile.is_some());
+        let Some(profile) = profile else {
+            return;
+        };
+
+        assert_eq!(
+            boundary.apply(
+                &profile,
+                operation,
+                &test_tunnel(operation),
+                42,
+                &MihomoTunSnapshot::inactive(),
+            ),
+            Err(NetworkErrorCode::SidecarUnavailable)
+        );
+        assert_eq!(
+            boundary
+                .active
+                .as_ref()
+                .map(|reference| reference.operation_id.as_str()),
+            Some(operation)
+        );
+        assert_eq!(
+            boundary.active_owner.as_ref().map(|owner| owner.operation_id.as_str()),
+            Some(operation)
+        );
+        assert!(boundary.recovery_required);
+        assert!(boundary.mutations_blocked);
+        assert_eq!(boundary.reconciliation_error, Some(NetworkErrorCode::OperationTimedOut));
+        assert!(boundary.client.is_none());
+        assert_eq!(boundary.heartbeat(operation), Err(NetworkErrorCode::OperationTimedOut));
+        assert_eq!(boundary.rollback(operation), Err(NetworkErrorCode::OperationTimedOut));
+        assert_eq!(creates.load(Ordering::SeqCst), 2);
+        assert_eq!(initial.counts.rollback.load(Ordering::SeqCst), 0);
+        assert_eq!(fresh.counts.discover.load(Ordering::SeqCst), 1);
+        assert_no_mutation_calls(&fresh);
+        assert_eq!(fresh.counts.drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fresh_discovery_deadline_retains_owner_on_the_same_generation() {
+        let operation = "operation.test";
+        let initial = MockGenerationState::scripted(
+            vec![Ok(idle())],
+            vec![Ok(prepared(operation))],
+            vec![Err(RouteHelperCallError::Terminal(
+                NetworkErrorCode::SidecarUnavailable,
+            ))],
+        );
+        let fresh = MockGenerationState::scripted(vec![Ok(not_ready()), Ok(not_ready())], vec![], vec![]);
+        let creates = Arc::new(AtomicUsize::new(0));
+        let result = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(
+                vec![Arc::clone(&initial), Arc::clone(&fresh)],
+                Arc::clone(&creates),
+            )),
+            test_policy(2),
+        );
+        assert!(result.is_ok());
+        let Ok(mut boundary) = result else {
+            return;
+        };
+        let profile = test_profile();
+        assert!(profile.is_some());
+        let Some(profile) = profile else {
+            return;
+        };
+
+        assert_eq!(
+            boundary.apply(
+                &profile,
+                operation,
+                &test_tunnel(operation),
+                42,
+                &MihomoTunSnapshot::inactive(),
+            ),
+            Err(NetworkErrorCode::SidecarUnavailable)
+        );
+        assert!(boundary.client.is_some());
+        assert!(boundary.active.is_some());
+        assert!(boundary.active_owner.is_some());
+        assert!(boundary.mutations_blocked);
+        assert_eq!(boundary.reconciliation_error, Some(NetworkErrorCode::OperationTimedOut));
+        assert_eq!(boundary.rollback(operation), Err(NetworkErrorCode::OperationTimedOut));
+        assert_eq!(creates.load(Ordering::SeqCst), 2);
+        assert_eq!(fresh.counts.discover.load(Ordering::SeqCst), 2);
+        assert_no_mutation_calls(&fresh);
+    }
+
+    #[test]
+    fn fresh_non_idle_or_recovery_required_reply_fails_closed_without_retry() {
+        for (fresh_reply, expected) in [
+            (
+                Ok(status(RouteHelperState::Prepared, Some("operation.other"), None)),
+                NetworkErrorCode::InvalidStateTransition,
+            ),
+            (
+                Ok(status(
+                    RouteHelperState::FailedClosed,
+                    None,
+                    Some(NetworkErrorCode::RouteRollbackFailed),
+                )),
+                NetworkErrorCode::RouteRollbackFailed,
+            ),
+        ] {
+            let operation = "operation.test";
+            let initial = MockGenerationState::scripted(
+                vec![Ok(idle())],
+                vec![Ok(prepared(operation))],
+                vec![Err(RouteHelperCallError::Terminal(
+                    NetworkErrorCode::SidecarUnavailable,
+                ))],
+            );
+            let fresh = MockGenerationState::scripted(vec![fresh_reply], vec![], vec![]);
+            let creates = Arc::new(AtomicUsize::new(0));
+            let result = XpcProductionRouteBoundary::connect_with_factory(
+                Box::new(MockFactory::new(
+                    vec![Arc::clone(&initial), Arc::clone(&fresh)],
+                    Arc::clone(&creates),
+                )),
+                test_policy(3),
+            );
+            assert!(result.is_ok());
+            let Ok(mut boundary) = result else {
+                return;
+            };
+            let profile = test_profile();
+            assert!(profile.is_some());
+            let Some(profile) = profile else {
+                return;
+            };
+
+            assert_eq!(
+                boundary.apply(
+                    &profile,
+                    operation,
+                    &test_tunnel(operation),
+                    42,
+                    &MihomoTunSnapshot::inactive(),
+                ),
+                Err(NetworkErrorCode::SidecarUnavailable)
+            );
+            assert_eq!(boundary.reconciliation_error, Some(expected));
+            assert!(boundary.active.is_some());
+            assert!(boundary.active_owner.is_some());
+            assert!(boundary.mutations_blocked);
+            assert_eq!(fresh.counts.discover.load(Ordering::SeqCst), 1);
+            assert_no_mutation_calls(&fresh);
+            assert_eq!(creates.load(Ordering::SeqCst), 2);
+        }
     }
 
     #[test]

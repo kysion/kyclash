@@ -16,7 +16,10 @@ owned rollback before a replacement can certify idle. XPC-B (the Objective-C
 first-wins terminal-generation and precise transport-status boundary) is now
 locally closed in `96064f84`, with deterministic self-tests and independent
 review. XPC-C (Rust-owned replacement and same-generation read-only
-reconciliation) is the first incomplete safe source criterion required by the
+reconciliation) is locally closed in the current source unit: the bounded
+replacement, frozen-owner retention, no-mutation-replay rule, and injected
+failure tests pass. The first incomplete safe source criterion is now the
+production-feature live-source and typed service-lifecycle path required by the
 incomplete S1.13 VM aggregate. This audit is not a terminal completion or
 permission to stop continuous delivery while safe work remains.
 
@@ -149,8 +152,9 @@ public-distribution enhancement rather than a current development blocker.
   reliability jobs, while its verification job exposed the three cancellation
   races corrected in commit `8811dda9`. Local ordinary/race stress, the full
   Go race suite (`-count=5`), and a 20-round loopback soak pass for that fix;
-  replacement hosted run `29922714543` is the retained pending CI result and
-  must not be called green until its verification job completes.
+  The latest hosted run `29923178571` passed signing, Linux impaired-network,
+  and loopback-soak jobs but its macOS verify job still failed in the hosted
+  race step; the hosted gate remains red and is not represented as green here.
 
 ## Remaining system, external, and activation gates
 
@@ -159,13 +163,13 @@ authorized disposable-VM matrix continue without another routine prompt;
 production infrastructure, updater publication, and release activation remain
 separate authorization boundaries:
 
-1. Finish the locked XPC connection-generation/rematerialization source chain,
-   starting with XPC-C's Rust replacement and reconciliation boundary, then
-   exercise the production-feature Rust live-source path against the
-   packaged Mihomo control API in the disposable VM, including private-service
-   reachability, app/sidecar/helper abort, reboot/retry, and aggregate
-   foreign-route cleanup. The ordinary signed-App managed-TUN subcase has
-   passed and is not substituted for this production boundary.
+1. Exercise the production-feature Rust live-source path against the packaged
+   Mihomo control API in the disposable VM, including private-service
+   reachability, app/sidecar/helper abort, reboot/retry, aggregate foreign-route
+   cleanup, and typed service retirement. XPC-C's bounded replacement and
+   read-only reconciliation source prerequisite is closed; the ordinary
+   signed-App managed-TUN subcase has passed and is not substituted for this
+   production boundary.
 2. Test a reviewed compatible server endpoint under loss, jitter, UDP blocking,
    sustained load, suspend/resume, and network switching.
 3. Enable the already composed production command boundary only after the
@@ -380,7 +384,7 @@ S1.13 remains the first incomplete VM aggregate criterion for production Rust
 live-source invocation, private-service reachability, app/sidecar/helper abort,
 reboot/retry, and the aggregate foreign-state/credential cleanup gate. The
 ordinary App matrix does not substitute for the default-off production
-control path. Its exact policy-identity/restart, XPC-A helper-barrier, and XPC-B
-Objective-C terminal-generation source prerequisites are now complete; XPC-C
-Rust replacement/reconciliation remains the first source prerequisite. No endpoint, release, updater activation, production
+control path. Its exact policy-identity/restart, XPC-A helper-barrier, XPC-B
+Objective-C terminal-generation, and XPC-C Rust replacement/reconciliation
+source prerequisites are now complete. No endpoint, release, updater activation, production
 infrastructure, or real login-Keychain lifecycle was touched.
