@@ -11,6 +11,9 @@ Review record: `kyclash-production-networking-review-20260721.md`
 Stage-consolidation review:
 `kyclash-production-networking-single-stage-review-20260721.md`
 
+Route-helper Mihomo ownership amendment review:
+`kyclash-route-helper-mihomo-interface-review-20260722.md`
+
 ## Outcome
 
 Complete one indivisible stage, S1, as a dependency-ordered program that ends with a
@@ -59,8 +62,8 @@ stopping points.
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
 | S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
-| S1.12 | route lease/recovery | in progress; injected failure matrix and signed VM dual-stack normal/conflict/recovery probes pass, privileged journal-corruption/restart matrix remains |
-| S1.13 | Mihomo coexistence VM matrix | pending; the current helper fails closed on every non-default overlap; a typed active-Mihomo-interface ownership amendment and the packaged Mihomo matrix remain |
+| S1.12 | route lease/recovery | in progress; injected failure matrix and signed VM dual-stack normal/conflict/recovery probes pass, privileged journal-corruption/restart matrix and the v2 typed-Mihomo boundary amendment remain |
+| S1.13 | Mihomo coexistence VM matrix | pending; the current v1 helper fails closed on every non-default overlap; the v2 amendment review and packaged Mihomo matrix remain |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
@@ -515,7 +518,10 @@ Merge unit: `test(macos): close signed sidecar and utun VM gate`.
 
 Contract review: `kyclash-route-helper-contract-review-20260721.md` locks the
 bundle layout, fixed identities, code requirement, typed method surface,
-single-connection lease, and fail-closed S1.11/S1.12 boundary.
+single-connection lease, and fail-closed S1.11/S1.12 boundary. The narrow
+less-specific Mihomo exception is separately governed by
+`kyclash-route-helper-mihomo-interface-review-20260722.md`; it is not present
+in the current v1 helper.
 
 Status (2026-07-22): complete. The cross-platform route-owner and lease
 contract is implemented with strict serialization, exact utun owner matching,
@@ -611,6 +617,11 @@ redacted dual-stack/conflict evidence is retained at
 The privileged VM's complete journal-corruption/restart matrix and packaged
 Mihomo coexistence scenarios remain open for S1.13.
 
+The typed Mihomo amendment is an S1.12 boundary deliverable, not an implicit
+permission to relax the current helper. The parent review locked that record
+on 2026-07-22; every non-default overlap remains a fail-closed conflict until
+the complete v2 wire/journal migration and live-source gates pass.
+
 Deliverables:
 
 - Move the tested normalized route planner behind XPC.
@@ -638,9 +649,12 @@ dual-stack normal transaction, exact IPv4/IPv6 conflict refusal, and a
 more-specific IPv4 route refusal. The current helper intentionally rejects
 all non-default overlap, including a less-specific `128.0.0.0/1` or `fd00::/8`
 covering route; the historical broad-route probe is superseded and is not
-current coexistence acceptance evidence. A typed active-Mihomo-interface
-ownership amendment must land before less-specific coexistence can be tested
-or accepted. The packaged Mihomo TUN, private-service reachability, helper
+current coexistence acceptance evidence. The v2 typed active-Mihomo-interface
+amendment is recorded in
+`kyclash-route-helper-mihomo-interface-review-20260722.md`, is parent-locked,
+and must be implemented through the Rust source, Objective-C bridge,
+Swift helper, and journal before less-specific coexistence can be tested or
+accepted. The packaged Mihomo TUN, private-service reachability, helper
 restart, journal corruption, guest reboot, and unknown-VPN matrix are still
 required before this package closes.
 
@@ -649,9 +663,9 @@ Scenarios:
 - IPv4 and IPv6 normal connect/disconnect and private-service reachability.
 - Sidecar, app, and helper abort; helper restart; guest reboot; journal
   corruption; pre-existing exact/more-specific/unknown-VPN conflicts.
-- Packaged Mihomo TUN active; after the typed active-Mihomo-interface ownership
-  amendment, prove allowed less-specific coverage, unknown-VPN refusal, and
-  complete cleanup.
+- Packaged Mihomo TUN active; after the locked v2 amendment and live Rust
+  observation source, prove allowed less-specific coverage, unknown-VPN
+  refusal, and complete cleanup.
 - Refusal of default-route takeover and any route not owned by the transaction.
 
 Exit evidence:
