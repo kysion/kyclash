@@ -690,7 +690,7 @@ case "$(/usr/sbin/sysctl -n hw.model 2>/dev/null)" in VirtualMac*) ;; *) exit 69
 [ ! -L /Users/supen ]
 [ "$(/usr/bin/stat -f '%u' /Users/supen)" = "$(/usr/bin/id -u)" ]
 [ -L /var ] && [ "$(/usr/bin/readlink /var)" = 'private/var' ]
-[ "$(/usr/bin/stat -f '%d:%i' /var)" = "$(/usr/bin/stat -f '%d:%i' /private/var)" ]
+[ "$(/usr/bin/stat -f '%d' /var)" = "$(/usr/bin/stat -f '%d' /private/var)" ]
 for parent in /private /private/var /private/var/tmp /private/var/tmp/kyclash-networking-vm-lab; do
   [ -d "$parent" ] && [ ! -L "$parent" ]
   if [ "$parent" = '/private/var/tmp/kyclash-networking-vm-lab' ]; then

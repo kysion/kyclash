@@ -138,7 +138,10 @@ parse_args() {
 require_safe_root() {
   [ "$RUN_ROOT" = "$BASE_DIR/$RUN_ID" ] || die 64
   [ -L /var ] && [ "$(/usr/bin/readlink /var)" = private/var ] || die 73
-  [ "$(stat -f '%d:%i' /var)" = "$(stat -f '%d:%i' /private/var)" ] || die 73
+  # APFS firmlinks expose /var as private/var while maintaining distinct
+  # directory inodes.  Bind the alias to the same device and exact symlink
+  # target; requiring inode equality incorrectly rejects real macOS VMs.
+  [ "$(stat -f '%d' /var)" = "$(stat -f '%d' /private/var)" ] || die 73
   for parent in /private /private/var /private/var/tmp; do
     [ -d "$parent" ] && [ ! -L "$parent" ] || die 73
     [ "$(stat -f '%u' "$parent")" = 0 ] || die 73

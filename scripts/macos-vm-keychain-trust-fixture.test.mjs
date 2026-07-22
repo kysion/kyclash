@@ -77,6 +77,8 @@ test('fixture keeps the exact trust and cleanup boundary', () => {
   assert.match(source, /probe-after-remove-failed/u)
   assert.match(source, /dump-trust-settings -d/u)
   assert.match(source, /policy_expiry_ceiling_epoch/u)
+  assert.match(source, /stat -f '%d' \/var/u)
+  assert.doesNotMatch(source, /stat -f '%d:%i' \/var/u)
   assert.match(source, /policy-revision-preflight/u)
   assert.match(source, /candidate_revision/u)
   assert.match(source, /record_state.*absent/u)
