@@ -37,6 +37,11 @@ impl Default for ProductionCommandState {
 impl ProductionCommandState {
     #[allow(dead_code)]
     pub async fn configure(&self, service: ProductionNetworkingService) -> Result<(), NetworkErrorCode> {
+        let _guard = self.materialize.lock().await;
+        self.configure_service_locked(service).await
+    }
+
+    async fn configure_service_locked(&self, service: ProductionNetworkingService) -> Result<(), NetworkErrorCode> {
         if self.factory.read().await.is_some() {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
@@ -52,7 +57,16 @@ impl ProductionCommandState {
     /// Register the deferred factory after a signed policy has been explicitly
     /// verified.  Registration has no Keychain, XPC, sidecar, tunnel, or route
     /// side effects; those occur only in `service_for_connect`.
+    #[allow(dead_code)]
     pub async fn configure_factory(&self, factory: Arc<dyn ProductionServiceFactory>) -> Result<(), NetworkErrorCode> {
+        let _guard = self.materialize.lock().await;
+        self.configure_factory_locked(factory).await
+    }
+
+    async fn configure_factory_locked(
+        &self,
+        factory: Arc<dyn ProductionServiceFactory>,
+    ) -> Result<(), NetworkErrorCode> {
         if self.service.read().await.is_some() {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
@@ -73,6 +87,10 @@ impl ProductionCommandState {
         &self,
         provider: Arc<dyn ProductionInitializationProvider>,
     ) -> Result<(), NetworkErrorCode> {
+        let _guard = self
+            .materialize
+            .try_lock()
+            .map_err(|_| NetworkErrorCode::InvalidStateTransition)?;
         let mut slot = self
             .provider
             .try_write()
@@ -100,7 +118,9 @@ impl ProductionCommandState {
                 .clone()
                 .ok_or(NetworkErrorCode::InvalidConfiguration)?;
             let factory = provider.initialize().await?;
-            self.configure_factory(factory).await?;
+            // `initialize` already owns `materialize`; use the locked helper
+            // to avoid recursively acquiring the non-reentrant mutex.
+            self.configure_factory_locked(factory).await?;
         }
         self.status_snapshot()
             .await
@@ -436,6 +456,33 @@ mod tests {
             Err(ref error) if error == &code(NetworkErrorCode::SidecarUnavailable)
         ));
         assert_eq!(builds.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_factory_registration_keeps_service_factory_exclusive() -> anyhow::Result<()> {
+        let first: Arc<dyn ProductionServiceFactory> = Arc::new(CountingFactory {
+            builds: Arc::new(AtomicUsize::new(0)),
+        });
+        let second: Arc<dyn ProductionServiceFactory> = Arc::new(CountingFactory {
+            builds: Arc::new(AtomicUsize::new(0)),
+        });
+        let state = Arc::new(ProductionCommandState::default());
+        let first_state = Arc::clone(&state);
+        let second_state = Arc::clone(&state);
+        let (first_result, second_result) =
+            tokio::join!(async move { first_state.configure_factory(first).await }, async move {
+                second_state.configure_factory(second).await
+            },);
+        let successful = usize::from(first_result.is_ok()) + usize::from(second_result.is_ok());
+        assert_eq!(successful, 1);
+        assert!(matches!(
+            (first_result, second_result),
+            (Err(NetworkErrorCode::InvalidStateTransition), Ok(_))
+                | (Ok(_), Err(NetworkErrorCode::InvalidStateTransition))
+        ));
+        assert!(state.factory.read().await.is_some());
+        assert!(state.service.read().await.is_none());
         Ok(())
     }
 }

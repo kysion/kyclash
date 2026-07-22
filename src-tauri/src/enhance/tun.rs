@@ -1,8 +1,5 @@
 use serde_yaml_ng::{Mapping, Value};
 
-#[cfg(target_os = "macos")]
-use crate::process::AsyncHandler;
-
 macro_rules! revise {
     ($map: expr, $key: expr, $val: expr) => {
         let ret_key = Value::String($key.into());
@@ -61,24 +58,10 @@ pub fn use_tun(mut config: Mapping, enable: bool) -> Mapping {
             if ipv6_val && !dns_val.contains_key(Value::from("fake-ip-range6")) {
                 revise!(dns_val, "fake-ip-range6", "fdfe:dcba:9876::1/64");
             }
-
-            #[cfg(target_os = "macos")]
-            {
-                AsyncHandler::spawn(move || async move {
-                    crate::utils::resolve::dns::restore_public_dns().await;
-                    crate::utils::resolve::dns::set_public_dns("114.114.114.114".to_string()).await;
-                });
-            }
         }
 
         // 当TUN启用时，将修改后的DNS配置写回
         revise!(config, "dns", dns_val);
-    } else {
-        // TUN未启用时，仅恢复系统DNS，不修改配置文件中的DNS设置
-        #[cfg(target_os = "macos")]
-        AsyncHandler::spawn(move || async move {
-            crate::utils::resolve::dns::restore_public_dns().await;
-        });
     }
 
     // 更新TUN配置
@@ -86,4 +69,131 @@ pub fn use_tun(mut config: Mapping, enable: bool) -> Mapping {
     revise!(config, "tun", tun_val);
 
     config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::use_tun;
+    use serde_yaml_ng::{Mapping, Value};
+
+    fn mapping(yaml: &str) -> Result<Mapping, serde_yaml_ng::Error> {
+        serde_yaml_ng::from_str::<Mapping>(yaml)
+    }
+
+    #[test]
+    fn enabling_tun_is_a_pure_config_transform() -> Result<(), serde_yaml_ng::Error> {
+        let input = mapping(
+            r"
+ipv6: true
+dns:
+  enhanced-mode: redir-host
+  nameserver:
+    - 192.0.2.53
+tun:
+  enable: false
+  device: utun4094
+  auto-route: false
+  auto-detect-interface: false
+  dns-hijack: []
+",
+        )?;
+
+        let output = use_tun(input, true);
+        assert_eq!(
+            output
+                .get(Value::from("tun"))
+                .and_then(Value::as_mapping)
+                .and_then(|tun| tun.get(Value::from("enable")))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            output
+                .get(Value::from("tun"))
+                .and_then(Value::as_mapping)
+                .and_then(|tun| tun.get(Value::from("device")))
+                .and_then(Value::as_str),
+            Some("utun4094")
+        );
+        assert_eq!(
+            output
+                .get(Value::from("tun"))
+                .and_then(Value::as_mapping)
+                .and_then(|tun| tun.get(Value::from("auto-route")))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            output
+                .get(Value::from("tun"))
+                .and_then(Value::as_mapping)
+                .and_then(|tun| tun.get(Value::from("auto-detect-interface")))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            output
+                .get(Value::from("dns"))
+                .and_then(Value::as_mapping)
+                .and_then(|dns| dns.get(Value::from("enhanced-mode")))
+                .and_then(Value::as_str),
+            Some("redir-host")
+        );
+        assert_eq!(
+            output
+                .get(Value::from("dns"))
+                .and_then(Value::as_mapping)
+                .and_then(|dns| dns.get(Value::from("nameserver")))
+                .and_then(Value::as_sequence)
+                .and_then(|servers| servers.first())
+                .and_then(Value::as_str),
+            Some("192.0.2.53")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn disabling_tun_only_changes_the_generated_enable_field() -> Result<(), serde_yaml_ng::Error> {
+        let input = mapping(
+            r"
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+tun:
+  enable: true
+  device: utun4094
+  auto-route: false
+  strict-route: false
+",
+        )?;
+        let expected_dns = input.get(Value::from("dns")).cloned();
+
+        let output = use_tun(input, false);
+        assert_eq!(
+            output
+                .get(Value::from("tun"))
+                .and_then(Value::as_mapping)
+                .and_then(|tun| tun.get(Value::from("enable")))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            output
+                .get(Value::from("tun"))
+                .and_then(Value::as_mapping)
+                .and_then(|tun| tun.get(Value::from("device")))
+                .and_then(Value::as_str),
+            Some("utun4094")
+        );
+        assert_eq!(
+            output
+                .get(Value::from("tun"))
+                .and_then(Value::as_mapping)
+                .and_then(|tun| tun.get(Value::from("auto-route")))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(output.get(Value::from("dns")).cloned(), expected_dns);
+        Ok(())
+    }
 }

@@ -17,6 +17,7 @@
 
 use std::{
     fs,
+    io::Read as _,
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -371,13 +372,31 @@ impl ProductionInitializationProvider for BundleProductionInitializationProvider
 }
 
 fn read_owned_resource(path: &Path) -> Result<Vec<u8>, NetworkErrorCode> {
-    let metadata = path
-        .symlink_metadata()
-        .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    // Open the final path without following a symlink.  The bundle is an
+    // app-owned trust boundary: a metadata check followed by `fs::read` has
+    // a replace-between-check-and-use window in which a writable resource
+    // directory could redirect policy or trust bytes to an attacker-selected
+    // file.  Checking the descriptor after opening also avoids trusting a
+    // path's pre-open metadata.
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    if !file
+        .metadata()
+        .map_err(|_| NetworkErrorCode::InvalidConfiguration)?
+        .is_file()
+    {
         return Err(NetworkErrorCode::InvalidConfiguration);
     }
-    fs::read(path).map_err(|_| NetworkErrorCode::InvalidConfiguration)
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    Ok(bytes)
 }
 
 fn unix_now() -> u64 {
@@ -514,6 +533,28 @@ mod tests {
             Some(NetworkErrorCode::AuthenticationFailed)
         );
         assert!(!revision_path.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_resource_open_refuses_symlink_without_a_check_use_window() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let regular = directory.path().join("regular.json");
+        let link = directory.path().join("link.json");
+        fs::write(&regular, br"{}")?;
+        symlink(&regular, &link)?;
+
+        assert_eq!(
+            read_owned_resource(&regular).map_err(|error| anyhow::anyhow!("{error:?}"))?,
+            b"{}".to_vec()
+        );
+        assert_eq!(
+            read_owned_resource(&link).err(),
+            Some(NetworkErrorCode::InvalidConfiguration)
+        );
         Ok(())
     }
 }
