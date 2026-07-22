@@ -48,6 +48,16 @@ const POLICY_RESOURCE_MAX_BYTES: usize = 64 * 1024;
 const POLICY_TRUST_RESOURCE_MAX_BYTES: usize = 64 * 1024;
 const SIDECAR_TRUST_RESOURCE_MAX_BYTES: usize = 16 * 1024;
 
+/// Exact compile-time marker for the explicit disposable production-networking
+/// candidate.  It is deliberately in a dedicated Mach-O section so package
+/// verification can distinguish a feature-enabled executable from a resource
+/// directory that merely claims to be one.  The marker contains no endpoint,
+/// identity, or credential material.
+#[cfg(all(target_os = "macos", feature = "networking-production"))]
+#[used]
+#[unsafe(link_section = "__TEXT,__kyclash_prod")]
+pub static KYCLASH_PRODUCTION_COMPILE_MARKER: [u8; 16] = *b"KYCLASH-PROD-V1\0";
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const SIDECAR_TRUST_RESOURCE_NAME: &str = "kyclash-network-sidecar-aarch64-apple-darwin.trust.json";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]

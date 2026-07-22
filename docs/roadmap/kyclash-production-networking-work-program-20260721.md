@@ -90,12 +90,16 @@ in-flight call may be synchronously destroyed, and its sealed generation-bound
 receipt cannot be copied or issued by `Drop`; recovery-only, busy, and retained
 old boundaries fail closed. Each receipt also binds a process-unique boundary
 incarnation, so equal native generation counters on separate boundaries cannot
-alias. This remains a route-local proof only: it cannot authorize replacement
-until the service gate separately proves no queued/unjoined route task or
-retained mutable service handle. The first incomplete source criterion is now
-that service mutation gate and generation-bound Connect reservation, followed
-by command-layer CAS rematerialization. The first incomplete aggregate
-criterion remains S1.13.
+alias. The service-level boundary is now locally closed as well: an
+Open/Retiring/RecoveryOnly/Retired gate owns exact service generations,
+reservations, mutation leases, and queued/running/unjoined route tasks. Only
+the non-copyable aggregate route-plus-controller receipt can authorize
+retirement. The command layer reserves before spawn and performs exact
+Arc/generation retirement, compare-remove, off-slot build, and empty-slot
+install while retaining bounded redacted evidence if replacement fails. The
+first incomplete source/build criterion is now the explicit production-feature
+disposable-VM candidate and its fail-closed package classification. The first
+incomplete aggregate criterion remains S1.13.
 Overall S1 status: in progress.
 
 Hosted CI continuation (2026-07-22): the previous macOS verify failure was
@@ -106,8 +110,12 @@ the shipped one-second userspace probe deadline, applies a separate
 retains all reachability/loss/order assertions, and runs benchmark plus
 actual-child evidence after a non-cancelled race failure. Local GOMAXPROCS=3
 split race ×5, ordinary tests, vet, formatting, YAML validation, and the
-benchmark pass. The replacement hosted run remains an open gate until its
-macOS verify job actually succeeds.
+benchmark pass. Hosted run `29928929743` proved benchmark and actual-child
+data-plane steps green but reached the Go 600-second timeout in the old
+aggregate non-lab race command. The replacement workflow keeps
+`-race -count=5`, uses per-package logs and two bounded non-lab workers, and
+keeps tagged labserver isolated. A fresh hosted run remains an open gate until
+its macOS verify job actually succeeds.
 
 ### Work-package dependency chain
 

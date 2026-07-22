@@ -545,16 +545,23 @@ XPC-C has local focused and full-library test, Clippy, formatting, and diff
 evidence; it does not claim a live production endpoint. The controller's exact
 child-absence retirement receipt and the route boundary's exact native-
 generation retirement receipt are now implemented and locally tested. The
-service mutation gate, generation-bound reservation, and command CAS remain.
+service mutation gate, generation-bound reservation, queued/joined route-task
+ownership, and command-layer rematerialization CAS are now implemented and
+locally tested. Connect reserves before task publication; replacement
+compare-removes only the selected Arc/generation, builds off-slot, and retains
+bounded redacted old-generation evidence when replacement fails.
 The sidecar cancellation amendment is committed as `8811dda9` with local
 full-race and 20-round soak
-evidence. Hosted run `29923178571` still has a red macOS race verification
-step, so the hosted gate remains open. Its failure was a low-CPU
-race-instrumentation timing false negative in the loopback health probe, not a
-reported data race. The workflow now splits the labserver race package,
-selects a `race && kyclash_race_lab` budget only for that test binary, preserves
-the shipped one-second probe deadline, and keeps benchmark/actual-child
-diagnostics running unless cancelled. Local split race ×5, ordinary tests,
+evidence. Hosted replacement run `29928929743` proved the benchmark and
+actual-child data-plane steps green, but the old aggregate non-lab race command
+reached its Go 600-second timeout before later compile gates, so the hosted gate
+remains open. No data-race assertion was reported. The workflow now keeps
+every package at `-race -count=5`, writes per-package evidence, runs the
+non-lab set in two bounded workers, isolates tagged labserver timing, preserves
+the shipped one-second probe deadline, and retains benchmark/actual-child
+diagnostics after a non-cancelled failure. A fresh hosted run is required
+before this gate is called green.
+Local split race ×5, ordinary tests,
 vet, formatting, and benchmark validation pass; the replacement hosted run is
 still required for a green hosted gate.
 

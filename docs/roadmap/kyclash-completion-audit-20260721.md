@@ -30,8 +30,11 @@ boundaries cannot retire, `Drop` cannot mint proof, and retained retired
 boundaries reject mutation. The receipt binds a process-unique boundary
 incarnation as well as its native generation, but remains route-local evidence:
 it does not prove absence of queued service tasks or make an old service `Arc`
-inert. The service mutation gate and generation-bound Connect reservation are
-the next source criterion. This audit is not a terminal completion or
+inert. The service mutation gate, generation-bound Connect reservation,
+queued/joined route-task ownership, aggregate retirement receipt, and command
+CAS are now locally closed. Connect reserves before task publication;
+replacement compare-removes only the exact Arc/generation and retains bounded
+redacted evidence on failure. This audit is not a terminal completion or
 permission to stop continuous delivery while safe work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
@@ -193,9 +196,8 @@ authorized disposable-VM matrix continue without another routine prompt;
 production infrastructure, updater publication, and release activation remain
 separate authorization boundaries:
 
-1. Finish the service mutation gate and generation-bound Connect reservation,
-   then command-layer CAS rematerialization and exercise the production-feature
-   Rust live-source path against the packaged
+1. Exercise the explicit production-feature, lab-marked Rust live-source path
+   against the packaged
    Mihomo control API in the disposable VM, including private-service
    reachability, app/sidecar/helper abort, reboot/retry, aggregate foreign-route
    cleanup, and typed service retirement. XPC-C's bounded replacement and

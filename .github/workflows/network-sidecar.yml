@@ -286,17 +286,41 @@ jobs:
           # Keep every package at five race-detector repetitions. Isolate the
           # CPU-heavy loopback WireGuard matrix so unrelated package workers
           # cannot consume its probe budget on the three-core hosted runner.
-          # The custom tag widens only this instrumented lab's probe budget;
-          # ordinary and release builds retain the shipped one-second value.
+          # Run non-lab packages in two bounded workers: the previous single
+          # multi-package invocation reached its 600-second test timeout before
+          # it could finish on a cold macOS runner. Each package keeps the same
+          # 600-second per-test bound and no package is dropped. The custom tag
+          # widens only this instrumented lab's probe budget; ordinary and
+          # release builds retain the shipped one-second value.
           go list ./... | grep -v '/internal/labserver$' > build/race/packages.txt
           {
             race_exit_code=0
-            xargs go test -race -count=5 -timeout=600s < build/race/packages.txt || race_exit_code=$?
-            go test -race -tags=kyclash_race_lab -count=1 -timeout=60s \
-              ./internal/userspace \
-              -run '^TestRaceLabHealthProbeBudgetIsIsolated$' || race_exit_code=$?
-            go test -race -tags=kyclash_race_lab -count=5 -timeout=600s \
-              ./internal/labserver || race_exit_code=$?
+            mkdir -p build/race/non-lab
+            if ! xargs -P 2 -n 1 sh -c '
+              package="$1"
+              name="${package#./}"
+              name=$(printf "%s" "$name" | tr "/." "__")
+              {
+                printf "%s\n" "package=$package"
+                go test -race -count=5 -timeout=600s "$package"
+              } > "build/race/non-lab/${name}.log" 2>&1
+            ' kyclash < build/race/packages.txt; then
+              race_exit_code=1
+            fi
+            for log in build/race/non-lab/*.log; do
+              if test -f "$log"; then
+                cat "$log"
+              fi
+            done
+            if ! go test -race -tags=kyclash_race_lab -count=1 -timeout=60s \
+                ./internal/userspace \
+                -run '^TestRaceLabHealthProbeBudgetIsIsolated$'; then
+              race_exit_code=1
+            fi
+            if ! go test -race -tags=kyclash_race_lab -count=5 -timeout=600s \
+                ./internal/labserver; then
+              race_exit_code=1
+            fi
             exit "$race_exit_code"
           } 2>&1 | tee build/race/run.log
 
@@ -305,7 +329,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: network-sidecar-race-${{ runner.arch }}-${{ github.sha }}
-          path: network-sidecar/build/race/run.log
+          path: network-sidecar/build/race/
           if-no-files-found: error
           retention-days: 14
 
