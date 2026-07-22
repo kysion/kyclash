@@ -129,6 +129,10 @@ helper reports recovery required instead of declaring success.
   begin/apply error.
 - `src-tauri/src/networking/production_service.rs`: observation ordering and
   no-route-on-source-failure path.
+- `src-tauri/src/networking/mod.rs`, `src-tauri/src/lib.rs`, and the relevant
+  core setup module: export the source, inject it only under the production
+  feature, and construct the real service instead of leaving the current
+  `XpcProductionRouteBoundary` unreferenced.
 - A new production source module under `src-tauri/src/networking/` (and its
   macOS app/core adapter): live Mihomo API and interface existence checks.
 - `macos/route-helper/main.swift`: v2 `LeaseOwner`, `JournalOwner`, reply
