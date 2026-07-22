@@ -86,8 +86,18 @@ func (state *probeState) measure(ctx context.Context, closed <-chan struct{}, se
 		state.fail()
 		return 0, ErrProbeFailed
 	}
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		return 0, state.drainCancelledPong(cancelErr, closed)
+	}
 	select {
 	case <-state.pongs:
+		// Cancellation may become observable after the select chose an
+		// already-buffered Pong. Preserve the caller's cancellation result;
+		// the matching Pong has been consumed, so the carrier remains safe to
+		// reuse without another drain.
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return 0, cancelErr
+		}
 		return time.Since(started), nil
 	case <-closed:
 		state.fail()

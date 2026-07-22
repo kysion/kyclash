@@ -89,3 +89,27 @@ func TestProbeCancellationDuringDispatchDrainsBeforeReuse(t *testing.T) {
 		t.Fatalf("drained in-dispatch cancellation poisoned later probe: %v", err)
 	}
 }
+
+func TestProbeCancellationBeforeBufferedPongWinsAndRemainsReusable(t *testing.T) {
+	// A cancelled context and a buffered Pong are simultaneously selectable.
+	// Exercise enough independent states to make an accidental random select
+	// outcome visible while requiring cancellation to win deterministically.
+	for attempt := range 64 {
+		state := newProbeState()
+		closed := make(chan struct{})
+		ctx, cancel := context.WithCancel(context.Background())
+		if _, err := state.measure(ctx, closed, func(context.Context) (bool, error) {
+			cancel()
+			state.observePong()
+			return true, nil
+		}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("attempt %d returned %v instead of cancellation", attempt, err)
+		}
+		if _, err := state.measure(context.Background(), closed, func(context.Context) (bool, error) {
+			state.observePong()
+			return true, nil
+		}); err != nil {
+			t.Fatalf("attempt %d left probe state unusable: %v", attempt, err)
+		}
+	}
+}

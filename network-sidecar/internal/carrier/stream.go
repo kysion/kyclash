@@ -58,10 +58,22 @@ func (stream *Stream) sendFrame(ctx context.Context, kind frame.Kind, payload []
 		return false, err
 	}
 	dispatched := false
+	written := false
 	if err := stream.withWriteContext(ctx, func() error {
 		dispatched = true
-		return writeFull(stream.connection, encoded)
+		err := writeFull(stream.connection, encoded)
+		// withContext can report a cancellation racing with a write that has
+		// already completed. Keep the sequence space in sync with bytes that
+		// reached the peer; otherwise the next frame reuses this sequence and
+		// is rejected as a replay.
+		if err == nil {
+			written = true
+		}
+		return err
 	}); err != nil {
+		if written {
+			stream.next++
+		}
 		return dispatched, err
 	}
 	stream.next++
@@ -153,9 +165,20 @@ func withContext(ctx context.Context, setDeadline func(time.Time) error, operati
 			return fmt.Errorf("set carrier deadline: %w", err)
 		}
 	}
-	stop := context.AfterFunc(ctx, func() { _ = setDeadline(time.Now()) })
+	deadlineCallbackDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(deadlineCallbackDone)
+		_ = setDeadline(time.Now())
+	})
 	err := operation()
 	stoppedBeforeCancel := stop()
+	if !stoppedBeforeCancel {
+		// A false stop result only means that the cancellation callback has
+		// started (or completed). Wait for it before clearing the deadline so
+		// it cannot race behind the reset and poison the next operation with
+		// an already-expired deadline.
+		<-deadlineCallbackDone
+	}
 	_ = setDeadline(time.Time{})
 	if !stoppedBeforeCancel && ctx.Err() != nil {
 		return ctx.Err()

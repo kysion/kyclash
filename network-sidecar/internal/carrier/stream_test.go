@@ -27,6 +27,149 @@ func (connection *firstWriteGate) Write(data []byte) (int, error) {
 	return connection.Conn.Write(data)
 }
 
+type completedWriteCancellationConn struct {
+	net.Conn
+	mu                 sync.Mutex
+	writes             [][]byte
+	firstWriteStarted  chan struct{}
+	releaseFirstWrite  chan struct{}
+	cancelDeadlineSet  chan struct{}
+	firstWriteOnce     sync.Once
+	cancelDeadlineOnce sync.Once
+}
+
+func (connection *completedWriteCancellationConn) Write(data []byte) (int, error) {
+	connection.mu.Lock()
+	connection.writes = append(connection.writes, bytes.Clone(data))
+	writeIndex := len(connection.writes) - 1
+	connection.mu.Unlock()
+	if writeIndex == 0 {
+		connection.firstWriteOnce.Do(func() { close(connection.firstWriteStarted) })
+		<-connection.releaseFirstWrite
+	}
+	return len(data), nil
+}
+
+func (connection *completedWriteCancellationConn) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() {
+		connection.cancelDeadlineOnce.Do(func() { close(connection.cancelDeadlineSet) })
+	}
+	return nil
+}
+
+func (connection *completedWriteCancellationConn) capturedWrites() [][]byte {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	result := make([][]byte, len(connection.writes))
+	for index := range connection.writes {
+		result[index] = bytes.Clone(connection.writes[index])
+	}
+	return result
+}
+
+type blockingDeadlineSetter struct {
+	mu                sync.Mutex
+	deadline          time.Time
+	cancelEntered     chan struct{}
+	releaseCancel     chan struct{}
+	cancelEnteredOnce sync.Once
+}
+
+func (setter *blockingDeadlineSetter) set(deadline time.Time) error {
+	if !deadline.IsZero() {
+		setter.cancelEnteredOnce.Do(func() {
+			close(setter.cancelEntered)
+			<-setter.releaseCancel
+		})
+	}
+	setter.mu.Lock()
+	setter.deadline = deadline
+	setter.mu.Unlock()
+	return nil
+}
+
+func (setter *blockingDeadlineSetter) current() time.Time {
+	setter.mu.Lock()
+	defer setter.mu.Unlock()
+	return setter.deadline
+}
+
+func TestCompletedStreamWriteAdvancesSequenceWhenCancellationWins(t *testing.T) {
+	connection := &completedWriteCancellationConn{
+		firstWriteStarted: make(chan struct{}),
+		releaseFirstWrite: make(chan struct{}),
+		cancelDeadlineSet: make(chan struct{}),
+	}
+	stream := NewStream(connection)
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := stream.sendFrame(ctx, frame.KindPing, nil)
+		first <- err
+	}()
+	<-connection.firstWriteStarted
+	cancel()
+	<-connection.cancelDeadlineSet
+	close(connection.releaseFirstWrite)
+	if err := <-first; !errors.Is(err, context.Canceled) {
+		t.Fatalf("completed write cancellation returned %v", err)
+	}
+	if dispatched, err := stream.sendFrame(context.Background(), frame.KindPing, nil); err != nil || !dispatched {
+		t.Fatalf("next write failed after completed cancellation: dispatched=%v err=%v", dispatched, err)
+	}
+	writes := connection.capturedWrites()
+	if len(writes) != 2 {
+		t.Fatalf("expected two captured frames, got %d", len(writes))
+	}
+	for index, encoded := range writes {
+		decoded, err := frame.Decode(bytes.NewReader(encoded))
+		if err != nil {
+			t.Fatalf("decode frame %d: %v", index, err)
+		}
+		if decoded.Sequence != uint64(index) {
+			t.Fatalf("frame %d reused sequence %d", index, decoded.Sequence)
+		}
+	}
+}
+
+func TestWithContextWaitsForCancellationDeadlineBeforeReset(t *testing.T) {
+	setter := &blockingDeadlineSetter{
+		cancelEntered: make(chan struct{}),
+		releaseCancel: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	operationStarted := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- withContext(ctx, setter.set, func() error {
+			close(operationStarted)
+			<-setter.cancelEntered
+			return nil
+		})
+	}()
+	<-operationStarted
+	cancel()
+	<-setter.cancelEntered
+	select {
+	case err := <-result:
+		close(setter.releaseCancel)
+		t.Fatalf("withContext returned before cancellation deadline completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(setter.releaseCancel)
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("withContext cancellation returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("withContext did not join cancellation deadline callback")
+	}
+	if deadline := setter.current(); !deadline.IsZero() {
+		t.Fatalf("cancellation deadline survived reset: %v", deadline)
+	}
+}
+
 func TestStreamRoundTripAndCloseIdempotence(t *testing.T) {
 	leftConnection, rightConnection := net.Pipe()
 	left := NewStream(leftConnection)
