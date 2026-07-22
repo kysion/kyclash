@@ -113,6 +113,40 @@ credentials, signing identities, releases, or external infrastructure without
 explicit authorization. Use in-memory or isolated local adapters until that
 authorization exists. Never weaken a gate to make it pass.
 
+## Enforce the macOS execution target
+
+Treat the host Mac as build and orchestration infrastructure, not as the macOS
+acceptance target. When a disposable Apple Virtualization.framework guest has
+been selected for the work:
+
+- Interpret “run/open/verify the App” as running `/Applications/KyClash.app`
+  inside that guest. Do not substitute a host launch because it is easier to
+  observe or automate.
+- Do not run the KyClash App, PKG installer, Mihomo TUN, sidecar, route helper,
+  Keychain lifecycle, `launchctl` jobs, route commands, DNS commands, or
+  lifecycle acceptance cases on the host unless the user explicitly authorizes
+  that exact host action in the current request.
+- If the guest is stopped, start or recover it and continue there. A stopped or
+  temporarily unreachable guest is not permission to fall back to the host.
+- Before any guest system test, independently require `sysctl -n hw.model` to
+  begin with `VirtualMac`, record the guest OS and architecture, and confirm the
+  expected package receipt, bundle path, and signature. Fail closed on a
+  mismatch.
+- Keep the guest UI visible for GUI acceptance. Launch the installed bundle
+  through guest LaunchServices, foreground it in the guest, and prove its guest
+  PID, executable path, bundled Mihomo health, and visible window. Host PIDs,
+  host screenshots, and host sockets are not guest evidence.
+- Label every runtime artifact and log with its execution target. Never combine
+  host build provenance with guest runtime provenance into a claim that the App
+  ran in the guest.
+- If KyClash is accidentally launched on the host, stop that host instance
+  immediately, verify that its child processes and owned system state are gone,
+  disclose the correction, and resume in the guest.
+
+For the current local lab, use the explicitly selected disposable
+`kyclash-macos-lab-work` guest. Never mutate or use the clean
+`kyclash-macos-lab-base` image for acceptance tests.
+
 ## Implementation order
 
 1. Close the current iteration against its documented exit criteria.
