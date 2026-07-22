@@ -739,7 +739,14 @@ private final class RouteCoordinator {
                 journal = current
                 return false
             }
-            guard let inspection = inspections[cidr] else {
+            // Re-read immediately after the durable pending marker.  The
+            // initial batch snapshot is only a preflight; another route owner
+            // may have changed the table while the journal was being written.
+            // Never make a delete decision from that stale snapshot.
+            guard let freshInspections = executor.inspect(
+                cidrs: [cidr],
+                interfaceName: current.owner.interfaceName
+            ), let inspection = freshInspections[cidr] else {
                 journal = current
                 return false
             }
@@ -770,6 +777,17 @@ private final class RouteCoordinator {
                 // inspect and delete the route instead of treating it as
                 // already absent.
                 journal = pendingState
+                return false
+            }
+            guard let afterDelete = executor.inspect(
+                cidrs: [cidr],
+                interfaceName: current.owner.interfaceName
+            ), afterDelete[cidr]?.ownedExact != true else {
+                // A successful command with a still-present exact route is
+                // ambiguous.  Restore the durable pending state so recovery
+                // retries ownership inspection instead of declaring success.
+                journal = pendingState
+                _ = persist(pendingState)
                 return false
             }
             journal = current
