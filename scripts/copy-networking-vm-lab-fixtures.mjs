@@ -680,7 +680,7 @@ const guestPullScript = String.raw`
 set -euo pipefail
 run_id="$1"
 guest_root="$2"
-case "$run_id" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) exit 64 ;; esac
+case "$run_id" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) exit 64 ;; esac
 case "$guest_root" in /private/var/tmp/kyclash-networking-vm-lab/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) exit 64 ;; esac
 [ "$(/usr/bin/uname -s)" = 'Darwin' ]
 [ "$(/usr/bin/uname -m)" = 'arm64' ]

@@ -154,6 +154,19 @@ test('guest pull shell contract is syntactically valid', () => {
   assert.equal(result.status, 0, result.stderr)
 })
 
+test('guest pull shell pins both run-id guards to exactly 16 hex digits', () => {
+  const guards = guestPullScript
+    .split('\n')
+    .filter(
+      (line) =>
+        line.startsWith('case "$run_id"') ||
+        line.startsWith('case "$guest_root"'),
+    )
+  assert.equal(guards.length, 2)
+  for (const guard of guards)
+    assert.equal(guard.match(/\[0-9a-f\]/gu)?.length, 16, guard)
+})
+
 test('guest pull frame is closed, hash-bound, and semantically validated', () => {
   const now = 1_900_000_000
   const runId = '0123456789abcdef'
