@@ -794,11 +794,20 @@ Connect/Health cancellation now pass against
 repository-owned encrypted loopback peers; this is not an external
 production-endpoint claim.
 
-The consolidated short CI matrix is now configured in the macOS sidecar
-workflow (its first post-change hosted result is pending); stable reason-code
-assertions for the exercised impairments are covered locally and in the longer
-race matrix. Extended Linux VM soak and network-change recovery evidence
-remain open. No fallback is introduced implicitly inside Go.
+The cancellation amendment is now committed as `8811dda9`. It closes three
+independent carrier races exposed by the hosted protocol-v2 run: a completed
+frame write whose cancellation result won locally (sequence advancement), a
+late `context.AfterFunc` deadline callback (callback join before reset), and a
+cancelled probe racing a buffered Pong (cancellation wins while consuming the
+matching Pong). Deterministic unit tests, ordinary and race stress, the full
+Go race suite (`-count=5`), and a 20-round loopback reliability soak passed.
+The replacement hosted run is `29922714543`; its result is retained as the
+next CI gate rather than inferred from the earlier run.
+
+The consolidated short CI matrix is configured in the macOS sidecar workflow;
+stable reason-code assertions for the exercised impairments are covered locally
+and in the longer race matrix. Extended Linux VM soak and network-change
+recovery evidence remain open. No fallback is introduced implicitly inside Go.
 
 The Linux isolated-network workflow now runs the netem matrix on every change,
 retains environment and command logs as artifacts, and the macOS verification

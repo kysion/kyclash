@@ -523,9 +523,13 @@ concurrent writers, publication faults, and unprovable rollback fail closed.
 Legacy revision-only records migrate only on a higher authenticated revision.
 Initialization remains single-flight and installs only a deferred factory, so
 this source evidence does not claim an App launch, XPC connection, Keychain
-read, sidecar, utun, or route mutation. The next source unit is the Swift
-helper accepted-connection barrier, followed by native/Rust XPC generation
-rematerialization and typed cleanup outcomes.
+read, sidecar, utun, or route mutation. The Swift helper accepted-connection
+barrier is now closed. The current source unit is the Objective-C XPC-B
+terminal-generation/transport-status boundary; after it, Rust XPC-C will own
+replaceable generations and same-generation read-only discovery retry without
+replaying route mutations. The sidecar cancellation amendment is committed as
+`8811dda9` with local full-race and 20-round soak evidence; hosted replacement
+verification remains pending.
 
 The route-helper v2 lease/journal implementation and signed disposable-VM
 matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,

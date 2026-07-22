@@ -142,12 +142,13 @@ public-distribution enhancement rather than a current development blocker.
   production and lab Go children; and Go module, formatting, normal, race,
   vet, and shared-fixture parity gates passed. This evidence is loopback/local
   and is not a production-endpoint claim.
-- The most recent retained pre-v2 network-sidecar GitHub Actions evidence is the
-  security-hardening run for commit
-  `eaf37d8d` completed successfully, superseding the four earlier sidecar CI
-  runs. Later commits through `30ef92f1` did not change sidecar-scoped paths;
-  the first hosted protocol-v2 result remains pending the atomic v2 push and
-  must not be inferred from that historical run.
+- The protocol-v2 sidecar workflow is now active on every relevant change. Run
+  `29921505966` for XPC-A completed its signing, impaired-network, and Linux
+  reliability jobs, while its verification job exposed the three cancellation
+  races corrected in commit `8811dda9`. Local ordinary/race stress, the full
+  Go race suite (`-count=5`), and a 20-round loopback soak pass for that fix;
+  replacement hosted run `29922714543` is the retained pending CI result and
+  must not be called green until its verification job completes.
 
 ## Remaining system, external, and activation gates
 
