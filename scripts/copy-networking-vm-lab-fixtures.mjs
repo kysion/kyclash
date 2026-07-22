@@ -599,6 +599,11 @@ copy_dir="$run_root/.kyclash-fixture-copy"
 /bin/chmod 700 "$copy_dir"
 `
 
+export const guestLowerHex64Guard = [
+  `[ "\${#expected}" -eq 64 ]`,
+  'case "$expected" in *[!0-9a-f]*|\'\') exit 64 ;; esac',
+].join('\n')
+
 const guestPrepareShellScript = String.raw`
 set -euo pipefail
 destination="$1"
@@ -611,7 +616,7 @@ case "$(/usr/sbin/sysctl -n hw.model 2>/dev/null)" in VirtualMac*) ;; *) exit 69
 [ "$HOME" = "/Users/supen" ]
 [ "$destination" = "/Users/supen/kyclash-macos-vm-keychain-trust-fixture.sh" ]
 printf '%s\n' "$tmp" | /usr/bin/grep -Eq '^/Users/supen/kyclash-macos-vm-keychain-trust-fixture\.sh\.copy-[1-9][0-9]*$'
-case "$expected" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) exit 64 ;; esac
+${guestLowerHex64Guard}
 [ ! -e "$tmp" ] && [ ! -L "$tmp" ]
 `
 

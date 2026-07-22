@@ -13,6 +13,7 @@ import {
   GUEST_DESCRIPTOR_NAME,
   SELECTED_VM_NAME,
   createPrivateOutputRoot,
+  guestLowerHex64Guard,
   guestPullScript,
   parsePullFrame,
   parseCopyOptions,
@@ -23,6 +24,24 @@ import {
 
 const sha256 = (bytes) =>
   crypto.createHash('sha256').update(bytes).digest('hex')
+
+const runGuestDigestGuard = (value) =>
+  spawnSync('/bin/bash', ['-s', '--', value], {
+    input: `set -euo pipefail\nexpected="$1"\n${guestLowerHex64Guard}\n`,
+    encoding: 'utf8',
+  })
+
+test('guest fixture digest guard accepts exactly lowercase SHA-256 hex', () => {
+  assert.equal(runGuestDigestGuard('a'.repeat(64)).status, 0)
+  for (const invalid of [
+    'a'.repeat(63),
+    'a'.repeat(65),
+    'A'.repeat(64),
+    `${'a'.repeat(63)}g`,
+    '',
+  ])
+    assert.notEqual(runGuestDigestGuard(invalid).status, 0)
+})
 
 test('copy command parser is closed and separates shell-only from full copy', () => {
   assert.deepEqual(parseCopyOptions(['--shell-only']), {
