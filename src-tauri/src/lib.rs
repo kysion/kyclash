@@ -461,13 +461,13 @@ pub fn run() {
 
     #[cfg(any(
         feature = "clippy",
-        feature = "networking-system-lab",
+        all(feature = "networking-system-lab", not(feature = "networking-production")),
         all(test, feature = "networking-dev")
     ))]
     let context = tauri::test::mock_context(tauri::test::noop_assets());
     #[cfg(any(
         feature = "clippy",
-        feature = "networking-system-lab",
+        all(feature = "networking-system-lab", not(feature = "networking-production")),
         all(test, feature = "networking-dev")
     ))]
     let app = builder.build(context).unwrap_or_else(|e| {
@@ -478,7 +478,7 @@ pub fn run() {
 
     #[cfg(not(any(
         feature = "clippy",
-        feature = "networking-system-lab",
+        all(feature = "networking-system-lab", not(feature = "networking-production")),
         all(test, feature = "networking-dev")
     )))]
     let app = builder.build(tauri::generate_context!()).unwrap_or_else(|e| {

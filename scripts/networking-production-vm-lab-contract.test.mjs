@@ -61,6 +61,22 @@ test('production VM package scripts point at the reviewed executable chain', () 
   )
 })
 
+test('production system-lab candidates keep the real Tauri App context', () => {
+  const buildScript = fs.readFileSync(
+    path.join(root, 'src-tauri', 'build.rs'),
+    'utf8',
+  )
+  const appSource = fs.readFileSync(
+    path.join(root, 'src-tauri', 'src', 'lib.rs'),
+    'utf8',
+  )
+  const labOnlyPattern =
+    /all\(\s*feature = "networking-system-lab",\s*not\(feature = "networking-production"\)\s*\)/gu
+  assert.equal(buildScript.match(labOnlyPattern)?.length, 2)
+  assert.equal(appSource.match(labOnlyPattern)?.length, 3)
+  assert.match(appSource, /builder\.build\(tauri::generate_context!\(\)\)/u)
+})
+
 test('production VM contract exposes a guest-to-host public pull only', () => {
   const copier = fs.readFileSync(
     path.join(root, 'scripts', 'copy-networking-vm-lab-fixtures.mjs'),
