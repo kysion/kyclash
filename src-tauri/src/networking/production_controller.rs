@@ -14,16 +14,75 @@ use super::{
     IpcRequest, IpcResponse, NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode, SidecarHandshake, SidecarLaunchContext,
     SidecarLifecycleState, SidecarProcessStatus,
 };
+#[cfg(unix)]
+use super::{SidecarRuntime as _, StdioSidecarRuntime};
 
 const COMMAND_CAPACITY: usize = 32;
 const DIAGNOSTIC_CAPACITY: usize = 128;
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[async_trait]
 pub trait AsyncProductionRuntime: Send + 'static {
     async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode>;
     async fn request(&mut self, request: IpcRequest, cancel: Arc<AtomicBool>) -> Result<IpcResponse, NetworkErrorCode>;
     async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode>;
+    /// Owns graceful shutdown plus any required forced termination and child
+    /// reaping. The controller bounds how long it awaits this contract but has
+    /// no runtime-specific process handle with which to kill a child itself.
     async fn stop(&mut self) -> Result<(), NetworkErrorCode>;
+}
+
+/// AsyncProductionRuntime adapter for the existing synchronous stdio sidecar.
+///
+/// The stdio implementation owns the child, trust-manifest verification, and
+/// forced-kill/reap behavior.  This thin adapter only bridges that blocking
+/// boundary into Tokio.  Production's Tokio runtime is multi-threaded, which
+/// is required by `block_in_place`; the adapter deliberately does not create a
+/// second process or alter the locked bootstrap protocol.
+#[cfg(unix)]
+pub struct AsyncStdioSidecarRuntime {
+    inner: StdioSidecarRuntime,
+}
+
+#[cfg(unix)]
+impl AsyncStdioSidecarRuntime {
+    #[must_use]
+    pub const fn new(inner: StdioSidecarRuntime) -> Self {
+        Self { inner }
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> StdioSidecarRuntime {
+        self.inner
+    }
+}
+
+#[cfg(unix)]
+#[async_trait]
+impl AsyncProductionRuntime for AsyncStdioSidecarRuntime {
+    async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
+        tokio::task::block_in_place(|| self.inner.start(context))
+    }
+
+    async fn request(&mut self, request: IpcRequest, cancel: Arc<AtomicBool>) -> Result<IpcResponse, NetworkErrorCode> {
+        if cancel.load(Ordering::Acquire) {
+            return Err(NetworkErrorCode::OperationCancelled);
+        }
+        let result = tokio::task::block_in_place(|| self.inner.request(&request));
+        if cancel.load(Ordering::Acquire) {
+            Err(NetworkErrorCode::OperationCancelled)
+        } else {
+            result
+        }
+    }
+
+    async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
+        tokio::task::block_in_place(|| self.inner.status())
+    }
+
+    async fn stop(&mut self) -> Result<(), NetworkErrorCode> {
+        tokio::task::block_in_place(|| self.inner.stop())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +236,15 @@ pub fn spawn_production_controller<R: AsyncProductionRuntime>(
     context: SidecarLaunchContext,
     expected_auth_proof: String,
 ) -> ProductionControllerHandle {
+    spawn_production_controller_with_stop_timeout(runtime, context, expected_auth_proof, STOP_TIMEOUT)
+}
+
+fn spawn_production_controller_with_stop_timeout<R: AsyncProductionRuntime>(
+    runtime: R,
+    context: SidecarLaunchContext,
+    expected_auth_proof: String,
+    stop_timeout: Duration,
+) -> ProductionControllerHandle {
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
     let cancellations = Arc::new(Mutex::new(HashMap::new()));
     let actor = ProductionController {
@@ -190,6 +258,7 @@ pub fn spawn_production_controller<R: AsyncProductionRuntime>(
         next_sequence: 1,
         crashes: 0,
         retry_at: None,
+        stop_timeout,
     };
     tokio::spawn(actor.run());
     ProductionControllerHandle {
@@ -209,6 +278,7 @@ struct ProductionController<R> {
     next_sequence: u64,
     crashes: u8,
     retry_at: Option<Instant>,
+    stop_timeout: Duration,
 }
 
 impl<R: AsyncProductionRuntime> ProductionController<R> {
@@ -216,7 +286,7 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         while let Some(command) = self.receiver.recv().await {
             match command {
                 Command::Start { response } => {
-                    let _ = response.send(self.start().await);
+                    let _ = response.send(self.start(true).await);
                 }
                 Command::Request {
                     operation_id,
@@ -244,17 +314,16 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                 Command::Shutdown { response } => {
                     let result = self.shutdown().await;
                     let _ = response.send(result);
-                    break;
                 }
             }
         }
         if self.state != SidecarLifecycleState::Stopped {
-            let _ = self.runtime.stop().await;
+            let _ = self.stop_runtime_bounded(None).await;
         }
         self.cancellations.lock().clear();
     }
 
-    async fn start(&mut self) -> Result<(), NetworkErrorCode> {
+    async fn start(&mut self, reset_crash_history: bool) -> Result<(), NetworkErrorCode> {
         if self.state != SidecarLifecycleState::Stopped {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
@@ -267,8 +336,7 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             || handshake.instance_id != self.context.instance_id
             || handshake.auth_proof != self.expected_auth_proof
         {
-            let _ = self.runtime.stop().await;
-            self.state = SidecarLifecycleState::Stopped;
+            let _ = self.stop_runtime_bounded(None).await;
             self.record(
                 ProductionEventKind::Failed,
                 None,
@@ -278,6 +346,9 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         }
         self.state = SidecarLifecycleState::Running;
         self.retry_at = None;
+        if reset_crash_history {
+            self.crashes = 0;
+        }
         self.record(ProductionEventKind::Started, None, None);
         Ok(())
     }
@@ -288,12 +359,10 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         request: IpcRequest,
         timeout: Duration,
     ) -> Result<IpcResponse, NetworkErrorCode> {
-        if self.state != SidecarLifecycleState::Running
-            || request.validate_protocol().is_err()
-            || self.cancellations.lock().contains_key(&operation_id)
-        {
+        if self.state != SidecarLifecycleState::Running || self.cancellations.lock().contains_key(&operation_id) {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
+        request.validate_protocol()?;
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancellations
             .lock()
@@ -302,8 +371,7 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         self.cancellations.lock().remove(&operation_id);
         match result {
             Err(_) => {
-                let _ = self.runtime.stop().await;
-                self.state = SidecarLifecycleState::Stopped;
+                let _ = self.stop_runtime_bounded(Some(operation_id.clone())).await;
                 self.record(
                     ProductionEventKind::TimedOut,
                     Some(operation_id),
@@ -320,17 +388,12 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                 self.record(kind, Some(operation_id), Some(error));
                 Err(error)
             }
-            Ok(Ok(response)) if response.request_id != request.request_id => {
-                let _ = self.runtime.stop().await;
-                self.state = SidecarLifecycleState::Stopped;
-                self.record(
-                    ProductionEventKind::Failed,
-                    Some(operation_id),
-                    Some(NetworkErrorCode::AuthenticationFailed),
-                );
-                Err(NetworkErrorCode::AuthenticationFailed)
-            }
             Ok(Ok(response)) => {
+                if let Err(error) = response.validate_protocol(&request) {
+                    let _ = self.stop_runtime_bounded(Some(operation_id.clone())).await;
+                    self.record(ProductionEventKind::Failed, Some(operation_id), Some(error));
+                    return Err(error);
+                }
                 self.record(ProductionEventKind::RequestCompleted, Some(operation_id), None);
                 Ok(response)
             }
@@ -342,43 +405,84 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             if self.retry_at.is_some_and(|deadline| Instant::now() >= deadline) {
                 self.state = SidecarLifecycleState::Stopped;
                 self.record(ProductionEventKind::Restarting, None, None);
-                self.start().await?;
+                self.start(false).await?;
             }
             return Ok(self.state);
         }
         if self.state != SidecarLifecycleState::Running {
             return Ok(self.state);
         }
-        if matches!(self.runtime.status().await?, SidecarProcessStatus::Exited { .. }) {
-            self.crashes = self.crashes.saturating_add(1);
-            if self.crashes > 3 {
-                self.state = SidecarLifecycleState::CrashLoop;
+        match self.runtime.status().await? {
+            SidecarProcessStatus::Running => {
+                // A successfully restarted process must be observed alive on a
+                // later status poll before its consecutive-crash history is
+                // cleared. Immediate restart/exit cycles therefore still
+                // converge on CrashLoop, while independent later crashes do not
+                // accumulate forever.
+                self.crashes = 0;
+            }
+            SidecarProcessStatus::Exited { .. } => {
+                self.crashes = self.crashes.saturating_add(1);
+                if self.crashes > 3 {
+                    self.state = SidecarLifecycleState::CrashLoop;
+                    self.record(
+                        ProductionEventKind::CrashLoop,
+                        None,
+                        Some(NetworkErrorCode::SidecarUnavailable),
+                    );
+                    return Err(NetworkErrorCode::SidecarUnavailable);
+                }
+                self.state = SidecarLifecycleState::Backoff;
+                let exponent = u32::from(self.crashes.saturating_sub(1).min(7));
+                let delay_ms = 100_u64.saturating_mul(1_u64 << exponent).min(10_000);
+                self.retry_at = Some(Instant::now() + Duration::from_millis(delay_ms));
                 self.record(
-                    ProductionEventKind::CrashLoop,
+                    ProductionEventKind::Restarting,
                     None,
                     Some(NetworkErrorCode::SidecarUnavailable),
                 );
-                return Err(NetworkErrorCode::SidecarUnavailable);
             }
-            self.state = SidecarLifecycleState::Backoff;
-            let exponent = u32::from(self.crashes.saturating_sub(1).min(7));
-            let delay_ms = 100_u64.saturating_mul(1_u64 << exponent).min(10_000);
-            self.retry_at = Some(Instant::now() + Duration::from_millis(delay_ms));
-            self.record(
-                ProductionEventKind::Restarting,
-                None,
-                Some(NetworkErrorCode::SidecarUnavailable),
-            );
         }
         Ok(self.state)
     }
 
     async fn shutdown(&mut self) -> Result<(), NetworkErrorCode> {
-        self.runtime.stop().await?;
-        self.state = SidecarLifecycleState::Stopped;
+        let stop_result = self.stop_runtime_bounded(None).await;
+        self.crashes = 0;
+        self.retry_at = None;
         self.cancellations.lock().clear();
-        self.record(ProductionEventKind::Stopped, None, None);
-        Ok(())
+        match stop_result {
+            Ok(()) => {
+                self.record(ProductionEventKind::Stopped, None, None);
+                Ok(())
+            }
+            Err(error) => {
+                if error != NetworkErrorCode::OperationTimedOut {
+                    self.record(ProductionEventKind::Stopped, None, Some(error));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn stop_runtime_bounded(&mut self, operation_id: Option<String>) -> Result<(), NetworkErrorCode> {
+        // Graceful termination, forced termination, and child reaping remain
+        // the AsyncProductionRuntime implementation's responsibility. The
+        // generic actor bounds that contract so a defective runtime cannot
+        // block every later lifecycle command indefinitely.
+        let result = match tokio::time::timeout(self.stop_timeout, self.runtime.stop()).await {
+            Ok(result) => result,
+            Err(_) => Err(NetworkErrorCode::OperationTimedOut),
+        };
+        self.state = SidecarLifecycleState::Stopped;
+        if result == Err(NetworkErrorCode::OperationTimedOut) {
+            self.record(
+                ProductionEventKind::Stopped,
+                operation_id,
+                Some(NetworkErrorCode::OperationTimedOut),
+            );
+        }
+        result
     }
 
     fn record(&mut self, kind: ProductionEventKind, operation_id: Option<String>, error: Option<NetworkErrorCode>) {
@@ -408,18 +512,22 @@ mod tests {
         WaitForCancel,
         Never,
         Stale,
+        WrongVersion,
         Failure,
     }
 
     struct FakeRuntime {
         mode: RequestMode,
         stopped: Arc<AtomicUsize>,
-        exited: bool,
+        exited: Arc<AtomicBool>,
+        instance_id: String,
+        hang_stop: bool,
     }
 
     #[async_trait]
     impl AsyncProductionRuntime for FakeRuntime {
         async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
+            self.instance_id.clone_from(&context.instance_id);
             Ok(SidecarHandshake {
                 protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
                 instance_id: context.instance_id.clone(),
@@ -444,21 +552,83 @@ mod tests {
                     unreachable!()
                 }
                 RequestMode::Failure => return Err(NetworkErrorCode::SidecarUnavailable),
-                RequestMode::Success | RequestMode::Stale => {}
+                RequestMode::Success | RequestMode::Stale | RequestMode::WrongVersion => {}
             }
+            let result = match request.payload {
+                IpcRequestPayload::GetStatus => Ok(IpcResponsePayload::Status(super::super::NetworkStatus {
+                    state: super::super::NetworkState::Disconnected,
+                    active_profile_id: None,
+                    active_transport: None,
+                    last_error: None,
+                })),
+                IpcRequestPayload::ApplyProfile(_) => Ok(IpcResponsePayload::Acknowledged),
+                IpcRequestPayload::PrepareTunnel => {
+                    Ok(IpcResponsePayload::TunnelPrepared(super::super::TunnelDeviceFacts {
+                        interface_name: "utun42".into(),
+                        mtu: 1420,
+                        has_ipv4: true,
+                        has_ipv6: true,
+                        instance_id: self.instance_id.clone(),
+                        operation_id: request.request_id.clone(),
+                    }))
+                }
+                IpcRequestPayload::ConnectTransport { transport } => {
+                    Ok(IpcResponsePayload::Status(super::super::NetworkStatus {
+                        state: if transport == super::super::TransportKind::Quic {
+                            super::super::NetworkState::ConnectedPrimary
+                        } else {
+                            super::super::NetworkState::DegradedFallback
+                        },
+                        active_profile_id: Some("profile.test".into()),
+                        active_transport: Some(transport),
+                        last_error: None,
+                    }))
+                }
+                IpcRequestPayload::DisconnectTransport => Ok(IpcResponsePayload::Status(super::super::NetworkStatus {
+                    state: super::super::NetworkState::PreparingTunnel,
+                    active_profile_id: Some("profile.test".into()),
+                    active_transport: None,
+                    last_error: None,
+                })),
+                IpcRequestPayload::StopTunnel => Ok(IpcResponsePayload::Status(super::super::NetworkStatus {
+                    state: super::super::NetworkState::Disconnected,
+                    active_profile_id: Some("profile.test".into()),
+                    active_transport: None,
+                    last_error: None,
+                })),
+                IpcRequestPayload::SampleHealth => Ok(IpcResponsePayload::Health(super::super::NetworkHealth {
+                    reachable: true,
+                    latency_ms: 1,
+                    jitter_ms: 0,
+                    loss_percent: 0,
+                })),
+                IpcRequestPayload::Connect => Ok(IpcResponsePayload::Status(super::super::NetworkStatus {
+                    state: super::super::NetworkState::ConnectedPrimary,
+                    active_profile_id: Some("profile.test".into()),
+                    active_transport: Some(super::super::TransportKind::Quic),
+                    last_error: None,
+                })),
+                IpcRequestPayload::Disconnect | IpcRequestPayload::Cancel { .. } => {
+                    Ok(IpcResponsePayload::Acknowledged)
+                }
+            };
             Ok(IpcResponse {
-                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                protocol_version: if matches!(self.mode, RequestMode::WrongVersion) {
+                    NETWORK_IPC_PROTOCOL_VERSION + 1
+                } else {
+                    NETWORK_IPC_PROTOCOL_VERSION
+                },
                 request_id: if matches!(self.mode, RequestMode::Stale) {
                     "request.stale".into()
                 } else {
                     request.request_id
                 },
-                result: Ok(IpcResponsePayload::Acknowledged),
+                result,
             })
         }
 
         async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
-            Ok(if self.exited {
+            Ok(if self.exited.load(Ordering::Acquire) {
                 SidecarProcessStatus::Exited { success: false }
             } else {
                 SidecarProcessStatus::Running
@@ -467,6 +637,9 @@ mod tests {
 
         async fn stop(&mut self) -> Result<(), NetworkErrorCode> {
             self.stopped.fetch_add(1, Ordering::AcqRel);
+            if self.hang_stop {
+                std::future::pending::<()>().await;
+            }
             Ok(())
         }
     }
@@ -484,16 +657,37 @@ mod tests {
     }
 
     fn controller_with_exit(mode: RequestMode, exited: bool) -> (ProductionControllerHandle, Arc<AtomicUsize>) {
+        let (handle, stopped, _) = controller_with_exit_control(mode, exited);
+        (handle, stopped)
+    }
+
+    fn controller_with_exit_control(
+        mode: RequestMode,
+        exited: bool,
+    ) -> (ProductionControllerHandle, Arc<AtomicUsize>, Arc<AtomicBool>) {
+        controller_with_stop(mode, exited, false, STOP_TIMEOUT)
+    }
+
+    fn controller_with_stop(
+        mode: RequestMode,
+        exited: bool,
+        hang_stop: bool,
+        stop_timeout: Duration,
+    ) -> (ProductionControllerHandle, Arc<AtomicUsize>, Arc<AtomicBool>) {
         let stopped = Arc::new(AtomicUsize::new(0));
+        let exited = Arc::new(AtomicBool::new(exited));
         let runtime = FakeRuntime {
             mode,
             stopped: Arc::clone(&stopped),
-            exited,
+            exited: Arc::clone(&exited),
+            instance_id: String::new(),
+            hang_stop,
         };
         let context = SidecarLaunchContext::new("production.test".into(), vec![1; 32]).with_private_key(vec![2; 32]);
         (
-            spawn_production_controller(runtime, context, "proof.test".into()),
+            spawn_production_controller_with_stop_timeout(runtime, context, "proof.test".into(), stop_timeout),
             stopped,
+            exited,
         )
     }
 
@@ -591,10 +785,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_stale_response_and_runtime_failure_fail_closed() -> Result<(), NetworkErrorCode> {
+    async fn timeout_stale_wrong_version_and_runtime_failure_fail_closed() -> Result<(), NetworkErrorCode> {
         for (mode, expected) in [
             (RequestMode::Never, NetworkErrorCode::OperationTimedOut),
             (RequestMode::Stale, NetworkErrorCode::AuthenticationFailed),
+            (RequestMode::WrongVersion, NetworkErrorCode::UnsupportedProtocolVersion),
             (RequestMode::Failure, NetworkErrorCode::SidecarUnavailable),
         ] {
             let (handle, stopped) = controller(mode);
@@ -609,11 +804,69 @@ mod tests {
                     .await,
                 Err(expected)
             );
-            if matches!(mode, RequestMode::Never | RequestMode::Stale) {
+            if matches!(
+                mode,
+                RequestMode::Never | RequestMode::Stale | RequestMode::WrongVersion
+            ) {
                 assert_eq!(stopped.load(Ordering::Acquire), 1);
             }
             let _ = handle.shutdown().await;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stable_restarts_clear_consecutive_crash_history() -> Result<(), NetworkErrorCode> {
+        let (handle, _, exited) = controller_with_exit_control(RequestMode::Success, true);
+        handle.start().await?;
+        for _ in 0..5 {
+            assert_eq!(handle.poll().await?, SidecarLifecycleState::Backoff);
+            exited.store(false, Ordering::Release);
+            tokio::time::sleep(Duration::from_millis(110)).await;
+            assert_eq!(handle.poll().await?, SidecarLifecycleState::Running);
+            assert_eq!(handle.poll().await?, SidecarLifecycleState::Running);
+            exited.store(true, Ordering::Release);
+        }
+        exited.store(false, Ordering::Release);
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        assert_eq!(handle.poll().await?, SidecarLifecycleState::Running);
+        handle.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn shutdown_keeps_the_controller_available_for_a_new_session() -> Result<(), NetworkErrorCode> {
+        let (handle, stopped) = controller(RequestMode::Success);
+        for index in 0..2 {
+            handle.start().await?;
+            let request_id = format!("request.reuse.{index}");
+            let response = handle
+                .request(
+                    format!("operation.reuse.{index}"),
+                    request(&request_id),
+                    Duration::from_secs(1),
+                )
+                .await?;
+            assert_eq!(response.request_id, request_id);
+            handle.shutdown().await?;
+            assert_eq!(handle.poll().await?, SidecarLifecycleState::Stopped);
+        }
+        assert_eq!(stopped.load(Ordering::Acquire), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hanging_runtime_stop_is_bounded_and_recorded_as_stopped() -> Result<(), NetworkErrorCode> {
+        let (handle, stopped, _) = controller_with_stop(RequestMode::Success, false, true, Duration::from_millis(20));
+        handle.start().await?;
+        let shutdown = tokio::time::timeout(Duration::from_secs(1), handle.shutdown())
+            .await
+            .map_err(|_| NetworkErrorCode::OperationTimedOut)?;
+        assert_eq!(shutdown, Err(NetworkErrorCode::OperationTimedOut));
+        assert_eq!(handle.poll().await?, SidecarLifecycleState::Stopped);
+        assert_eq!(stopped.load(Ordering::Acquire), 1);
+        assert!(handle.diagnostics().await?.iter().any(|event| {
+            event.kind == ProductionEventKind::Stopped && event.error == Some(NetworkErrorCode::OperationTimedOut)
+        }));
         Ok(())
     }
 
@@ -629,5 +882,58 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         Err(NetworkErrorCode::OperationTimedOut)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod stdio_adapter_tests {
+    use std::{
+        path::PathBuf,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
+    use super::{
+        AsyncProductionRuntime as _, AsyncStdioSidecarRuntime, IpcRequest, NETWORK_IPC_PROTOCOL_VERSION,
+        NetworkErrorCode, SidecarLaunchContext, StdioSidecarRuntime,
+    };
+    use crate::networking::IpcRequestPayload;
+
+    fn context() -> SidecarLaunchContext {
+        SidecarLaunchContext::new("adapter.test".into(), vec![0x11; 32]).with_private_key(vec![0x22; 32])
+    }
+
+    fn runtime() -> AsyncStdioSidecarRuntime {
+        AsyncStdioSidecarRuntime::new(StdioSidecarRuntime::new(PathBuf::from(
+            "/var/empty/kyclash-sidecar-does-not-exist",
+        )))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bridges_missing_sidecar_without_blocking_or_panicking() {
+        let mut runtime = runtime();
+        assert_eq!(
+            runtime.start(&context()).await,
+            Err(NetworkErrorCode::SidecarUnavailable)
+        );
+        assert_eq!(runtime.stop().await, Ok(()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn observes_cancellation_before_entering_blocking_stdio_call() {
+        let mut runtime = runtime();
+        let cancel = Arc::new(AtomicBool::new(true));
+        let request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.cancel".into(),
+            payload: IpcRequestPayload::GetStatus,
+        };
+        assert_eq!(
+            runtime.request(request, Arc::clone(&cancel)).await,
+            Err(NetworkErrorCode::OperationCancelled)
+        );
+        assert!(cancel.load(Ordering::Acquire));
     }
 }

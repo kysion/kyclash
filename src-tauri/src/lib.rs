@@ -158,6 +158,8 @@ mod app_init {
             #[cfg(feature = "networking-dev")]
             cmd::disconnect_networking_dev,
             #[cfg(feature = "networking-production")]
+            cmd::initialize_networking,
+            #[cfg(feature = "networking-production")]
             cmd::list_networking_sites,
             #[cfg(feature = "networking-production")]
             cmd::get_networking_status,
@@ -309,6 +311,24 @@ pub fn run() {
 
                 if let Err(e) = app_init::setup_window_state(app) {
                     logging!(error, Type::Setup, "Failed to setup window state: {}", e);
+                }
+
+                #[cfg(feature = "networking-production")]
+                {
+                    // Register only the fixed app-resource provider. Policy
+                    // bytes are verified later by the explicit
+                    // `initialize_networking` command; this setup step does
+                    // not read Keychain, open XPC, start a sidecar, create a
+                    // tunnel, or mutate routes.
+                    let state = app.state::<cmd::ProductionCommandState>();
+                    if let Err(error) = cmd::configure_bundle_provider_now(app.app_handle(), &state) {
+                        logging!(
+                            warn,
+                            Type::Setup,
+                            "production networking provider unavailable: {:?}",
+                            error
+                        );
+                    }
                 }
             })) {
                 log_setup_panic("pre-init", panic);

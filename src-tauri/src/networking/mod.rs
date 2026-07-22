@@ -4,12 +4,15 @@ mod data_plane;
 mod diagnostics;
 mod ipc;
 mod macos_route;
+mod mihomo_tun_source;
 mod mock;
 mod mock_control;
 mod operation;
 mod policy;
 #[cfg(feature = "networking-dev")]
 mod process_runtime;
+#[cfg(feature = "networking-production")]
+mod production_composition;
 #[cfg(feature = "networking-production")]
 mod production_controller;
 #[cfg(feature = "networking-production")]
@@ -28,6 +31,8 @@ mod stdio_runtime;
 #[cfg(feature = "networking-dev")]
 pub use self::process_runtime::*;
 #[cfg(feature = "networking-production")]
+pub use self::production_composition::*;
+#[cfg(feature = "networking-production")]
 pub use self::production_controller::*;
 #[cfg(feature = "networking-production")]
 pub use self::production_service::*;
@@ -36,6 +41,7 @@ pub use self::route_helper_client::*;
 #[cfg(feature = "networking-production")]
 pub use self::route_helper_registration::*;
 pub use self::{
-    config::*, credentials::*, data_plane::*, diagnostics::*, ipc::*, macos_route::*, mock::*, mock_control::*,
-    operation::*, policy::*, route::*, route_helper::*, sidecar::*, sidecar_trust::*, state::*, stdio_runtime::*,
+    config::*, credentials::*, data_plane::*, diagnostics::*, ipc::*, macos_route::*, mihomo_tun_source::*, mock::*,
+    mock_control::*, operation::*, policy::*, route::*, route_helper::*, sidecar::*, sidecar_trust::*, state::*,
+    stdio_runtime::*,
 };

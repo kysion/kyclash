@@ -205,12 +205,13 @@ Completed in the current workspace:
   route table. Its mutation methods always refuse with `PermissionDenied`.
 - Added fault coverage for journal failure before mutation, journal failure
   after mutation, durable pending-route recovery, corruption, and restart.
-- Locked the Mihomo TUN coexistence target: only a configured active Mihomo
-  interface may eventually contribute a less-specific covering route. The
-  typed active-interface ownership amendment is not present in the current
-  helper; until it lands, every non-default overlap fails closed. Unknown VPN
-  interfaces and exact or more-specific routes always fail closed; `utun*`
-  names never imply ownership by themselves.
+- Locked and implemented the v2 Mihomo TUN coexistence boundary: only a
+  configured active Mihomo interface may contribute a less-specific covering
+  route. The typed owner, family facts, protocol reply, journal, Rust source,
+  Objective-C bridge, and Swift helper are version-pinned; unknown VPN
+  interfaces and exact or more-specific routes always fail closed, and `utun*`
+  names never imply ownership by themselves. The packaged live-Mihomo VM gate
+  remains separate and is not claimed by the synthetic fixture matrix.
 - Added the IPv4/IPv6 coexistence matrix for Mihomo split routes, unknown VPN
   routes, exact conflicts, more-specific conflicts, and default underlay
   routes, with all mutation effects confined to the in-memory adapter.
@@ -375,11 +376,11 @@ Exit criteria:
 
 Goal: deliver one-site private access with user-facing recovery and diagnostics.
 
-Progress (2026-07-21): all source-level and isolated work permitted by the
-continuous-delivery authorization boundary is complete. Production connection
-controls and real credential access remain disabled pending the authorized
-host, server, and release gates recorded in
-`kyclash-completion-audit-20260721.md`.
+Progress: the 2026-07-21 source-level baseline passed, and subsequent signed
+disposable-VM work closed S1.12. The aggregate S1 stage remains in progress at
+S1.13; safe source and VM work is not complete. Production connection controls
+and real credential access remain default-off pending the system, server, and
+activation gates recorded in `kyclash-completion-audit-20260721.md`.
 
 - Add site selection, connect/disconnect, health, routes, and diagnostics UI.
 - Integrate system credential storage.
@@ -440,11 +441,17 @@ Completed in the current workspace:
 
 Remaining:
 
-- Replace the mock command boundary only after the real sidecar, route lab,
-  and system credential adapters pass their isolated validation gates.
+- The production command boundary is now explicitly composed and lazy, but the
+  normal/release build remains default-off until the packaged live-Mihomo,
+  route, and lifecycle gates close. A bundle without an authorized signed
+  policy/trust resource fails closed during initialization rather than falling
+  back to a mock or guessed endpoint.
 - Complete GitHub updater ownership and macOS installation lifecycle validation
-  with authorized hosts. The current arm64 candidate is notarized and stapled;
-  every later release candidate must repeat that gate for its exact bytes.
+  with authorized hosts. A historical arm64 candidate was notarized and
+  stapled, but the current internal candidate is Developer ID signed and
+  intentionally unnotarized. Notarization/stapling is optional public-
+  distribution hardening; if selected for a later candidate, its exact bytes
+  must repeat that optional gate.
 - Re-enable updater capabilities only in the same separately authorized change
   that injects the KyClash public verification key, publishes signed immutable
   GitHub assets and rollback metadata, enables permissions and runtime gates,
@@ -458,11 +465,11 @@ Production networking continuation is decomposed and ordered in
 `kyclash-production-networking-plan-20260721.md`; its single S1 stage and
 dependency-ordered work packages (historically labelled N1–N5),
 dependencies, evidence, and authorization checkpoints are locked in
-`kyclash-production-networking-work-program-20260721.md`. The first required work package is
-Rust/Go runtime contract convergence: the current Rust Unix adapter launches
-the argument-based mock protocol, while the Go production sidecar rejects all
-arguments and uses stdin/stdout. utun, route, credential, and UI production
-wiring must not proceed until the real child protocol gate passes.
+`kyclash-production-networking-work-program-20260721.md`. The original first
+work package was Rust/Go runtime contract convergence: the Rust Unix adapter
+had launched the argument-based mock protocol while the Go production sidecar
+accepted only stdin/stdout. That real-child protocol gate has since passed;
+current status is recorded in the S1 continuation below.
 
 N0 progress (2026-07-21): complete. The locked stdio amendment now defines a
 64-KiB-bounded, single-flight bootstrap/handshake/request/response contract,
@@ -480,12 +487,32 @@ enforces granular tunnel/carrier state order and explicit break-before-make,
 and carries encrypted payload traffic over QUIC, WSS, and TLS/TCP. The Rust
 stdio runtime proves concurrent cancellation with request correlation,
 UDP-blackhole fallback, bounded timeout/child cleanup, crash-loop backoff, and
-repeated cycles. N2A is now the first incomplete production-networking unit.
+repeated cycles. N2A was the next incomplete evidence unit at that historical
+checkpoint; the authoritative current first incomplete criterion is S1.13.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and
 real macOS utun, privileged transactional routes plus Mihomo coexistence,
 reliability/staging validation, and a separately reviewed release activation.
+
+## Current S1 continuation — 2026-07-22
+
+The locked single-stage work program is authoritative for current status. The
+production composition gap is now closed at the source boundary: production
+app setup registers a fixed-resource provider, an explicit initialization
+command verifies the app-owned signed policy/trust resources, and Connect is
+the only path that lazily materializes the Keychain, typed XPC route boundary,
+trusted Go sidecar runtime, and live Mihomo source. Missing policy resources
+fail closed and do not guess an endpoint, key, credential, or route.
+
+The route-helper v2 lease/journal implementation and signed disposable-VM
+matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,
+exact/more-specific/unknown-interface conflict refusal, explicit synthetic
+Mihomo covering classification, helper restart, corrupt-journal recovery, and
+final route/journal/lease absence. S1.13 is now the first incomplete criterion:
+the remaining gate requires the packaged Mihomo control API and live device
+observation, private-service reachability, reboot/restart, and foreign-route
+cleanup. The synthetic fixture is not represented as packaged-Mihomo evidence.
 
 ## Later platform order
 

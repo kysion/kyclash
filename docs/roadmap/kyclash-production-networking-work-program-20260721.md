@@ -62,12 +62,12 @@ stopping points.
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
 | S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
-| S1.12 | route lease/recovery | in progress; injected failure matrix and signed VM dual-stack normal/conflict/recovery probes pass, privileged journal-corruption/restart matrix and the v2 typed-Mihomo boundary amendment remain |
-| S1.13 | Mihomo coexistence VM matrix | pending; the current v1 helper fails closed on every non-default overlap; the v2 amendment review and packaged Mihomo matrix remain |
+| S1.12 | route lease/recovery | complete; v2 wire/journal migration, injected failure coverage, signed dual-stack VM transaction, conflict refusal, helper restart, journal-corruption fail-closed, and final-absence evidence passed |
+| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary and signed synthetic-Mihomo v2 matrix pass, while packaged Mihomo live-control observation, reachability, reboot, and full coexistence cleanup remain |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
-First incomplete criterion: S1.12. Overall S1 status: in progress.
+First incomplete criterion: S1.13. Overall S1 status: in progress.
 
 ### Work-package dependency chain
 
@@ -302,8 +302,27 @@ all-feature Rust suite continues to drive the actual Go child/lab server from
 the same IPC/runtime boundary, while the production service uses injected fake
 route adapters to prove mutation order. Production-feature Rust and web builds
 pass; ordinary builds register neither the production Tauri commands nor its
-navigation entry. Runtime configuration remains intentionally uninstalled
-until the S1.08 trusted-bundle and S1.11–S1.13 route-helper gates close.
+navigation entry.
+
+The application composition gap is now closed with an explicit two-phase
+boundary. App setup registers only a fixed-resource provider; the
+`initialize_networking` command reads and verifies the code-signed
+`resources/kyclash-networking-policy-keys.json` trust bundle and
+`resources/kyclash-networking-policy-v2.json` envelope, persists the accepted
+revision, and installs a deferred service factory. Initialization never reads
+Keychain, opens route-helper XPC, starts the Go sidecar, creates utun, or
+mutates routes. `connect_networking` is the only path that materializes that
+factory; on macOS it then resolves the fixed KyClash Keychain service, creates
+the typed XPC boundary, and starts the manifest-verified sidecar. Status and
+site-list calls remain side-effect free before materialization. Missing policy
+or trust resources fail closed as `invalid_configuration`; no endpoint or
+public key is guessed or accepted from the frontend. A production bundle
+therefore has a real initialization/connection path without silently enabling
+the feature or shipping a development trust root.
+
+Runtime configuration remains intentionally uninstalled until an authorized
+production policy/trust bundle and the S1.08/S1.11–S1.13 route-helper gates
+close.
 
 Deliverables:
 
@@ -426,7 +445,7 @@ Merge unit: `feat(macos): add owned WireGuard utun lifecycle`.
 
 #### S1.10 — disposable-VM termination matrix (formerly N3C)
 
-Status (2026-07-22): in progress. A separately gated hold fixture created an
+Status (2026-07-22): complete. A separately gated hold fixture created an
 owned real utun in the disposable guest, published only its validated name to
 a fixed `/var/tmp/kyclash-utun-lab-*` evidence path, and was then killed with
 SIGKILL. The kernel released the exact device and an independent `ifconfig`
@@ -520,8 +539,9 @@ Contract review: `kyclash-route-helper-contract-review-20260721.md` locks the
 bundle layout, fixed identities, code requirement, typed method surface,
 single-connection lease, and fail-closed S1.11/S1.12 boundary. The narrow
 less-specific Mihomo exception is separately governed by
-`kyclash-route-helper-mihomo-interface-review-20260722.md`; it is not present
-in the current v1 helper.
+`kyclash-route-helper-mihomo-interface-review-20260722.md`. It was not present
+in the v1 helper covered by this contract; the v2 boundary is implemented and
+recorded under S1.12 below.
 
 Status (2026-07-22): complete. The cross-platform route-owner and lease
 contract is implemented with strict serialization, exact utun owner matching,
@@ -555,8 +575,9 @@ resetting the disposable guest's Background Task Management database through
 its interactive administrator session, launchd submitted the bundle-owned job.
 A Developer ID-signed lab client then completed the real privileged Mach-
 service `discover` round trip with idle state and no error; launchd reported
-the helper running with one successful exec. S1.12 executor and VM lifecycle
-evidence remain open.
+the helper running with one successful exec. The v2 executor, lease, and
+crash-recovery evidence are recorded under S1.12 below; packaged Mihomo
+coexistence remains the first incomplete S1.13 criterion.
 
 Deliverables:
 
@@ -574,7 +595,8 @@ Merge unit: `feat(macos): add authenticated typed route helper`.
 
 #### S1.12 — route transaction lease and crash recovery (formerly N4B)
 
-Status (2026-07-22): in progress. The production lifecycle now retains the
+Status (2026-07-22): complete for the v2 route-lease and crash-recovery gate.
+The production lifecycle now retains the
 exact `TunnelDeviceFacts` returned by prepare and supplies those facts plus the
 accepted policy revision to the route boundary only after the encrypted health
 gate. The XPC production boundary constructs the exact owner tuple, begins one
@@ -584,12 +606,13 @@ The helper now persists a private journal before each fixed `/sbin/route`
 mutation, tracks pending/applied CIDRs, expires leases after bounded heartbeat
 silence, and rolls back on XPC invalidation. The availability guard now uses a
 normalized explicit IPv4 netmask/IPv6 lookup plus a read-only routing-table
-overlap scan. The current candidate fails closed on every non-default overlap
-(exact, more-specific, or less-specific); only the ordinary default underlay is
-ignored. The less-specific Mihomo exception is a locked target only after a
-typed active-Mihomo-interface ownership amendment is carried through the
-boundary, and is not current acceptance evidence. The helper's read-only
-parser/overlap self-test is now part of the macOS CI compile gate. A signed VM
+overlap scan. The v2 candidate fails closed on exact, more-specific, unknown-
+interface, or unclassified non-default overlap; it permits a less-specific
+covering route only on the exact typed active-Mihomo interface, while the
+ordinary default underlay remains ignored. The signed synthetic fixture proves
+that protocol boundary, but packaged-Mihomo acceptance remains an S1.13 gate.
+The helper's read-only parser/overlap self-test is now part of the macOS CI
+compile gate. A signed VM
 probe confirmed dual-stack normal apply/rollback, exact IPv4/IPv6 conflict
 refusal, and a more-specific `/25` refusal without writing a journal.
 The resumed interactive disposable VM has now re-run the scoped route
@@ -614,13 +637,23 @@ reconciliation, and corrupt-journal fail-closed behavior; it never invokes
 injected coordinator matrix. The
 redacted dual-stack/conflict evidence is retained at
 `target/macos-vm-lab/evidence/app-launch-20260722/route-helper-dual-conflict-20260722.txt`.
-The privileged VM's complete journal-corruption/restart matrix and packaged
-Mihomo coexistence scenarios remain open for S1.13.
+The privileged VM's complete v2 journal-corruption/restart matrix passed with
+the signed client. Evidence is retained at
+`target/macos-vm-lab/evidence/route-helper-v2-20260722/route-helper-v2-matrix.log`
+(SHA-256
+`7054e0c0cf66b73e969ea880cd8a901eb4a71f68419feb205b8587b4b8645661`). The
+synthetic-Mihomo owner evidence is retained beside it (SHA-256
+`9df6a2394737ae626c1effcacc7452a8403e0f4eb1630e007decb2fbba3de7dc`). The
+matrix proved dual-stack normal apply/rollback, exact and more-specific
+trusted-interface refusal, unknown-interface covering refusal, explicit
+empty/wrong/matching Mihomo classification, helper kill/restart recovery,
+journal corruption error 8, and final route/journal/lease absence. No
+production route, DNS, endpoint, or credential was used.
 
-The typed Mihomo amendment is an S1.12 boundary deliverable, not an implicit
-permission to relax the current helper. The parent review locked that record
-on 2026-07-22; every non-default overlap remains a fail-closed conflict until
-the complete v2 wire/journal migration and live-source gates pass.
+The typed Mihomo amendment is now implemented through the v2 Rust/Objective-C/
+Swift wire and journal boundary. Its live-source and packaged-Mihomo checks
+remain an S1.13 gate; the synthetic fixture evidence does not authorize a
+less-specific route on a real app build by itself.
 
 Deliverables:
 
@@ -644,19 +677,16 @@ Merge unit: `feat(macos): lease transactional private routes`.
 
 #### S1.13 — disposable-VM system and Mihomo matrix (formerly N4C)
 
-Status (2026-07-22): pending. The signed VM helper/XPC client passes the
-dual-stack normal transaction, exact IPv4/IPv6 conflict refusal, and a
-more-specific IPv4 route refusal. The current helper intentionally rejects
-all non-default overlap, including a less-specific `128.0.0.0/1` or `fd00::/8`
-covering route; the historical broad-route probe is superseded and is not
-current coexistence acceptance evidence. The v2 typed active-Mihomo-interface
-amendment is recorded in
-`kyclash-route-helper-mihomo-interface-review-20260722.md`, is parent-locked,
-and must be implemented through the Rust source, Objective-C bridge,
-Swift helper, and journal before less-specific coexistence can be tested or
-accepted. The packaged Mihomo TUN, private-service reachability, helper
-restart, journal corruption, guest reboot, and unknown-VPN matrix are still
-required before this package closes.
+Status (2026-07-22): in progress. The signed VM helper/XPC client and v2 typed
+boundary pass the synthetic-Mihomo matrix: a less-specific covering route is
+accepted only for the exact frozen synthetic `utun5`, while empty/wrong,
+unknown-interface, exact, and more-specific cases fail closed. The complete
+run also passed helper restart and journal-corruption recovery. This is
+source-level and fixture-level evidence only. The packaged Mihomo TUN must
+still be started through its managed control API, with the live `tun.device`
+and interface existence verified, before the less-specific exception is
+accepted for the app. Private-service reachability, Mihomo stop/restart,
+guest reboot, and full foreign-route cleanup remain required.
 
 Scenarios:
 

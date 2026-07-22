@@ -1,8 +1,54 @@
 import Foundation
 import Darwin
+import OSLog
 
-private let protocolVersion: UInt8 = 1
+private let protocolVersion: UInt8 = 2
+private let legacyProtocolVersion: UInt8 = 1
+private let maximumMihomoInterfaces = 1
+private let maximumDarwinInterfaceBytes = 15
+private let coordinatorSelfTestConnectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
 private let appRequirement = "anchor apple generic and identifier \"net.kysion.kyclash\" and certificate leaf[subject.OU] = \"RQUQ8Y3S9H\""
+private let routeHelperLogger = Logger(
+    subsystem: "net.kysion.kyclash.route-helper",
+    category: "xpc"
+)
+
+// NSXPCConnection exposes these two values as security attributes derived
+// from the peer's Mach audit token.  Keep only the PID and real audit-session
+// identifier for the lifetime of one exported service object; the effective
+// UID is checked at admission time but is deliberately not retained.
+private struct ClientAuditIdentity: Equatable {
+    let processID: pid_t
+    let auditSessionID: au_asid_t
+
+    static func validated(
+        effectiveUserID: uid_t,
+        processID: pid_t,
+        auditSessionID: au_asid_t
+    ) -> ClientAuditIdentity? {
+        guard effectiveUserID != 0,
+              processID > 1,
+              auditSessionID > AU_DEFAUDITSID,
+              auditSessionID != AU_ASSIGN_ASID
+        else { return nil }
+        return ClientAuditIdentity(
+            processID: processID,
+            auditSessionID: auditSessionID
+        )
+    }
+
+    static func validated(connection: NSXPCConnection) -> ClientAuditIdentity? {
+        // Foundation's public macOS 13+ accessors are the reliable equivalent
+        // of applying audit_token_to_pid/audit_token_to_asid to the connection
+        // audit token; unlike caller-supplied PID/session fields they are
+        // populated by the XPC transport.
+        validated(
+            effectiveUserID: connection.effectiveUserIdentifier,
+            processID: connection.processIdentifier,
+            auditSessionID: connection.auditSessionIdentifier
+        )
+    }
+}
 
 @objc(KCRLeaseReference)
 final class LeaseReference: NSObject, NSSecureCoding {
@@ -19,10 +65,12 @@ final class LeaseReference: NSObject, NSSecureCoding {
     }
 
     required init?(coder: NSCoder) {
-        version = UInt8(coder.decodeInteger(forKey: "version"))
+        let rawVersion = coder.decodeInteger(forKey: "version")
+        guard (0...Int(UInt8.max)).contains(rawVersion) else { return nil }
         guard let lease = coder.decodeObject(of: NSString.self, forKey: "leaseID") as String?,
               let operation = coder.decodeObject(of: NSString.self, forKey: "operationID") as String?
         else { return nil }
+        version = UInt8(rawVersion)
         leaseID = lease
         operationID = operation
     }
@@ -48,17 +96,24 @@ final class LeaseOwner: NSObject, NSSecureCoding {
     let tunnelOperationID: String
     let mtu: UInt16
     let profileRevision: UInt64
+    let hasIPv4: Bool
+    let hasIPv6: Bool
+    let activeMihomoTunInterfaces: [String]
     let privateCIDRs: [String]
 
     init(reference: LeaseReference, sidecarInstanceID: String, interfaceName: String,
          tunnelOperationID: String, mtu: UInt16, profileRevision: UInt64,
-         privateCIDRs: [String]) {
+         hasIPv4: Bool = true, hasIPv6: Bool = true,
+         activeMihomoTunInterfaces: [String] = [], privateCIDRs: [String]) {
         self.reference = reference
         self.sidecarInstanceID = sidecarInstanceID
         self.interfaceName = interfaceName
         self.tunnelOperationID = tunnelOperationID
         self.mtu = mtu
         self.profileRevision = profileRevision
+        self.hasIPv4 = hasIPv4
+        self.hasIPv6 = hasIPv6
+        self.activeMihomoTunInterfaces = activeMihomoTunInterfaces
         self.privateCIDRs = privateCIDRs
     }
 
@@ -67,14 +122,29 @@ final class LeaseOwner: NSObject, NSSecureCoding {
               let instance = coder.decodeObject(of: NSString.self, forKey: "sidecarInstanceID") as String?,
               let interfaceName = coder.decodeObject(of: NSString.self, forKey: "interfaceName") as String?,
               let tunnelOperation = coder.decodeObject(of: NSString.self, forKey: "tunnelOperationID") as String?,
+              coder.containsValue(forKey: "hasIPv4"),
+              coder.containsValue(forKey: "hasIPv6"),
+              let mihomoInterfaces = coder.decodeObject(of: [NSArray.self, NSString.self], forKey: "activeMihomoTunInterfaces") as? [String],
               let cidrs = coder.decodeObject(of: [NSArray.self, NSString.self], forKey: "privateCIDRs") as? [String]
         else { return nil }
         self.reference = reference
         sidecarInstanceID = instance
         self.interfaceName = interfaceName
         tunnelOperationID = tunnelOperation
-        mtu = UInt16(coder.decodeInteger(forKey: "mtu"))
-        profileRevision = UInt64(coder.decodeInt64(forKey: "profileRevision"))
+        let rawMtu = coder.decodeInteger(forKey: "mtu")
+        let rawRevision = coder.decodeInt64(forKey: "profileRevision")
+        let rawHasIPv4 = coder.decodeInteger(forKey: "hasIPv4")
+        let rawHasIPv6 = coder.decodeInteger(forKey: "hasIPv6")
+        guard (0...Int(UInt16.max)).contains(rawMtu),
+              rawRevision > 0,
+              rawHasIPv4 == 0 || rawHasIPv4 == 1,
+              rawHasIPv6 == 0 || rawHasIPv6 == 1
+        else { return nil }
+        mtu = UInt16(rawMtu)
+        profileRevision = UInt64(rawRevision)
+        hasIPv4 = rawHasIPv4 == 1
+        hasIPv6 = rawHasIPv6 == 1
+        activeMihomoTunInterfaces = mihomoInterfaces
         privateCIDRs = cidrs
     }
 
@@ -85,19 +155,34 @@ final class LeaseOwner: NSObject, NSSecureCoding {
         coder.encode(tunnelOperationID as NSString, forKey: "tunnelOperationID")
         coder.encode(Int(mtu), forKey: "mtu")
         coder.encode(Int64(profileRevision), forKey: "profileRevision")
+        // Keep the wire primitive identical to the Objective-C bridge.  A
+        // keyed-archive BOOL is not decoded by `decodeInteger(forKey:)` as 1;
+        // writing bounded integers prevents a valid dual-stack owner from
+        // becoming false at the cross-language NSSecureCoding boundary.
+        coder.encode(hasIPv4 ? 1 : 0, forKey: "hasIPv4")
+        coder.encode(hasIPv6 ? 1 : 0, forKey: "hasIPv6")
+        coder.encode(activeMihomoTunInterfaces as NSArray, forKey: "activeMihomoTunInterfaces")
         coder.encode(privateCIDRs as NSArray, forKey: "privateCIDRs")
     }
 
     func isValid() -> Bool {
-        let suffix = interfaceName.hasPrefix("utun") ? interfaceName.dropFirst(4) : ""
         return reference.isValid()
             && validIdentifier(sidecarInstanceID)
-            && !suffix.isEmpty && suffix.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
+            && validUtunInterface(interfaceName)
             && tunnelOperationID == "\(reference.operationID).prepare"
-            && mtu == 1420 && profileRevision > 0
+            && mtu == 1420 && profileRevision > 0 && profileRevision <= UInt64(Int64.max)
+            && activeMihomoTunInterfaces.count <= maximumMihomoInterfaces
+            && Set(activeMihomoTunInterfaces).count == activeMihomoTunInterfaces.count
+            && activeMihomoTunInterfaces.sorted() == activeMihomoTunInterfaces
+            && activeMihomoTunInterfaces.allSatisfy(validUtunInterface)
+            && !activeMihomoTunInterfaces.contains(interfaceName)
             && !privateCIDRs.isEmpty && privateCIDRs.count <= 64
             && Set(privateCIDRs).count == privateCIDRs.count
             && privateCIDRs.allSatisfy(validCIDR)
+            && privateCIDRs.allSatisfy { cidr in
+                guard let network = parseRouteNetwork(cidr) else { return false }
+                return network.ipv4 ? hasIPv4 : hasIPv6
+            }
             && privateCIDRsAreDisjoint(privateCIDRs)
     }
 }
@@ -117,21 +202,29 @@ private func privateCIDRsAreDisjoint(_ cidrs: [String]) -> Bool {
 final class HelperReply: NSObject, NSSecureCoding {
     static var supportsSecureCoding: Bool { true }
 
+    let protocolVersion: UInt8
     let state: String
     let errorCode: String?
 
-    init(state: String, errorCode: String? = nil) {
+    init(protocolVersion version: UInt8 = 2, state: String, errorCode: String? = nil) {
+        self.protocolVersion = version
         self.state = state
         self.errorCode = errorCode
     }
 
     required init?(coder: NSCoder) {
-        guard let state = coder.decodeObject(of: NSString.self, forKey: "state") as String? else { return nil }
+        guard coder.containsValue(forKey: "protocolVersion"),
+              let state = coder.decodeObject(of: NSString.self, forKey: "state") as String?
+        else { return nil }
+        let rawProtocolVersion = coder.decodeInteger(forKey: "protocolVersion")
+        guard (0...Int(UInt8.max)).contains(rawProtocolVersion) else { return nil }
+        protocolVersion = UInt8(rawProtocolVersion)
         self.state = state
         errorCode = coder.decodeObject(of: NSString.self, forKey: "errorCode") as String?
     }
 
     func encode(with coder: NSCoder) {
+        coder.encode(Int(protocolVersion), forKey: "protocolVersion")
         coder.encode(state as NSString, forKey: "state")
         if let errorCode { coder.encode(errorCode as NSString, forKey: "errorCode") }
     }
@@ -198,6 +291,105 @@ private func rejectUnknownJournalKeys(
 }
 
 private struct JournalOwner: Codable, Equatable {
+    let protocolVersion: UInt8
+    let leaseID: String
+    let operationID: String
+    let sidecarInstanceID: String
+    let interfaceName: String
+    let tunnelOperationID: String
+    let mtu: UInt16
+    let profileRevision: UInt64
+    let hasIPv4: Bool
+    let hasIPv6: Bool
+    let activeMihomoTunInterfaces: [String]
+    let privateCIDRs: [String]
+
+    init(_ owner: LeaseOwner) {
+        protocolVersion = owner.reference.version
+        leaseID = owner.reference.leaseID
+        operationID = owner.reference.operationID
+        sidecarInstanceID = owner.sidecarInstanceID
+        interfaceName = owner.interfaceName
+        tunnelOperationID = owner.tunnelOperationID
+        mtu = owner.mtu
+        profileRevision = owner.profileRevision
+        hasIPv4 = owner.hasIPv4
+        hasIPv6 = owner.hasIPv6
+        activeMihomoTunInterfaces = owner.activeMihomoTunInterfaces
+        privateCIDRs = owner.privateCIDRs
+    }
+
+    private static let allowedKeys: Set<String> = [
+        "protocolVersion", "leaseID", "operationID", "sidecarInstanceID", "interfaceName",
+        "tunnelOperationID", "mtu", "profileRevision", "hasIPv4", "hasIPv6",
+        "activeMihomoTunInterfaces", "privateCIDRs"
+    ]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: StrictCodingKey.self)
+        try rejectUnknownJournalKeys(container, allowed: Self.allowedKeys, decoder: decoder)
+        protocolVersion = try container.decode(UInt8.self, forKey: StrictCodingKey("protocolVersion"))
+        leaseID = try container.decode(String.self, forKey: StrictCodingKey("leaseID"))
+        operationID = try container.decode(String.self, forKey: StrictCodingKey("operationID"))
+        sidecarInstanceID = try container.decode(String.self, forKey: StrictCodingKey("sidecarInstanceID"))
+        interfaceName = try container.decode(String.self, forKey: StrictCodingKey("interfaceName"))
+        tunnelOperationID = try container.decode(String.self, forKey: StrictCodingKey("tunnelOperationID"))
+        mtu = try container.decode(UInt16.self, forKey: StrictCodingKey("mtu"))
+        profileRevision = try container.decode(UInt64.self, forKey: StrictCodingKey("profileRevision"))
+        hasIPv4 = try container.decode(Bool.self, forKey: StrictCodingKey("hasIPv4"))
+        hasIPv6 = try container.decode(Bool.self, forKey: StrictCodingKey("hasIPv6"))
+        activeMihomoTunInterfaces = try container.decode([String].self, forKey: StrictCodingKey("activeMihomoTunInterfaces"))
+        privateCIDRs = try container.decode([String].self, forKey: StrictCodingKey("privateCIDRs"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: StrictCodingKey.self)
+        try container.encode(protocolVersion, forKey: StrictCodingKey("protocolVersion"))
+        try container.encode(leaseID, forKey: StrictCodingKey("leaseID"))
+        try container.encode(operationID, forKey: StrictCodingKey("operationID"))
+        try container.encode(sidecarInstanceID, forKey: StrictCodingKey("sidecarInstanceID"))
+        try container.encode(interfaceName, forKey: StrictCodingKey("interfaceName"))
+        try container.encode(tunnelOperationID, forKey: StrictCodingKey("tunnelOperationID"))
+        try container.encode(mtu, forKey: StrictCodingKey("mtu"))
+        try container.encode(profileRevision, forKey: StrictCodingKey("profileRevision"))
+        try container.encode(hasIPv4, forKey: StrictCodingKey("hasIPv4"))
+        try container.encode(hasIPv6, forKey: StrictCodingKey("hasIPv6"))
+        try container.encode(activeMihomoTunInterfaces, forKey: StrictCodingKey("activeMihomoTunInterfaces"))
+        try container.encode(privateCIDRs, forKey: StrictCodingKey("privateCIDRs"))
+    }
+
+    func isValid() -> Bool {
+        protocolVersion == protocolVersionValue && LeaseOwner(
+            reference: LeaseReference(
+                version: protocolVersion,
+                leaseID: leaseID,
+                operationID: operationID
+            ),
+            sidecarInstanceID: sidecarInstanceID,
+            interfaceName: interfaceName,
+            tunnelOperationID: tunnelOperationID,
+            mtu: mtu,
+            profileRevision: profileRevision,
+            hasIPv4: hasIPv4,
+            hasIPv6: hasIPv6,
+            activeMihomoTunInterfaces: activeMihomoTunInterfaces,
+            privateCIDRs: privateCIDRs
+        ).isValid()
+    }
+
+    // Keep the comparison above independent from the stored-property name.
+    // Swift resolves an unqualified `protocolVersion` in this method to the
+    // property, so use a separately named constant for the active wire
+    // version.
+}
+
+private let protocolVersionValue = protocolVersion
+
+// Journals written by the pre-v2 helper intentionally have a separate model.
+// They are accepted only during startup reconciliation and are never promoted
+// to an active v2 transaction.  Keeping a strict decoder here prevents a
+// malformed/forged v2 document from being silently interpreted as legacy.
+private struct LegacyJournalOwner: Codable, Equatable {
     let leaseID: String
     let operationID: String
     let sidecarInstanceID: String
@@ -207,9 +399,14 @@ private struct JournalOwner: Codable, Equatable {
     let profileRevision: UInt64
     let privateCIDRs: [String]
 
-    init(_ owner: LeaseOwner) {
-        leaseID = owner.reference.leaseID
-        operationID = owner.reference.operationID
+    private static let allowedKeys: Set<String> = [
+        "leaseID", "operationID", "sidecarInstanceID", "interfaceName",
+        "tunnelOperationID", "mtu", "profileRevision", "privateCIDRs"
+    ]
+
+    init(_ owner: JournalOwner) {
+        leaseID = owner.leaseID
+        operationID = owner.operationID
         sidecarInstanceID = owner.sidecarInstanceID
         interfaceName = owner.interfaceName
         tunnelOperationID = owner.tunnelOperationID
@@ -217,11 +414,6 @@ private struct JournalOwner: Codable, Equatable {
         profileRevision = owner.profileRevision
         privateCIDRs = owner.privateCIDRs
     }
-
-    private static let allowedKeys: Set<String> = [
-        "leaseID", "operationID", "sidecarInstanceID", "interfaceName",
-        "tunnelOperationID", "mtu", "profileRevision", "privateCIDRs"
-    ]
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: StrictCodingKey.self)
@@ -249,19 +441,73 @@ private struct JournalOwner: Codable, Equatable {
     }
 
     func isValid() -> Bool {
-        LeaseOwner(
-            reference: LeaseReference(
-                version: protocolVersion,
-                leaseID: leaseID,
-                operationID: operationID
-            ),
-            sidecarInstanceID: sidecarInstanceID,
-            interfaceName: interfaceName,
-            tunnelOperationID: tunnelOperationID,
-            mtu: mtu,
-            profileRevision: profileRevision,
-            privateCIDRs: privateCIDRs
-        ).isValid()
+        validIdentifier(leaseID)
+            && validIdentifier(operationID)
+            && validIdentifier(sidecarInstanceID)
+            && validUtunInterface(interfaceName)
+            && tunnelOperationID == "\(operationID).prepare"
+            && mtu == 1420
+            && profileRevision > 0
+            && profileRevision <= UInt64(Int64.max)
+            && !privateCIDRs.isEmpty
+            && privateCIDRs.count <= 64
+            && Set(privateCIDRs).count == privateCIDRs.count
+            && privateCIDRs.allSatisfy(validCIDR)
+            && privateCIDRsAreDisjoint(privateCIDRs)
+    }
+}
+
+private struct LegacyRouteJournal: Codable {
+    let version: UInt8
+    var owner: LegacyJournalOwner
+    var pendingCIDR: String?
+    var appliedCIDRs: [String]
+
+    private static let allowedKeys: Set<String> = ["version", "owner", "pendingCIDR", "appliedCIDRs"]
+
+    init(version: UInt8, owner: LegacyJournalOwner, pendingCIDR: String?, appliedCIDRs: [String]) {
+        self.version = version
+        self.owner = owner
+        self.pendingCIDR = pendingCIDR
+        self.appliedCIDRs = appliedCIDRs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: StrictCodingKey.self)
+        try rejectUnknownJournalKeys(
+            container,
+            allowed: Self.allowedKeys,
+            optional: ["pendingCIDR"],
+            decoder: decoder
+        )
+        version = try container.decode(UInt8.self, forKey: StrictCodingKey("version"))
+        owner = try container.decode(LegacyJournalOwner.self, forKey: StrictCodingKey("owner"))
+        pendingCIDR = try container.decodeIfPresent(String.self, forKey: StrictCodingKey("pendingCIDR"))
+        appliedCIDRs = try container.decode([String].self, forKey: StrictCodingKey("appliedCIDRs"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: StrictCodingKey.self)
+        try container.encode(version, forKey: StrictCodingKey("version"))
+        try container.encode(owner, forKey: StrictCodingKey("owner"))
+        try container.encodeIfPresent(pendingCIDR, forKey: StrictCodingKey("pendingCIDR"))
+        try container.encode(appliedCIDRs, forKey: StrictCodingKey("appliedCIDRs"))
+    }
+
+    func isValid() -> Bool {
+        guard version == legacyProtocolVersion,
+              owner.isValid(),
+              Set(appliedCIDRs).count == appliedCIDRs.count,
+              appliedCIDRs.count <= owner.privateCIDRs.count,
+              appliedCIDRs.allSatisfy(validCIDR),
+              appliedCIDRs.allSatisfy({ owner.privateCIDRs.contains($0) }),
+              pendingCIDR.map({ validCIDR($0) && owner.privateCIDRs.contains($0) }) ?? true
+        else { return false }
+        // Unlike the v2 journal, a v1 crash could leave pendingCIDR and the
+        // applied list overlapping.  That state is safe for rollback-only
+        // recovery, so do not reject it here; the migration deduplicates the
+        // deletion set and never writes a new v2 journal.
+        return true
     }
 }
 
@@ -303,7 +549,7 @@ private struct RouteJournal: Codable {
     }
 
     func isValid() -> Bool {
-        guard version == 1,
+        guard version == protocolVersion,
               owner.isValid(),
               Set(appliedCIDRs).count == appliedCIDRs.count,
               appliedCIDRs.count <= owner.privateCIDRs.count,
@@ -324,7 +570,11 @@ private struct RouteInspection {
 }
 
 private protocol RouteExecuting {
-    func inspect(cidrs: [String], interfaceName: String) -> [String: RouteInspection]?
+    func inspect(
+        cidrs: [String],
+        interfaceName: String,
+        trustedMihomoInterfaces: [String]
+    ) -> [String: RouteInspection]?
     func mutate(action: String, cidr: String, interfaceName: String) -> Bool
 }
 
@@ -434,8 +684,16 @@ private func runBoundedCommand(
 }
 
 private struct SystemRouteExecutor: RouteExecuting {
-    func inspect(cidrs: [String], interfaceName: String) -> [String: RouteInspection]? {
-        inspectSystemRoutes(cidrs: cidrs, interfaceName: interfaceName)
+    func inspect(
+        cidrs: [String],
+        interfaceName: String,
+        trustedMihomoInterfaces: [String]
+    ) -> [String: RouteInspection]? {
+        inspectSystemRoutes(
+            cidrs: cidrs,
+            interfaceName: interfaceName,
+            trustedMihomoInterfaces: trustedMihomoInterfaces
+        )
     }
 
     func mutate(action: String, cidr: String, interfaceName: String) -> Bool {
@@ -526,14 +784,52 @@ private func isCanonicalNetwork(_ network: ParsedRouteNetwork) -> Bool {
     return true
 }
 
+private func canonicalAddressString(_ network: ParsedRouteNetwork) -> String? {
+    let expectedBytes = network.ipv4 ? MemoryLayout<in_addr>.size : MemoryLayout<in6_addr>.size
+    guard network.bytes.count == expectedBytes else { return nil }
+    var output = [CChar](
+        repeating: 0,
+        count: network.ipv4 ? Int(INET_ADDRSTRLEN) : Int(INET6_ADDRSTRLEN)
+    )
+    if network.ipv4 {
+        var address = in_addr()
+        withUnsafeMutableBytes(of: &address) { destination in
+            destination.copyBytes(from: network.bytes)
+        }
+        guard inet_ntop(AF_INET, &address, &output, socklen_t(output.count)) != nil else {
+            return nil
+        }
+    } else {
+        var address = in6_addr()
+        withUnsafeMutableBytes(of: &address) { destination in
+            destination.copyBytes(from: network.bytes)
+        }
+        guard inet_ntop(AF_INET6, &address, &output, socklen_t(output.count)) != nil else {
+            return nil
+        }
+    }
+    return String(cString: output)
+}
+
 private func isUnspecifiedOrMulticast(_ network: ParsedRouteNetwork) -> Bool {
     let allZero = network.bytes.allSatisfy { $0 == 0 }
     let multicast = network.ipv4 ? network.bytes.first.map { $0 >= 224 } == true : network.bytes.first == 0xff
     return allZero || multicast
 }
 
-private func routeConflicts(target: ParsedRouteNetwork, existing: ParsedRouteNetwork) -> Bool {
-    existing.prefix > 0 && networksOverlap(target, existing)
+private func routeConflicts(
+    target: ParsedRouteNetwork,
+    existing: ParsedRouteNetwork,
+    existingInterface: String? = nil,
+    trustedMihomoInterfaces: [String] = []
+) -> Bool {
+    guard existing.prefix > 0, networksOverlap(target, existing) else { return false }
+    if existing.prefix < target.prefix,
+       let existingInterface,
+       trustedMihomoInterfaces.contains(existingInterface) {
+        return false
+    }
+    return true
 }
 
 private func networksEqual(_ lhs: ParsedRouteNetwork, _ rhs: ParsedRouteNetwork) -> Bool {
@@ -582,12 +878,18 @@ private func routeTableEntries(family: String) -> [RouteTableEntry]? {
 private func inspectRoutes(
     targets: [String: ParsedRouteNetwork],
     interfaceName: String,
-    entries: [RouteTableEntry]
+    entries: [RouteTableEntry],
+    trustedMihomoInterfaces: [String]
 ) -> [String: RouteInspection] {
     targets.mapValues { target in
         var ownedExact = false
         var foreignConflict = false
-        for entry in entries where routeConflicts(target: target, existing: entry.network) {
+        for entry in entries where routeConflicts(
+            target: target,
+            existing: entry.network,
+            existingInterface: entry.interfaceName,
+            trustedMihomoInterfaces: trustedMihomoInterfaces
+        ) {
             if networksEqual(target, entry.network), entry.interfaceName == interfaceName {
                 ownedExact = true
             } else {
@@ -598,7 +900,11 @@ private func inspectRoutes(
     }
 }
 
-private func inspectSystemRoutes(cidrs: [String], interfaceName: String) -> [String: RouteInspection]? {
+private func inspectSystemRoutes(
+    cidrs: [String],
+    interfaceName: String,
+    trustedMihomoInterfaces: [String] = []
+) -> [String: RouteInspection]? {
     guard validInterface(interfaceName) else { return nil }
     if cidrs.isEmpty { return [:] }
     var targets = [String: ParsedRouteNetwork]()
@@ -615,7 +921,12 @@ private func inspectSystemRoutes(cidrs: [String], interfaceName: String) -> [Str
         guard let ipv6 = routeTableEntries(family: "inet6") else { return nil }
         entries.append(contentsOf: ipv6)
     }
-    return inspectRoutes(targets: targets, interfaceName: interfaceName, entries: entries)
+    return inspectRoutes(
+        targets: targets,
+        interfaceName: interfaceName,
+        entries: entries,
+        trustedMihomoInterfaces: trustedMihomoInterfaces
+    )
 }
 
 private func routeLookupSelfTest() -> Bool {
@@ -639,13 +950,61 @@ private func routeLookupSelfTest() -> Bool {
           let lessSpecific6 = parseRouteNetwork("fd00::/8"),
           let disjoint6 = parseRouteNetwork("fd00:65::/64")
     else { return false }
-    let inspected = inspectRoutes(targets: ["192.0.2.0/24": target4], interfaceName: "utun42", entries: entries)
+    let inspected = inspectRoutes(
+        targets: ["192.0.2.0/24": target4],
+        interfaceName: "utun42",
+        entries: entries,
+        trustedMihomoInterfaces: []
+    )
     guard inspected["192.0.2.0/24"]?.ownedExact == true,
           inspected["192.0.2.0/24"]?.foreignConflict == true
     else { return false }
-    return routeConflicts(target: target6, existing: moreSpecific6)
-        && routeConflicts(target: target6, existing: lessSpecific6)
-        && !routeConflicts(target: target6, existing: disjoint6)
+    guard routeConflicts(target: target6, existing: moreSpecific6),
+          routeConflicts(target: target6, existing: lessSpecific6),
+          !routeConflicts(target: target6, existing: disjoint6),
+          let lessSpecific4 = parseRouteNetwork("128.0.0.0/1"),
+          !routeConflicts(
+              target: target4,
+              existing: lessSpecific4,
+              existingInterface: "utun123",
+              trustedMihomoInterfaces: ["utun123"]
+          )
+    else { return false }
+
+    let trustedBroadTable = """
+    Routing tables
+
+    Internet:
+    Destination        Gateway            Flags               Netif Expire
+    0.0/1              192.168.64.1       UGSc                  utun123
+    """
+    guard let trustedEntries = parseRouteTable(trustedBroadTable),
+          let targetV4 = parseRouteNetwork("10.64.0.0/16")
+    else { return false }
+    let trustedInspection = inspectRoutes(
+        targets: ["10.64.0.0/16": targetV4],
+        interfaceName: "utun42",
+        entries: trustedEntries,
+        trustedMihomoInterfaces: ["utun123"]
+    )
+    guard trustedInspection["10.64.0.0/16"]?.isAvailable == true else { return false }
+
+    let mixedForeignTable = """
+    Routing tables
+
+    Internet:
+    Destination        Gateway            Flags               Netif Expire
+    0.0/1              192.168.64.1       UGSc                  utun123
+    0.0/1              192.168.64.1       UGSc                  en0
+    """
+    guard let mixedEntries = parseRouteTable(mixedForeignTable) else { return false }
+    let mixedInspection = inspectRoutes(
+        targets: ["10.64.0.0/16": targetV4],
+        interfaceName: "utun42",
+        entries: mixedEntries,
+        trustedMihomoInterfaces: ["utun123"]
+    )
+    return mixedInspection["10.64.0.0/16"]?.foreignConflict == true
 }
 
 private let productionJournalURL = URL(fileURLWithPath: "/Library/Application Support/KyClash/route-lease-v1.plist")
@@ -781,8 +1140,14 @@ private final class RouteCoordinator {
     private let journalURL: URL
     private let removeJournal: (URL) -> Bool
     private var journal: RouteJournal?
+    // A valid v1 journal is recovery-only.  It must never be used to start a
+    // new transaction or be rewritten as v2; keep it in memory until the
+    // exact-owner rollback succeeds and the original file is removed.
+    private var legacyJournal: LegacyRouteJournal?
     private var journalCorrupt = false
     private var lastCompletedReference: LeaseReference?
+    private var activeConnectionID: UUID?
+    private var lastCompletedConnectionID: UUID?
     private var heartbeatDeadline = Date.distantPast
     private var timer: DispatchSourceTimer?
 
@@ -803,8 +1168,15 @@ private final class RouteCoordinator {
                 guard decoded.isValid() else { throw CocoaError(.fileReadCorruptFile) }
                 journal = decoded
             } catch {
-                journalCorrupt = true
-                journal = nil
+                do {
+                    let legacy = try PropertyListDecoder().decode(LegacyRouteJournal.self, from: data)
+                    guard legacy.isValid() else { throw CocoaError(.fileReadCorruptFile) }
+                    legacyJournal = legacy
+                } catch {
+                    journalCorrupt = true
+                    journal = nil
+                    legacyJournal = nil
+                }
             }
         case .invalid:
             journalCorrupt = true
@@ -815,6 +1187,7 @@ private final class RouteCoordinator {
         // not leave owned routes behind until a client happens to call
         // `discover`.
         if journal != nil { _ = rollbackLocked() }
+        if legacyJournal != nil { _ = rollbackLegacyLocked() }
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + 5, repeating: 5)
         timer.setEventHandler { [weak self] in self?.expireLease() }
@@ -830,33 +1203,63 @@ private final class RouteCoordinator {
     func discover() -> HelperReply {
         lock.withLock {
             if journalCorrupt { return HelperReply(state: "failed_closed", errorCode: "journal_corrupt") }
+            if legacyJournal != nil {
+                return HelperReply(state: "failed_closed", errorCode: "recovery_required")
+            }
             return journal == nil ? HelperReply(state: "idle") : HelperReply(state: "failed_closed", errorCode: "recovery_required")
         }
     }
 
-    func begin(_ owner: LeaseOwner) -> HelperReply {
+    func begin(
+        _ owner: LeaseOwner,
+        connectionID: UUID = coordinatorSelfTestConnectionID
+    ) -> HelperReply {
         lock.withLock {
-            guard !journalCorrupt, owner.isValid(), journal == nil else { return HelperReply(state: "failed_closed", errorCode: "invalid_owner") }
-            guard let inspections = executor.inspect(cidrs: owner.privateCIDRs, interfaceName: owner.interfaceName),
+            guard !journalCorrupt,
+                  legacyJournal == nil,
+                  activeConnectionID == nil,
+                  owner.isValid(),
+                  journal == nil else {
+                return HelperReply(
+                    state: "failed_closed",
+                    errorCode: legacyJournal != nil ? "recovery_required" : "invalid_owner"
+                )
+            }
+            guard let inspections = executor.inspect(
+                cidrs: owner.privateCIDRs,
+                interfaceName: owner.interfaceName,
+                trustedMihomoInterfaces: owner.activeMihomoTunInterfaces
+            ),
                   owner.privateCIDRs.allSatisfy({ inspections[$0]?.isAvailable == true })
             else {
                 return HelperReply(state: "failed_closed", errorCode: "route_conflict")
             }
-            let candidate = RouteJournal(version: 1, owner: JournalOwner(owner), pendingCIDR: nil, appliedCIDRs: [])
+            let candidate = RouteJournal(version: protocolVersion, owner: JournalOwner(owner), pendingCIDR: nil, appliedCIDRs: [])
             guard persist(candidate) else { return HelperReply(state: "failed_closed", errorCode: "journal_write_failed") }
             journal = candidate
+            activeConnectionID = connectionID
             lastCompletedReference = nil
+            lastCompletedConnectionID = nil
             heartbeatDeadline = Date().addingTimeInterval(15)
             return HelperReply(state: "prepared")
         }
     }
 
-    func apply(_ reference: LeaseReference) -> HelperReply {
+    func apply(
+        _ reference: LeaseReference,
+        connectionID: UUID = coordinatorSelfTestConnectionID
+    ) -> HelperReply {
         lock.withLock {
-            guard valid(reference), var current = journal else { return ownershipFailure() }
+            guard ownsConnection(connectionID), valid(reference), var current = journal else {
+                return ownershipFailure()
+            }
             let remaining = current.owner.privateCIDRs.filter { !current.appliedCIDRs.contains($0) }
             if !remaining.isEmpty {
-                guard let preflight = executor.inspect(cidrs: remaining, interfaceName: current.owner.interfaceName),
+                guard let preflight = executor.inspect(
+                    cidrs: remaining,
+                    interfaceName: current.owner.interfaceName,
+                    trustedMihomoInterfaces: current.owner.activeMihomoTunInterfaces
+                ),
                       remaining.allSatisfy({ preflight[$0]?.isAvailable == true })
                 else {
                     let cleaned = rollbackLocked()
@@ -884,7 +1287,11 @@ private final class RouteCoordinator {
                 }
                 journal = current
             }
-            guard let postflight = executor.inspect(cidrs: current.owner.privateCIDRs, interfaceName: current.owner.interfaceName),
+            guard let postflight = executor.inspect(
+                cidrs: current.owner.privateCIDRs,
+                interfaceName: current.owner.interfaceName,
+                trustedMihomoInterfaces: current.owner.activeMihomoTunInterfaces
+            ),
                   current.owner.privateCIDRs.allSatisfy({
                       postflight[$0]?.ownedExact == true && postflight[$0]?.foreignConflict == false
                   })
@@ -896,19 +1303,31 @@ private final class RouteCoordinator {
         }
     }
 
-    func rollback(_ reference: LeaseReference) -> HelperReply {
+    func rollback(
+        _ reference: LeaseReference,
+        connectionID: UUID = coordinatorSelfTestConnectionID
+    ) -> HelperReply {
         lock.withLock {
-            if journal == nil, lastCompletedReference.map({ referencesEqual($0, reference) }) == true {
+            if journal == nil,
+               lastCompletedConnectionID == connectionID,
+               lastCompletedReference.map({ referencesEqual($0, reference) }) == true {
                 return HelperReply(state: "idle")
             }
-            guard valid(reference) else { return ownershipFailure() }
+            guard ownsConnection(connectionID), valid(reference) else { return ownershipFailure() }
             return rollbackLocked() ? HelperReply(state: "idle") : HelperReply(state: "failed_closed", errorCode: "rollback_failed")
         }
     }
 
-    func recover(_ owner: LeaseOwner) -> HelperReply {
+    func recover(
+        _ owner: LeaseOwner,
+        connectionID: UUID = coordinatorSelfTestConnectionID
+    ) -> HelperReply {
         lock.withLock {
+            if legacyJournal != nil {
+                return HelperReply(state: "failed_closed", errorCode: "recovery_required")
+            }
             guard !journalCorrupt,
+                  activeConnectionID == nil || activeConnectionID == connectionID,
                   owner.isValid(),
                   let journal,
                   journal.owner == JournalOwner(owner),
@@ -916,27 +1335,47 @@ private final class RouteCoordinator {
             else { return HelperReply(state: "failed_closed", errorCode: "ownership_mismatch") }
             let live = statusLocked()
             guard live.errorCode == nil else { return live }
+            activeConnectionID = connectionID
             heartbeatDeadline = Date().addingTimeInterval(15)
             return live
         }
     }
 
-    func heartbeat(_ reference: LeaseReference) -> HelperReply {
+    func heartbeat(
+        _ reference: LeaseReference,
+        connectionID: UUID = coordinatorSelfTestConnectionID
+    ) -> HelperReply {
         lock.withLock {
-            guard valid(reference) else { return ownershipFailure() }
+            if legacyJournal != nil {
+                return HelperReply(state: "failed_closed", errorCode: "recovery_required")
+            }
+            guard ownsConnection(connectionID), valid(reference) else { return ownershipFailure() }
             heartbeatDeadline = Date().addingTimeInterval(15)
             return statusLocked()
         }
     }
 
-    func status(_ reference: LeaseReference) -> HelperReply {
-        lock.withLock { valid(reference) ? statusLocked() : ownershipFailure() }
+    func status(
+        _ reference: LeaseReference,
+        connectionID: UUID = coordinatorSelfTestConnectionID
+    ) -> HelperReply {
+        lock.withLock {
+            if legacyJournal != nil {
+                return HelperReply(state: "failed_closed", errorCode: "recovery_required")
+            }
+            return ownsConnection(connectionID) && valid(reference) ? statusLocked() : ownershipFailure()
+        }
     }
 
-    func invalidate(_ reference: LeaseReference?) {
+    func invalidate(
+        _ reference: LeaseReference?,
+        connectionID: UUID = coordinatorSelfTestConnectionID
+    ) {
         lock.withLock {
-            guard let reference, valid(reference) else { return }
+            guard ownsConnection(connectionID) else { return }
+            if let reference, !valid(reference) { return }
             _ = rollbackLocked()
+            activeConnectionID = nil
         }
     }
 
@@ -953,7 +1392,8 @@ private final class RouteCoordinator {
         guard journal.isValid(),
               let inspections = executor.inspect(
                   cidrs: journal.owner.privateCIDRs,
-                  interfaceName: journal.owner.interfaceName
+                  interfaceName: journal.owner.interfaceName,
+                  trustedMihomoInterfaces: journal.owner.activeMihomoTunInterfaces
               )
         else {
             return HelperReply(state: "failed_closed", errorCode: "recovery_required")
@@ -978,10 +1418,22 @@ private final class RouteCoordinator {
         reference.isValid() && reference.leaseID == journal?.owner.leaseID && reference.operationID == journal?.owner.operationID
     }
 
+    private func ownsConnection(_ connectionID: UUID) -> Bool {
+        activeConnectionID == connectionID
+    }
+
     private func ownershipFailure() -> HelperReply { HelperReply(state: "failed_closed", errorCode: "ownership_mismatch") }
 
     private func expireLease() {
-        lock.withLock { if journal != nil && Date() > heartbeatDeadline { _ = rollbackLocked() } }
+        lock.withLock {
+            guard Date() > heartbeatDeadline else { return }
+            if journal != nil {
+                _ = rollbackLocked()
+            } else if legacyJournal != nil {
+                _ = rollbackLegacyLocked()
+            }
+            activeConnectionID = nil
+        }
     }
 
     private func rollbackLocked() -> Bool {
@@ -992,7 +1444,11 @@ private final class RouteCoordinator {
         }
         var owned = current.appliedCIDRs
         if let pending = current.pendingCIDR, !owned.contains(pending) { owned.append(pending) }
-        guard let inspections = executor.inspect(cidrs: owned, interfaceName: current.owner.interfaceName),
+        guard let inspections = executor.inspect(
+            cidrs: owned,
+            interfaceName: current.owner.interfaceName,
+            trustedMihomoInterfaces: current.owner.activeMihomoTunInterfaces
+        ),
               owned.allSatisfy({ inspections[$0] != nil })
         else {
             return false
@@ -1020,7 +1476,8 @@ private final class RouteCoordinator {
             // Never make a delete decision from that stale snapshot.
             guard let freshInspections = executor.inspect(
                 cidrs: [cidr],
-                interfaceName: current.owner.interfaceName
+                interfaceName: current.owner.interfaceName,
+                trustedMihomoInterfaces: current.owner.activeMihomoTunInterfaces
             ), let inspection = freshInspections[cidr] else {
                 journal = current
                 return false
@@ -1042,25 +1499,23 @@ private final class RouteCoordinator {
                 journal = current
                 return false
             }
-            current.pendingCIDR = nil
-            guard persist(current) else {
-                // Keep the pre-delete durable state, including the pending
-                // marker, until the post-delete journal write succeeds.  If
-                // the command's success was ambiguous, the next retry can
-                // inspect and delete the route instead of treating it as
-                // already absent.
+            guard let afterDelete = executor.inspect(
+                cidrs: [cidr],
+                interfaceName: current.owner.interfaceName,
+                trustedMihomoInterfaces: current.owner.activeMihomoTunInterfaces
+            ), afterDelete[cidr]?.ownedExact != true else {
+                // The durable pending state was never cleared, so a failed or
+                // ambiguous postflight remains recoverable without another
+                // best-effort journal write.
                 journal = pendingState
                 return false
             }
-            guard let afterDelete = executor.inspect(
-                cidrs: [cidr],
-                interfaceName: current.owner.interfaceName
-            ), afterDelete[cidr]?.ownedExact != true else {
-                // A successful command with a still-present exact route is
-                // ambiguous.  Restore the durable pending state so recovery
-                // retries ownership inspection instead of declaring success.
+            current.pendingCIDR = nil
+            guard persist(current) else {
+                // Keep the pre-delete durable state, including the pending
+                // marker. A later retry can prove the route absent and then
+                // commit the cleared state.
                 journal = pendingState
-                _ = persist(pendingState)
                 return false
             }
             journal = current
@@ -1074,8 +1529,135 @@ private final class RouteCoordinator {
             leaseID: current.owner.leaseID,
             operationID: current.owner.operationID
         )
+        lastCompletedConnectionID = activeConnectionID
         journal = nil
+        activeConnectionID = nil
         heartbeatDeadline = .distantPast
+        return true
+    }
+
+    // A v1 journal is a rollback-only compatibility record.  It cannot be
+    // adopted as a v2 lease because it has no typed Mihomo interface or tunnel
+    // family facts.  We therefore use the old owner tuple only to prove the
+    // exact interface/CIDR deletion, persist progress in the original v1
+    // schema, and remove the file only after every owned exact route is absent.
+    // A foreign overlap is never deleted and keeps recovery required.
+    private func rollbackLegacyLocked() -> Bool {
+        guard var current = legacyJournal else { return true }
+        guard current.isValid() else {
+            journalCorrupt = true
+            return false
+        }
+
+        var owned = current.appliedCIDRs
+        if let pending = current.pendingCIDR, !owned.contains(pending) { owned.append(pending) }
+        var seen = Set<String>()
+        owned = owned.filter { seen.insert($0).inserted }
+        guard let inspections = executor.inspect(
+            cidrs: owned,
+            interfaceName: current.owner.interfaceName,
+            trustedMihomoInterfaces: []
+        ), owned.allSatisfy({ inspections[$0] != nil }) else {
+            return false
+        }
+
+        for cidr in owned.reversed() {
+            var pendingState = current
+            pendingState.appliedCIDRs.removeAll { $0 == cidr }
+            pendingState.pendingCIDR = cidr
+            guard pendingState.isValid(), persistLegacy(pendingState) else {
+                legacyJournal = current
+                return false
+            }
+            current = pendingState
+            legacyJournal = current
+
+            guard let fresh = executor.inspect(
+                cidrs: [cidr],
+                interfaceName: current.owner.interfaceName,
+                trustedMihomoInterfaces: []
+            ), let inspection = fresh[cidr] else {
+                return false
+            }
+            if !inspection.ownedExact && inspection.foreignConflict {
+                // We cannot establish that the route belongs to this legacy
+                // lease.  Leave the pending marker for an explicit retry.
+                return false
+            }
+            if inspection.ownedExact,
+               !executor.mutate(action: "delete", cidr: cidr, interfaceName: current.owner.interfaceName) {
+                return false
+            }
+
+            guard let afterDelete = executor.inspect(
+                cidrs: [cidr],
+                interfaceName: current.owner.interfaceName,
+                trustedMihomoInterfaces: []
+            ), afterDelete[cidr]?.ownedExact != true else {
+                legacyJournal = pendingState
+                return false
+            }
+            current.pendingCIDR = nil
+            guard persistLegacy(current) else {
+                legacyJournal = pendingState
+                return false
+            }
+            legacyJournal = current
+        }
+
+        guard removeJournal(journalURL) else { return false }
+        legacyJournal = nil
+        activeConnectionID = nil
+        heartbeatDeadline = .distantPast
+        return true
+    }
+
+    private func persistLegacy(_ value: LegacyRouteJournal) -> Bool {
+        let directory = journalURL.deletingLastPathComponent()
+        guard value.isValid(),
+              validateJournalDirectory(directory, createIfMissing: true),
+              !isSymbolicLink(journalURL),
+              let data = try? PropertyListEncoder().encode(value),
+              data.count <= maximumJournalBytes else { return false }
+
+        let temporary = directory.appendingPathComponent(
+            ".route-lease-v1-legacy.\(UUID().uuidString).tmp"
+        )
+        let descriptor = open(
+            temporary.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            journalFilePermissions
+        )
+        guard descriptor >= 0 else { return false }
+        var committed = false
+        defer {
+            _ = close(descriptor)
+            if !committed { _ = unlink(temporary.path) }
+        }
+        guard fchmod(descriptor, journalFilePermissions) == 0 else { return false }
+        var offset = 0
+        let writeSucceeded = data.withUnsafeBytes { bytes -> Bool in
+            guard let base = bytes.baseAddress else { return data.isEmpty }
+            while offset < data.count {
+                let count = Darwin.write(descriptor, base.advanced(by: offset), data.count - offset)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                guard count > 0 else { return false }
+                offset += count
+            }
+            return true
+        }
+        guard writeSucceeded, offset == data.count, fsync(descriptor) == 0,
+              rename(temporary.path, journalURL.path) == 0,
+              fsyncDirectory(directory),
+              let info = lstatInfo(journalURL),
+              isRegularFile(info),
+              info.st_nlink == 1,
+              hasExactPermissions(info, journalFilePermissions),
+              (!isProductionJournalURL(journalURL) || info.st_uid == 0) else { return false }
+        committed = true
         return true
     }
 
@@ -1141,66 +1723,110 @@ private extension NSLock {
 }
 
 private final class RouteHelperService: NSObject, RouteHelperProtocol {
-    private let referenceLock = NSLock()
+    private let connectionID = UUID()
+    private let clientIdentity: ClientAuditIdentity
+    private let lifecycleLock = NSLock()
+    private var connectionActive = true
     private var reference: LeaseReference?
 
-    func discover(reply: @escaping (HelperReply) -> Void) { reply(RouteCoordinator.shared.discover()) }
+    init(clientIdentity: ClientAuditIdentity) {
+        self.clientIdentity = clientIdentity
+        super.init()
+        routeHelperLogger.notice(
+            "accepted client pid=\(clientIdentity.processID, privacy: .public) audit_session=\(clientIdentity.auditSessionID, privacy: .public)"
+        )
+    }
+
+    deinit {
+        invalidateConnection()
+    }
+
+    private func activeReply(_ body: () -> HelperReply) -> HelperReply {
+        lifecycleLock.withLock {
+            guard connectionActive else {
+                return HelperReply(state: "failed_closed", errorCode: "ownership_mismatch")
+            }
+            return body()
+        }
+    }
+
+    func discover(reply: @escaping (HelperReply) -> Void) {
+        reply(activeReply { RouteCoordinator.shared.discover() })
+    }
 
     func begin(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
-        let result = RouteCoordinator.shared.begin(owner)
-        if result.state == "prepared" {
-            referenceLock.withLock { reference = owner.reference }
+        let result = activeReply {
+            let result = RouteCoordinator.shared.begin(owner, connectionID: connectionID)
+            if result.state == "prepared" {
+                reference = owner.reference
+            }
+            return result
         }
         reply(result)
     }
 
     func apply(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        reply(RouteCoordinator.shared.apply(reference))
+        reply(activeReply { RouteCoordinator.shared.apply(reference, connectionID: connectionID) })
     }
 
     func rollback(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        let result = RouteCoordinator.shared.rollback(reference)
-        if result.state == "idle" {
-            referenceLock.withLock { self.reference = nil }
+        let result = activeReply {
+            let result = RouteCoordinator.shared.rollback(reference, connectionID: connectionID)
+            if result.state == "idle" {
+                self.reference = nil
+            }
+            return result
         }
         reply(result)
     }
 
     func recover(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
-        let result = RouteCoordinator.shared.recover(owner)
-        if result.errorCode == nil {
-            referenceLock.withLock { reference = owner.reference }
+        let result = activeReply {
+            let result = RouteCoordinator.shared.recover(owner, connectionID: connectionID)
+            if result.errorCode == nil {
+                reference = owner.reference
+            }
+            return result
         }
         reply(result)
     }
 
     func heartbeat(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        reply(RouteCoordinator.shared.heartbeat(reference))
+        reply(activeReply { RouteCoordinator.shared.heartbeat(reference, connectionID: connectionID) })
     }
 
     func status(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        reply(RouteCoordinator.shared.status(reference))
+        reply(activeReply { RouteCoordinator.shared.status(reference, connectionID: connectionID) })
     }
 
     func invalidateConnection() {
-        let activeReference = referenceLock.withLock { () -> LeaseReference? in
+        let invalidated = lifecycleLock.withLock { () -> Bool in
+            guard connectionActive else { return false }
+            connectionActive = false
             let active = reference
             reference = nil
-            return active
+            RouteCoordinator.shared.invalidate(active, connectionID: connectionID)
+            return true
         }
-        RouteCoordinator.shared.invalidate(activeReference)
+        guard invalidated else { return }
+        routeHelperLogger.notice(
+            "closed client pid=\(self.clientIdentity.processID, privacy: .public) audit_session=\(self.clientIdentity.auditSessionID, privacy: .public)"
+        )
     }
 }
 
 private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        guard connection.effectiveUserIdentifier != 0 else { return false }
+        guard let clientIdentity = ClientAuditIdentity.validated(connection: connection) else {
+            routeHelperLogger.error("rejected client with invalid audit identity")
+            return false
+        }
         connection.setCodeSigningRequirement(appRequirement)
-        let service = RouteHelperService()
+        let service = RouteHelperService(clientIdentity: clientIdentity)
         connection.exportedInterface = routeHelperInterface()
         connection.exportedObject = service
-        connection.invalidationHandler = { [weak service] in service?.invalidateConnection() }
-        connection.interruptionHandler = { [weak service] in service?.invalidateConnection() }
+        connection.invalidationHandler = { service.invalidateConnection() }
+        connection.interruptionHandler = { service.invalidateConnection() }
         connection.resume()
         return true
     }
@@ -1218,6 +1844,17 @@ private func referencesEqual(_ lhs: LeaseReference, _ rhs: LeaseReference) -> Bo
     lhs.version == rhs.version && lhs.leaseID == rhs.leaseID && lhs.operationID == rhs.operationID
 }
 
+private func validUtunInterface(_ value: String) -> Bool {
+    let bytes = Array(value.utf8)
+    guard bytes.count >= 5,
+          bytes.count <= maximumDarwinInterfaceBytes,
+          bytes.starts(with: Array("utun".utf8))
+    else { return false }
+    let suffix = bytes.dropFirst(4)
+    guard suffix.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return false }
+    return suffix.count == 1 || suffix.first != 48
+}
+
 private func validCIDR(_ value: String) -> Bool {
     let pieces = value.split(separator: "/", omittingEmptySubsequences: false)
     guard pieces.count == 2,
@@ -1226,17 +1863,19 @@ private func validCIDR(_ value: String) -> Bool {
           value == value.trimmingCharacters(in: .whitespacesAndNewlines),
           !value.contains("%"),
           pieces[1].utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+          pieces[1].count == 1 || pieces[1].first != "0",
           UInt8(pieces[1]) != nil
     else { return false }
     guard let network = parseRouteNetwork(value), network.prefix > 0,
-          isCanonicalNetwork(network), !isUnspecifiedOrMulticast(network)
+          isCanonicalNetwork(network), !isUnspecifiedOrMulticast(network),
+          canonicalAddressString(network) == String(pieces[0]),
+          String(network.prefix) == pieces[1]
     else { return false }
     return true
 }
 
 private func validInterface(_ value: String) -> Bool {
-    let suffix = value.hasPrefix("utun") ? value.dropFirst(4) : ""
-    return !suffix.isEmpty && suffix.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
+    validUtunInterface(value)
 }
 
 // This executor is used only by the explicit local/CI self-test below.  It
@@ -1247,6 +1886,7 @@ private func validInterface(_ value: String) -> Bool {
 // routes or requiring privileges.
 private final class InjectedRouteExecutor: RouteExecuting {
     var existing: Set<String> = []
+    var existingRouteInterfaces: [String: String] = [:]
     var added: [String] = []
     var failAddAt: Int?
     var failAddAfterMutationAt: Int?
@@ -1254,10 +1894,30 @@ private final class InjectedRouteExecutor: RouteExecuting {
     private(set) var addCalls = 0
     private(set) var deleteCalls = 0
 
-    func inspect(cidrs: [String], interfaceName: String) -> [String: RouteInspection]? {
+    func inspect(
+        cidrs: [String],
+        interfaceName: String,
+        trustedMihomoInterfaces: [String]
+    ) -> [String: RouteInspection]? {
         guard validInterface(interfaceName), cidrs.allSatisfy(validCIDR) else { return nil }
         return Dictionary(uniqueKeysWithValues: cidrs.map { cidr in
-            (cidr, RouteInspection(ownedExact: added.contains(cidr), foreignConflict: existing.contains(cidr)))
+            guard let target = parseRouteNetwork(cidr) else {
+                return (cidr, RouteInspection(ownedExact: false, foreignConflict: true))
+            }
+            let foreignConflict = existing.contains(where: { existingCIDR in
+                guard let existingNetwork = parseRouteNetwork(existingCIDR) else { return true }
+                let existingInterface = existingRouteInterfaces[existingCIDR] ?? "en0"
+                return routeConflicts(
+                    target: target,
+                    existing: existingNetwork,
+                    existingInterface: existingInterface,
+                    trustedMihomoInterfaces: trustedMihomoInterfaces
+                )
+            })
+            return (
+                cidr,
+                RouteInspection(ownedExact: added.contains(cidr), foreignConflict: foreignConflict)
+            )
         })
     }
 
@@ -1266,9 +1926,7 @@ private final class InjectedRouteExecutor: RouteExecuting {
         switch action {
         case "add":
             defer { addCalls += 1 }
-            guard failAddAt != addCalls,
-                  inspect(cidrs: [cidr], interfaceName: interfaceName)?[cidr]?.isAvailable == true
-            else { return false }
+            guard failAddAt != addCalls else { return false }
             added.append(cidr)
             return failAddAfterMutationAt == addCalls ? false : true
         case "delete":
@@ -1293,7 +1951,10 @@ private func requireSelfTest(_ condition: @autoclosure () -> Bool, _ description
     guard condition() else { throw RouteCoordinatorSelfTestError.failed(description) }
 }
 
-private func selfTestOwner(_ cidrs: [String]) -> LeaseOwner {
+private func selfTestOwner(
+    _ cidrs: [String],
+    activeMihomoTunInterfaces: [String] = []
+) -> LeaseOwner {
     let reference = LeaseReference(version: protocolVersion, leaseID: "lease.selftest.v1", operationID: "operation.selftest.v1")
     return LeaseOwner(
         reference: reference,
@@ -1302,12 +1963,50 @@ private func selfTestOwner(_ cidrs: [String]) -> LeaseOwner {
         tunnelOperationID: "operation.selftest.v1.prepare",
         mtu: 1420,
         profileRevision: 1,
+        activeMihomoTunInterfaces: activeMihomoTunInterfaces,
         privateCIDRs: cidrs
     )
 }
 
 private func runRouteCoordinatorSelfTest() -> Bool {
     do {
+        let auditIdentity = ClientAuditIdentity.validated(
+            effectiveUserID: 501,
+            processID: 42,
+            auditSessionID: 7
+        )
+        try requireSelfTest(
+            auditIdentity == ClientAuditIdentity(processID: 42, auditSessionID: 7),
+            "valid non-root audit identity must be retained"
+        )
+        try requireSelfTest(
+            ClientAuditIdentity.validated(effectiveUserID: 0, processID: 42, auditSessionID: 7) == nil,
+            "root client must be rejected"
+        )
+        try requireSelfTest(
+            ClientAuditIdentity.validated(effectiveUserID: 501, processID: 1, auditSessionID: 7) == nil,
+            "launchd/kernel PID must be rejected"
+        )
+        try requireSelfTest(
+            ClientAuditIdentity.validated(
+                effectiveUserID: 501,
+                processID: 42,
+                auditSessionID: AU_DEFAUDITSID
+            ) == nil,
+            "default audit session must be rejected"
+        )
+        try requireSelfTest(
+            ClientAuditIdentity.validated(
+                effectiveUserID: 501,
+                processID: 42,
+                auditSessionID: AU_ASSIGN_ASID
+            ) == nil,
+            "unassigned audit session must be rejected"
+        )
+        try requireSelfTest(validUtunInterface("utun0"), "utun0 must be canonical")
+        try requireSelfTest(validUtunInterface("utun42"), "utun42 must be canonical")
+        try requireSelfTest(!validUtunInterface("utun007"), "leading-zero utun names must be refused")
+
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("kyclash-route-helper-self-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
@@ -1316,20 +2015,41 @@ private func runRouteCoordinatorSelfTest() -> Bool {
 
         let cidrs = ["10.64.0.0/16", "fd00:64::/48"]
         let owner = selfTestOwner(cidrs)
+        let archivedOwner = try NSKeyedArchiver.archivedData(
+            withRootObject: owner,
+            requiringSecureCoding: true
+        )
+        let decodedOwner = try NSKeyedUnarchiver.unarchivedObject(
+            ofClass: LeaseOwner.self,
+            from: archivedOwner
+        )
+        try requireSelfTest(
+            decodedOwner?.hasIPv4 == true && decodedOwner?.hasIPv6 == true
+                && decodedOwner?.isValid() == true,
+            "NSSecureCoding must preserve dual-stack family facts"
+        )
 
         // Default-route takeover is never a valid KyClash private route. Keep
         // the refusal explicit in the in-memory helper gate so a future CIDR
         // parser change cannot silently widen the mutation scope.
         let defaultRouteExecutor = InjectedRouteExecutor()
-        try requireSelfTest(defaultRouteExecutor.inspect(cidrs: ["0.0.0.0/0"], interfaceName: "utun42") == nil,
+        try requireSelfTest(defaultRouteExecutor.inspect(
+            cidrs: ["0.0.0.0/0"], interfaceName: "utun42", trustedMihomoInterfaces: []
+        ) == nil,
                             "IPv4 default route must be refused")
-        try requireSelfTest(defaultRouteExecutor.inspect(cidrs: ["::/0"], interfaceName: "utun42") == nil,
+        try requireSelfTest(defaultRouteExecutor.inspect(
+            cidrs: ["::/0"], interfaceName: "utun42", trustedMihomoInterfaces: []
+        ) == nil,
                             "IPv6 default route must be refused")
         for invalidCIDR in [
             "1.2.3.4/0", "224.0.0.0/4", "ff00::/8", "10.0.0.1/24",
-            "10.0.0.0/nope", "10.0.0.0", "10.0.0.0/+24", "fd00::%utun4/48"
+            "10.0.0.0/nope", "10.0.0.0", "10.0.0.0/+24", "fd00::%utun4/48",
+            "10/8", "10.0/16", "10.0.0/24", "10.0.0.0/016", "FD00::/48",
+            "fd00:0::/48"
         ] {
-            try requireSelfTest(InjectedRouteExecutor().inspect(cidrs: [invalidCIDR], interfaceName: "utun42") == nil,
+            try requireSelfTest(InjectedRouteExecutor().inspect(
+                cidrs: [invalidCIDR], interfaceName: "utun42", trustedMihomoInterfaces: []
+            ) == nil,
                                 "invalid/non-canonical CIDR must be refused: \(invalidCIDR)")
         }
         let overlappingOwner = selfTestOwner(["10.64.0.0/16", "10.64.1.0/24"])
@@ -1357,6 +2077,57 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         normal.invalidate(owner.reference)
         try requireSelfTest(normal.discover().state == "idle" && normalExecutor.added.isEmpty,
                             "connection invalidation must remove owned routes")
+
+        // A lease belongs to one concrete XPC connection, not merely to a
+        // guessable operation/reference tuple. A second signed connection
+        // cannot apply, recover, heartbeat, inspect, invalidate, or roll back
+        // the first connection's transaction.
+        let connectionExecutor = InjectedRouteExecutor()
+        let connectionCoordinator = RouteCoordinator(
+            executor: connectionExecutor,
+            journalURL: root.appendingPathComponent("connection-owner.plist")
+        )
+        let connectionA = UUID()
+        let connectionB = UUID()
+        try requireSelfTest(
+            connectionCoordinator.begin(owner, connectionID: connectionA).state == "prepared",
+            "first XPC connection must own begin"
+        )
+        try requireSelfTest(
+            connectionCoordinator.apply(owner.reference, connectionID: connectionB).errorCode == "ownership_mismatch",
+            "second XPC connection must not apply another lease"
+        )
+        try requireSelfTest(
+            connectionCoordinator.recover(owner, connectionID: connectionB).errorCode == "ownership_mismatch",
+            "second XPC connection must not recover a live lease"
+        )
+        try requireSelfTest(
+            connectionCoordinator.heartbeat(owner.reference, connectionID: connectionB).errorCode == "ownership_mismatch",
+            "second XPC connection must not heartbeat another lease"
+        )
+        try requireSelfTest(
+            connectionCoordinator.status(owner.reference, connectionID: connectionB).errorCode == "ownership_mismatch",
+            "second XPC connection must not inspect another lease"
+        )
+        connectionCoordinator.invalidate(owner.reference, connectionID: connectionB)
+        try requireSelfTest(
+            connectionCoordinator.status(owner.reference, connectionID: connectionA).state == "prepared",
+            "foreign invalidation must not release the active lease"
+        )
+        try requireSelfTest(
+            connectionCoordinator.apply(owner.reference, connectionID: connectionA).state == "applied",
+            "owning XPC connection must apply"
+        )
+        try requireSelfTest(
+            connectionCoordinator.rollback(owner.reference, connectionID: connectionB).errorCode == "ownership_mismatch",
+            "second XPC connection must not roll back another lease"
+        )
+        try requireSelfTest(!connectionExecutor.added.isEmpty, "foreign rollback must not delete owned routes")
+        connectionCoordinator.invalidate(owner.reference, connectionID: connectionA)
+        try requireSelfTest(
+            connectionCoordinator.discover().state == "idle" && connectionExecutor.added.isEmpty,
+            "owning connection invalidation must roll back and release the lease"
+        )
 
         // A prepared lease has no applied or pending CIDR yet.  Rollback must
         // still remove its journal, and a duplicate rollback must remain
@@ -1400,6 +2171,57 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let conflict = RouteCoordinator(executor: conflictExecutor, journalURL: root.appendingPathComponent("conflict.plist"))
         try requireSelfTest(conflict.begin(owner).errorCode == "route_conflict", "exact pre-existing route must conflict")
         try requireSelfTest(conflictExecutor.added.isEmpty, "conflict must not mutate routes")
+
+        // Only a frozen, explicitly trusted Mihomo interface may provide a
+        // less-specific covering route.  Exact and more-specific routes still
+        // conflict even when the interface is trusted, and an unknown VPN's
+        // covering route remains a conflict.
+        let mihomoOwner = selfTestOwner(["10.64.0.0/16"], activeMihomoTunInterfaces: ["utun123"])
+        let trustedBroadExecutor = InjectedRouteExecutor()
+        trustedBroadExecutor.existing.insert("0.0.0.0/1")
+        trustedBroadExecutor.existingRouteInterfaces["0.0.0.0/1"] = "utun123"
+        let trustedBroad = RouteCoordinator(
+            executor: trustedBroadExecutor,
+            journalURL: root.appendingPathComponent("trusted-broad.plist")
+        )
+        try requireSelfTest(trustedBroad.begin(mihomoOwner).state == "prepared",
+                            "trusted Mihomo covering route must be allowed")
+        try requireSelfTest(trustedBroad.apply(mihomoOwner.reference).state == "applied",
+                            "trusted Mihomo covering route apply must succeed")
+        try requireSelfTest(trustedBroad.rollback(mihomoOwner.reference).state == "idle",
+                            "trusted Mihomo covering route rollback must succeed")
+        try requireSelfTest(trustedBroadExecutor.existing.contains("0.0.0.0/1"),
+                            "trusted Mihomo covering route must never be deleted")
+
+        let unknownBroadExecutor = InjectedRouteExecutor()
+        unknownBroadExecutor.existing.insert("0.0.0.0/1")
+        unknownBroadExecutor.existingRouteInterfaces["0.0.0.0/1"] = "en0"
+        let unknownBroad = RouteCoordinator(
+            executor: unknownBroadExecutor,
+            journalURL: root.appendingPathComponent("unknown-broad.plist")
+        )
+        try requireSelfTest(unknownBroad.begin(mihomoOwner).errorCode == "route_conflict",
+                            "unknown covering route must conflict")
+
+        let exactTrustedExecutor = InjectedRouteExecutor()
+        exactTrustedExecutor.existing.insert("10.64.0.0/16")
+        exactTrustedExecutor.existingRouteInterfaces["10.64.0.0/16"] = "utun123"
+        let exactTrusted = RouteCoordinator(
+            executor: exactTrustedExecutor,
+            journalURL: root.appendingPathComponent("exact-trusted.plist")
+        )
+        try requireSelfTest(exactTrusted.begin(mihomoOwner).errorCode == "route_conflict",
+                            "trusted exact route must conflict")
+
+        let moreSpecificTrustedExecutor = InjectedRouteExecutor()
+        moreSpecificTrustedExecutor.existing.insert("10.64.1.0/24")
+        moreSpecificTrustedExecutor.existingRouteInterfaces["10.64.1.0/24"] = "utun123"
+        let moreSpecificTrusted = RouteCoordinator(
+            executor: moreSpecificTrustedExecutor,
+            journalURL: root.appendingPathComponent("more-specific-trusted.plist")
+        )
+        try requireSelfTest(moreSpecificTrusted.begin(mihomoOwner).errorCode == "route_conflict",
+                            "trusted more-specific route must conflict")
 
         // Inject failure before each add.  The coordinator must journal the
         // pending route and roll back every route it already added.
@@ -1524,6 +2346,52 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         try requireSelfTest(restarted.discover().state == "idle" && restartExecutor.added.isEmpty,
                             "helper restart must recover routes before discover")
 
+        // A v1 journal is accepted only for rollback migration.  It must be
+        // consumed without creating a v2 lease and must never authorize a new
+        // apply operation.
+        let legacyPath = root.appendingPathComponent("legacy-v1.plist")
+        let legacyExecutor = InjectedRouteExecutor()
+        legacyExecutor.added = cidrs
+        let legacyJournal = LegacyRouteJournal(
+            version: legacyProtocolVersion,
+            owner: LegacyJournalOwner(JournalOwner(owner)),
+            pendingCIDR: cidrs[0],
+            appliedCIDRs: cidrs
+        )
+        try PropertyListEncoder().encode(legacyJournal).write(to: legacyPath, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: journalFilePermissions], ofItemAtPath: legacyPath.path)
+        let migrated = RouteCoordinator(executor: legacyExecutor, journalURL: legacyPath)
+        try requireSelfTest(migrated.discover().state == "idle", "legacy journal must rollback during startup")
+        try requireSelfTest(legacyExecutor.added.isEmpty, "legacy rollback must remove only exact owned routes")
+        try requireSelfTest(!FileManager.default.fileExists(atPath: legacyPath.path), "legacy journal must be removed after rollback")
+
+        let ambiguousLegacyPath = root.appendingPathComponent("legacy-v1-foreign.plist")
+        let ambiguousLegacyExecutor = InjectedRouteExecutor()
+        ambiguousLegacyExecutor.existing.insert(cidrs[0])
+        let ambiguousLegacy = LegacyRouteJournal(
+            version: legacyProtocolVersion,
+            owner: LegacyJournalOwner(JournalOwner(owner)),
+            pendingCIDR: nil,
+            appliedCIDRs: [cidrs[0]]
+        )
+        try PropertyListEncoder().encode(ambiguousLegacy).write(to: ambiguousLegacyPath, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: journalFilePermissions],
+            ofItemAtPath: ambiguousLegacyPath.path
+        )
+        let refusedLegacy = RouteCoordinator(
+            executor: ambiguousLegacyExecutor,
+            journalURL: ambiguousLegacyPath
+        )
+        try requireSelfTest(
+            refusedLegacy.discover().errorCode == "recovery_required",
+            "ambiguous legacy ownership must remain recovery required"
+        )
+        try requireSelfTest(
+            ambiguousLegacyExecutor.existing == [cidrs[0]] && ambiguousLegacyExecutor.deleteCalls == 0,
+            "legacy migration must never delete a foreign route"
+        )
+
         // Corrupt journals fail closed and never attempt route mutation.
         let corruptPath = root.appendingPathComponent("corrupt.plist")
         try Data("not-a-property-list".utf8).write(to: corruptPath, options: [.atomic])
@@ -1533,7 +2401,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         try requireSelfTest(corruptExecutor.added.isEmpty, "corrupt journal must not mutate routes")
 
         let unknownPath = root.appendingPathComponent("unknown-field-corrupt.plist")
-        let validJournal = RouteJournal(version: 1, owner: JournalOwner(owner), pendingCIDR: nil, appliedCIDRs: [])
+        let validJournal = RouteJournal(version: protocolVersion, owner: JournalOwner(owner), pendingCIDR: nil, appliedCIDRs: [])
         let validData = try PropertyListEncoder().encode(validJournal)
         var propertyList = try PropertyListSerialization.propertyList(
             from: validData,
@@ -1557,7 +2425,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // a forged applied CIDR could be interpreted as an owned delete.
         let semanticPath = root.appendingPathComponent("semantic-corrupt.plist")
         let semanticJournal = RouteJournal(
-            version: 1,
+            version: protocolVersion,
             owner: JournalOwner(owner),
             pendingCIDR: "10.65.0.0/16",
             appliedCIDRs: ["10.65.0.0/16"]
@@ -1573,7 +2441,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
 
         let overlappingPendingPath = root.appendingPathComponent("pending-overlap-corrupt.plist")
         let overlappingPendingJournal = RouteJournal(
-            version: 1,
+            version: protocolVersion,
             owner: JournalOwner(owner),
             pendingCIDR: cidrs[0],
             appliedCIDRs: [cidrs[0]]
@@ -1630,8 +2498,12 @@ private enum RouteHelperMain {
             // false.  The deterministic parser/overlap assertions above are
             // the gate; these calls prove the system adapter remains read-only
             // and bounded on the current machine.
-            _ = executor.inspect(cidrs: ["10.127.0.0/16"], interfaceName: "utun999")
-            _ = executor.inspect(cidrs: ["fd00:127::/48"], interfaceName: "utun999")
+            _ = executor.inspect(
+                cidrs: ["10.127.0.0/16"], interfaceName: "utun999", trustedMihomoInterfaces: []
+            )
+            _ = executor.inspect(
+                cidrs: ["fd00:127::/48"], interfaceName: "utun999", trustedMihomoInterfaces: []
+            )
             print("route_readonly_self_test_ok")
             return
         }
@@ -1646,6 +2518,11 @@ private enum RouteHelperMain {
         _ = RouteCoordinator.shared
         let delegate = ListenerDelegate()
         let listener = NSXPCListener(machServiceName: "net.kysion.kyclash.route-helper")
+        // Apply the same immutable designated requirement at the listener so
+        // an unsigned or foreign-team process is rejected before the delegate
+        // records its audit identity.  The per-connection requirement remains
+        // in place as a second enforcement point before message delivery.
+        listener.setConnectionCodeSigningRequirement(appRequirement)
         listener.delegate = delegate
         listener.resume()
         RunLoop.current.run()

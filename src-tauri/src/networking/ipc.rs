@@ -62,10 +62,8 @@ pub struct TunnelDeviceFacts {
 
 impl TunnelDeviceFacts {
     pub fn validate(&self, instance_id: &str, operation_id: &str) -> Result<(), NetworkErrorCode> {
-        let suffix = self.interface_name.strip_prefix("utun").unwrap_or_default();
         if self.mtu != 1420
-            || suffix.is_empty()
-            || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+            || !super::route_helper::valid_utun_interface(&self.interface_name)
             || self.instance_id != instance_id
             || self.operation_id != operation_id
         {
@@ -122,13 +120,145 @@ pub struct NetworkStateEvent {
 }
 
 impl IpcRequest {
-    pub const fn validate_protocol(&self) -> Result<(), NetworkErrorCode> {
-        if self.protocol_version == NETWORK_IPC_PROTOCOL_VERSION {
+    pub fn validate_protocol(&self) -> Result<(), NetworkErrorCode> {
+        if self.protocol_version == NETWORK_IPC_PROTOCOL_VERSION && valid_ipc_id(&self.request_id) {
             Ok(())
         } else {
-            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+            Err(if self.protocol_version == NETWORK_IPC_PROTOCOL_VERSION {
+                NetworkErrorCode::InvalidConfiguration
+            } else {
+                NetworkErrorCode::UnsupportedProtocolVersion
+            })
         }
     }
+}
+
+impl IpcResponse {
+    pub fn validate_protocol(&self, request: &IpcRequest) -> Result<(), NetworkErrorCode> {
+        request.validate_protocol()?;
+        if self.protocol_version != NETWORK_IPC_PROTOCOL_VERSION {
+            return Err(NetworkErrorCode::UnsupportedProtocolVersion);
+        }
+        if !valid_ipc_id(&self.request_id) || self.request_id != request.request_id {
+            return Err(NetworkErrorCode::AuthenticationFailed);
+        }
+        match &self.result {
+            Ok(payload) => validate_response_payload(request, payload),
+            Err(error) => validate_ipc_error(error),
+        }
+    }
+}
+
+pub(crate) fn valid_ipc_id(value: &str) -> bool {
+    (8..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn validate_response_payload(request: &IpcRequest, response: &IpcResponsePayload) -> Result<(), NetworkErrorCode> {
+    match (&request.payload, response) {
+        (IpcRequestPayload::GetStatus, IpcResponsePayload::Status(status)) => validate_network_status(status),
+        (IpcRequestPayload::Connect, IpcResponsePayload::Status(status)) => {
+            validate_network_status(status)?;
+            require_status(status, NetworkState::ConnectedPrimary, Some(super::TransportKind::Quic))
+        }
+        (IpcRequestPayload::StopTunnel, IpcResponsePayload::Status(status)) => {
+            validate_network_status(status)?;
+            require_status(status, NetworkState::Disconnected, None)
+        }
+        (IpcRequestPayload::ConnectTransport { transport }, IpcResponsePayload::Status(status)) => {
+            validate_network_status(status)?;
+            let expected_state = if *transport == super::TransportKind::Quic {
+                NetworkState::ConnectedPrimary
+            } else {
+                NetworkState::DegradedFallback
+            };
+            require_status(status, expected_state, Some(*transport))
+        }
+        (IpcRequestPayload::DisconnectTransport, IpcResponsePayload::Status(status)) => {
+            validate_network_status(status)?;
+            require_status(status, NetworkState::PreparingTunnel, None)
+        }
+        (IpcRequestPayload::ApplyProfile(_), IpcResponsePayload::Acknowledged)
+        | (IpcRequestPayload::Disconnect, IpcResponsePayload::Acknowledged)
+        | (IpcRequestPayload::Cancel { .. }, IpcResponsePayload::Acknowledged) => Ok(()),
+        (IpcRequestPayload::PrepareTunnel, IpcResponsePayload::TunnelPrepared(facts)) => {
+            facts
+                .validate(&facts.instance_id, &request.request_id)
+                .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            if !valid_ipc_id(&facts.instance_id) || (!facts.has_ipv4 && !facts.has_ipv6) {
+                return Err(NetworkErrorCode::InvalidConfiguration);
+            }
+            Ok(())
+        }
+        (IpcRequestPayload::SampleHealth, IpcResponsePayload::Health(health)) => health.validate(),
+        _ => Err(NetworkErrorCode::InvalidConfiguration),
+    }
+}
+
+fn require_status(
+    status: &NetworkStatus,
+    expected_state: NetworkState,
+    expected_transport: Option<super::TransportKind>,
+) -> Result<(), NetworkErrorCode> {
+    if status.state == expected_state && status.active_transport == expected_transport && status.last_error.is_none() {
+        Ok(())
+    } else {
+        Err(NetworkErrorCode::InvalidConfiguration)
+    }
+}
+
+fn validate_network_status(status: &NetworkStatus) -> Result<(), NetworkErrorCode> {
+    if status
+        .active_profile_id
+        .as_deref()
+        .is_some_and(|profile_id| !valid_profile_id(profile_id))
+    {
+        return Err(NetworkErrorCode::InvalidConfiguration);
+    }
+    let valid_state = match status.state {
+        NetworkState::Disconnected => status.active_transport.is_none(),
+        NetworkState::PreparingTunnel => status.active_profile_id.is_some() && status.active_transport.is_none(),
+        NetworkState::ConnectedPrimary => {
+            status.active_profile_id.is_some() && status.active_transport == Some(super::TransportKind::Quic)
+        }
+        NetworkState::DegradedFallback => {
+            status.active_profile_id.is_some()
+                && matches!(
+                    status.active_transport,
+                    Some(super::TransportKind::Wss | super::TransportKind::Tcp)
+                )
+        }
+        NetworkState::Authenticating
+        | NetworkState::FetchingConfig
+        | NetworkState::ConnectingPrimary
+        | NetworkState::Reconnecting
+        | NetworkState::Disconnecting
+        | NetworkState::Error => false,
+    };
+    if valid_state {
+        Ok(())
+    } else {
+        Err(NetworkErrorCode::InvalidConfiguration)
+    }
+}
+
+fn validate_ipc_error(error: &IpcError) -> Result<(), NetworkErrorCode> {
+    if error.message.is_empty() || error.message.len() > 512 || error.message.chars().any(char::is_control) {
+        Err(NetworkErrorCode::InvalidConfiguration)
+    } else {
+        Ok(())
+    }
+}
+
+fn valid_profile_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .enumerate()
+            .all(|(index, ch)| ch.is_ascii_alphanumeric() || (index > 0 && matches!(ch, '.' | '_' | ':' | '-')))
 }
 
 #[cfg(test)]
@@ -145,6 +275,128 @@ mod tests {
         assert_eq!(
             request.validate_protocol(),
             Err(NetworkErrorCode::UnsupportedProtocolVersion)
+        );
+    }
+
+    #[test]
+    fn request_identifier_matches_the_go_sidecar_contract() {
+        for invalid in [
+            "short",
+            "request:colon",
+            "request with spaces",
+            "request.{debug}",
+            "request.abcdefghijklmnopqrstuvwxyz.abcdefghijklmnopqrstuvwxyz.123456789",
+        ] {
+            let request = IpcRequest {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                request_id: invalid.into(),
+                payload: IpcRequestPayload::GetStatus,
+            };
+            assert_eq!(request.validate_protocol(), Err(NetworkErrorCode::InvalidConfiguration));
+        }
+        let valid = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "kyclash.profile.apply.1".into(),
+            payload: IpcRequestPayload::GetStatus,
+        };
+        assert_eq!(valid.validate_protocol(), Ok(()));
+    }
+
+    #[test]
+    fn response_validation_checks_version_correlation_and_payload_semantics() {
+        let request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.status".into(),
+            payload: IpcRequestPayload::GetStatus,
+        };
+        let response = IpcResponse {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            result: Ok(IpcResponsePayload::Status(NetworkStatus {
+                state: NetworkState::Disconnected,
+                active_profile_id: None,
+                active_transport: None,
+                last_error: None,
+            })),
+        };
+        assert_eq!(response.validate_protocol(&request), Ok(()));
+
+        let mut wrong_version = response.clone();
+        wrong_version.protocol_version += 1;
+        assert_eq!(
+            wrong_version.validate_protocol(&request),
+            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+        );
+
+        let mut stale = response.clone();
+        stale.request_id = "request.stale".into();
+        assert_eq!(
+            stale.validate_protocol(&request),
+            Err(NetworkErrorCode::AuthenticationFailed)
+        );
+
+        let mut wrong_payload = response;
+        wrong_payload.result = Ok(IpcResponsePayload::Acknowledged);
+        assert_eq!(
+            wrong_payload.validate_protocol(&request),
+            Err(NetworkErrorCode::InvalidConfiguration)
+        );
+    }
+
+    #[test]
+    fn response_validation_rejects_invalid_payload_facts_and_errors() {
+        let health_request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.health".into(),
+            payload: IpcRequestPayload::SampleHealth,
+        };
+        let invalid_health = IpcResponse {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: health_request.request_id.clone(),
+            result: Ok(IpcResponsePayload::Health(NetworkHealth {
+                reachable: false,
+                latency_ms: 0,
+                jitter_ms: 0,
+                loss_percent: 101,
+            })),
+        };
+        assert_eq!(
+            invalid_health.validate_protocol(&health_request),
+            Err(NetworkErrorCode::InvalidConfiguration)
+        );
+
+        let invalid_error = IpcResponse {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: health_request.request_id.clone(),
+            result: Err(IpcError {
+                code: NetworkErrorCode::SidecarUnavailable,
+                message: String::new(),
+                retryable: true,
+            }),
+        };
+        assert_eq!(
+            invalid_error.validate_protocol(&health_request),
+            Err(NetworkErrorCode::InvalidConfiguration)
+        );
+
+        let status_request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.status".into(),
+            payload: IpcRequestPayload::GetStatus,
+        };
+        let invalid_status = IpcResponse {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: status_request.request_id.clone(),
+            result: Ok(IpcResponsePayload::Status(NetworkStatus {
+                state: NetworkState::ConnectedPrimary,
+                active_profile_id: Some("profile.test".into()),
+                active_transport: Some(crate::networking::TransportKind::Tcp),
+                last_error: None,
+            })),
+        };
+        assert_eq!(
+            invalid_status.validate_protocol(&status_request),
+            Err(NetworkErrorCode::InvalidConfiguration)
         );
     }
 
@@ -200,11 +452,13 @@ mod tests {
         assert_eq!(facts.validate("instance.test", "request.prepare"), Ok(()));
         let mut invalid_name = facts.clone();
         invalid_name.interface_name = "utun-owned-by-name".into();
+        let mut noncanonical_name = facts.clone();
+        noncanonical_name.interface_name = "utun012".into();
         let mut invalid_mtu = facts.clone();
         invalid_mtu.mtu = 1280;
         let mut invalid_operation = facts.clone();
         invalid_operation.operation_id = "request.other".into();
-        for invalid in [invalid_name, invalid_mtu, invalid_operation] {
+        for invalid in [invalid_name, noncanonical_name, invalid_mtu, invalid_operation] {
             assert_eq!(
                 invalid.validate("instance.test", "request.prepare"),
                 Err(NetworkErrorCode::AuthenticationFailed)

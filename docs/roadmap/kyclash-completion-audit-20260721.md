@@ -2,11 +2,13 @@
 
 ## Decision
 
-All work permitted by the KyClash continuous-delivery authorization boundary is
-complete. The locked architecture, isolated runtime proof, development UI,
-credential boundary, release procedure, branding, documentation, CI, and
-signed-but-unnotarized arm64 development PKG have passed their applicable
-source-level gates.
+The locked single S1 stage remains in progress. Its architecture, isolated
+runtime proof, development UI, credential boundary, release procedure,
+branding, documentation, CI, signed-but-unnotarized arm64 development PKG, and
+route-helper v2 evidence have passed their applicable gates through S1.12.
+S1.13 is the first incomplete criterion, so this audit must not be read as a
+terminal completion or as permission to stop continuous delivery while safe
+S1.13 work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
 route and lifecycle gates still require disposable hosts, and impaired-network
@@ -28,8 +30,10 @@ public-distribution enhancement rather than a current development blocker.
   directions without creating interfaces, routes, DNS changes, or external
   connections.
 - The development-only macOS UI exposes lifecycle, health, routes, transport,
-  errors, cancellation, and allowlisted diagnostic export through a mock command
-  boundary. Production connect commands remain deliberately unavailable.
+  errors, cancellation, and allowlisted diagnostic export through a mock
+  command boundary. The production command boundary is now explicitly
+  composed and lazy, but remains default-off in ordinary/release builds and
+  fails closed when its signed policy/trust resources are not provisioned.
 - The credential boundary uses fixed Keychain references and redacted,
   clear-on-drop secret material. Automated tests do not touch the host Keychain.
 - The release workflow requires separate Application and Installer identities,
@@ -81,8 +85,9 @@ public-distribution enhancement rather than a current development blocker.
   and singleton listener; a Tart guest restart restored the console and the
   signed login-item launch. An exact app SIGKILL also showed the ordinary
   `verge-mihomo` proxy core surviving as an adopted process. That binary is not
-  the production Go sidecar, so the observation remains a cleanup limitation
-  and the S1.10 production-sidecar child-absence gate is still open.
+  the production Go sidecar, so the observation remains a separately tracked
+  non-production cleanup limitation; the production-sidecar child-absence
+  gate is closed by the combined controller/utun evidence below.
 - A signed `kyclash-network-sidecar` controller-boundary run in the same
   disposable guest generated only ephemeral in-memory bootstrap material,
   read the handshake, and then SIGKILLed the exact controller PID. The Go
@@ -113,16 +118,21 @@ public-distribution enhancement rather than a current development blocker.
   `eaf37d8d` completed successfully, superseding the four earlier sidecar CI
   runs. Later commits through `30ef92f1` did not change sidecar-scoped paths.
 
-## Authorization-dependent release gates
+## Remaining system, external, and activation gates
 
-The following work is intentionally not executed under the current authority:
+The following work remains after S1.12. Safe repository work and the already
+authorized disposable-VM matrix continue without another routine prompt;
+production infrastructure, updater publication, and release activation remain
+separate authorization boundaries:
 
-1. Mutate and restore real macOS routes on a disposable authorized host,
-   including Mihomo coexistence, crash recovery, and conflict scenarios.
+1. Exercise the packaged Mihomo control API and live TUN observation in the
+   disposable VM, including coexistence, reachability, stop/restart, reboot,
+   and foreign-route cleanup.
 2. Test a reviewed compatible server endpoint under loss, jitter, UDP blocking,
    sustained load, suspend/resume, and network switching.
-3. Integrate the production macOS utun and route adapters, then replace the mock
-   command boundary only after the first two gates pass.
+3. Enable the already composed production command boundary only after the
+   required S1 route/lifecycle evidence passes and activation is separately
+   authorized; ordinary/release builds remain default-off meanwhile.
 4. Optionally exercise the manual destructive Keychain lifecycle test on a
    disposable account using only `net.kysion.kyclash.test`; this does not block
    other development.
@@ -145,7 +155,7 @@ The following work is intentionally not executed under the current authority:
 | Developer ID internal arm64 PKG | Signed; unnotarized with Gatekeeper warning | No | None |
 | Apple notarization and stapling | Optional enhancement | No | Notary credentials only if selected |
 | Keychain destructive lifecycle | Complete on disposable GitHub macOS runner; scoped to `net.kysion.kyclash.test` | No | None |
-| Real route mutation and crash recovery | Fixed TEST-NET transaction and crash recovery passed; Mihomo coexistence pending | Yes, for production route adapter | Isolated Mihomo coexistence evidence |
+| Real route mutation and crash recovery | v2 typed lease/journal, dual-stack VM transaction, conflict/restart/journal-corruption matrix passed; packaged Mihomo live coexistence pending | Yes, for production route adapter | Packaged Mihomo live-control observation and coexistence evidence |
 | Impaired-network and sustained transport validation | Deterministic loopback + race count=5 + ten-round soak passed; Linux netem CI evidence retained; external matrix pending | Yes, for production data plane | Compatible isolated server and disposable client host |
 | Install/upgrade/rollback/uninstall cleanup | Procedure prepared; signed GUI smoke passed; full installed-byte matrix pending | Yes, for general distribution | Disposable macOS lifecycle host and retained candidate/rollback artifacts |
 | macOS x64 and later platforms | Deferred by locked platform order | Yes, for those platforms only | macOS arm64 MVP gates closed |
@@ -164,15 +174,17 @@ The user authorized continuation after this audit. The repository now contains
 the feature-gated real route executor and fixed-scope lab harness documented in
 `../testing/kyclash-macos-route-lab.md`. Read-only preflight rejected the current
 development Mac as the mutation environment because it carries active split
-routes and multiple tunnels and has no non-interactive elevation. Item 1 remains
-open specifically for execution on a disposable macOS host; its source and
-runbook preparation are complete.
+routes and multiple tunnels and has no non-interactive elevation. At that
+checkpoint item 1 remained open for a disposable macOS host. The subsequent
+signed v2 VM matrix closed S1.12; packaged live-Mihomo coexistence remains the
+S1.13 continuation recorded below.
 
 The authorized credential-lab source preparation is also complete. The
 feature-gated fixed-service lifecycle harness and disposable-account procedure
 are documented in `../testing/kyclash-macos-keychain-lab.md`. Its destructive
-cycle remains manual because the available account is the daily-use development
-account; this does not block updater or other source work.
+cycle remains manual on the daily-use development account. The separately
+scoped `net.kysion.kyclash.test` cycle passed on a disposable GitHub macOS
+runner; neither case blocks updater or other source work.
 
 ## Linux VM network-lab preparation — 2026-07-21
 
@@ -237,9 +249,9 @@ and independently requires a `VirtualMac*` hardware model in local mode. A
 physical Mac therefore remains protected even if its caller copies all lab
 environment variables. Setup Assistant has been completed, the base was stopped
 cleanly, and a `kyclash-macos-lab-work` clone was created and booted. The guest
-obtained a NAT address, while SSH automation remains pending until Remote Login
-is explicitly enabled for the dedicated guest account. No guest password is
-stored or passed to host automation.
+obtained a NAT address; SSH automation was still pending at that checkpoint
+until Remote Login was explicitly enabled for the dedicated guest account. No
+guest password is stored or passed to host automation.
 
 Remote Login and a VM-only SSH public key were subsequently configured. The
 local fixed Keychain lifecycle and route normal/forced-exit recovery lab passed,
@@ -247,8 +259,8 @@ and independent cleanup checks found no synthetic Keychain item, TEST-NET
 route, or journal. The signed, unnotarized PKG then passed guest-side hash,
 Installer signature, strict app signature, identity, architecture, and fresh
 installation checks. Gatekeeper rejection as `Unnotarized Developer ID` was
-confirmed; user-visible launch override and the remaining lifecycle checks are
-still pending, without weakening Gatekeeper globally.
+confirmed; user-visible launch override and the remaining lifecycle checks
+were still pending at that checkpoint, without weakening Gatekeeper globally.
 
 The operator then selected notarization for direct GitHub distribution and
 configured a local `notarytool` Keychain profile. Submission
@@ -282,15 +294,43 @@ started; it does not imply that the default-off production networking feature
 has been enabled in the release candidate.
 
 The signed route helper now normalizes IPv4 CIDRs into explicit netmask
-lookups, scans the read-only route table, and fails closed on every non-default
-overlap (exact, more-specific, or less-specific); only the ordinary default
-underlay is ignored. Its parser/overlap self-test and injected coordinator
-matrix cover that fail-closed policy. In the disposable VM, a typed dual-stack
+lookups and scans the read-only route table. Its v2 boundary fails closed on
+exact, more-specific, unknown-interface, or unclassified non-default overlap;
+only a less-specific covering route on the exact typed active-Mihomo interface
+is eligible, while the ordinary default underlay is ignored. Its parser/overlap
+self-test and injected coordinator matrix cover that policy. In the disposable
+VM, a typed dual-stack
 transaction passed on owned `utun4`; exact IPv4/IPv6 and more-specific IPv4
 conflicts failed closed without a journal. The historical
 `128.0.0.0/1`/`fd00::/8` coexistence probe is superseded and is not current
-acceptance evidence. A typed active-Mihomo-interface ownership amendment is
-pending before less-specific coexistence can be allowed. Scoped cleanup found
-no test route, journal, helper, or test utun. The packaged Mihomo,
-corruption/restart/reboot, private-service, physical sleep/wake, and real
-network-switch gates remain open.
+acceptance evidence. The typed active-Mihomo-interface ownership amendment is
+implemented through the v2 source/wire/journal boundary, while its packaged
+Mihomo live-source gate is still pending before less-specific coexistence can
+be accepted. An earlier scoped cleanup found no test route, journal, helper, or
+test utun. The current v2 run removed its synthetic utun and every matrix route
+but intentionally retained the primary launchd fixture and its owned `utun4`
+for the next isolated probe. The packaged Mihomo live-control, stop/restart,
+guest-reboot, private-service, physical sleep/wake, and real network-switch
+gates remain open. Helper journal-corruption/restart recovery itself is already
+covered by the signed v2 fixture matrix below.
+
+## S1 v2 route-helper continuation — 2026-07-22
+
+The signed v2 route-helper/client boundary and the disposable VM matrix have
+now been executed, not merely prepared. `stage`, `bootstrap`, `preflight`, and
+`run` all passed in the authorized `VirtualMac2,1` guest. The matrix evidence
+is retained at
+`target/macos-vm-lab/evidence/route-helper-v2-20260722/route-helper-v2-matrix.log`
+(SHA-256
+`7054e0c0cf66b73e969ea880cd8a901eb4a71f68419feb205b8587b4b8645661`). It
+records dual-stack apply/rollback, exact/more-specific/unknown-interface
+conflict refusal, explicit empty/wrong/matching Mihomo classification, helper
+restart, corrupt-journal fail-closed, and final route/journal/lease absence.
+
+This closes the S1.12 v2 route-lease/crash-recovery criterion. The synthetic
+Mihomo fixture proves the typed boundary but is not the packaged Mihomo control
+API. S1.13 therefore remains the first incomplete criterion until the live
+Mihomo device observation, private-service reachability, reboot/restart, and
+foreign-route cleanup matrix pass. The default application and production
+feature remain separately gated; no endpoint, release, updater activation,
+production infrastructure, or real login-Keychain lifecycle was touched.

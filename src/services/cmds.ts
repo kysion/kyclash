@@ -436,6 +436,18 @@ export const getNetworkingStatus = async () => {
   )
 }
 
+/**
+ * Verify the bundled signed policy and register the deferred production
+ * factory. This never starts a sidecar, opens the route-helper XPC, reads
+ * Keychain material, or changes routes; those actions begin only after the
+ * user presses Connect.
+ */
+export const initializeNetworking = async () => {
+  return invoke<import('@/types/networking').ProductionNetworkStatus>(
+    'initialize_networking',
+  )
+}
+
 export const connectNetworking = async () => {
   return invoke<import('@/types/networking').ProductionNetworkStatus>(
     'connect_networking',

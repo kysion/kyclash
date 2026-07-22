@@ -21,6 +21,7 @@ import {
   getNetworkingDiagnostics,
   getNetworkingStatus,
   getRouteHelperRegistrationStatus,
+  initializeNetworking,
   openRouteHelperSystemSettings,
   registerRouteHelperService,
   unregisterRouteHelperService,
@@ -89,7 +90,10 @@ const NetworkingPage = () => {
       setHelperStatus('unknown')
     }
   }, [])
-  useEffect(() => void refresh(), [refresh])
+  // Initialization verifies only the signed app-owned policy and registers a
+  // deferred factory. It does not start the sidecar or touch Keychain/XPC;
+  // those remain behind the explicit Connect action.
+  useEffect(() => void run(initializeNetworking), [run])
   useEffect(() => void refreshHelper(), [refreshHelper])
 
   useEffect(() => {

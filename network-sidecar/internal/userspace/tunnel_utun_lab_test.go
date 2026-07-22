@@ -6,12 +6,14 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -210,8 +212,8 @@ func TestRealUTUNHoldForForcedTermination(t *testing.T) {
 		t.Skip("forced-termination fixture is enabled only by the disposable-VM harness")
 	}
 	ownerFile := os.Getenv("KYCLASH_UTUN_LAB_OWNER_FILE")
-	if !strings.HasPrefix(filepath.Clean(ownerFile), "/var/tmp/kyclash-utun-lab-") {
-		t.Fatal("owner evidence path must use the fixed disposable-VM prefix")
+	if err := validateUTUNLabOwnerPath(ownerFile); err != nil {
+		t.Fatal(err)
 	}
 	backend, networkProfile := realUTUNFixture(t, 27)
 	defer backend.Close()
@@ -219,10 +221,61 @@ func TestRealUTUNHoldForForcedTermination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ownerFile, []byte(facts.InterfaceName+"\n"), 0o600); err != nil {
-		t.Fatal(err)
+	ownerEvidence, err := os.OpenFile(ownerFile,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		t.Fatal("create exclusive owner evidence", err)
+	}
+	encodedOwner := facts.InterfaceName + "\n"
+	written, writeErr := ownerEvidence.WriteString(encodedOwner)
+	if writeErr == nil && written != len(encodedOwner) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr == nil {
+		writeErr = ownerEvidence.Sync()
+	}
+	if writeErr != nil {
+		_ = ownerEvidence.Close()
+		t.Fatal("write owner evidence", writeErr)
+	}
+	if err := ownerEvidence.Close(); err != nil {
+		t.Fatal("close owner evidence", err)
 	}
 	select {}
+}
+
+func validateUTUNLabOwnerPath(path string) error {
+	clean := filepath.Clean(path)
+	if path == "" || path != clean || filepath.Dir(clean) != "/var/tmp" {
+		return errors.New("owner evidence path must be a clean file directly under /var/tmp")
+	}
+	base := filepath.Base(clean)
+	if !strings.HasPrefix(base, "kyclash-utun-lab-") || len(base) == len("kyclash-utun-lab-") {
+		return errors.New("owner evidence path must use the fixed disposable-VM prefix")
+	}
+	return nil
+}
+
+func TestValidateUTUNLabOwnerPath(t *testing.T) {
+	for _, path := range []string{
+		"/var/tmp/kyclash-utun-lab-mihomo-v2-owner",
+		"/var/tmp/kyclash-utun-lab-run_01",
+	} {
+		if err := validateUTUNLabOwnerPath(path); err != nil {
+			t.Errorf("validateUTUNLabOwnerPath(%q): %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		"",
+		"/tmp/kyclash-utun-lab-owner",
+		"/var/tmp/kyclash-utun-lab-",
+		"/var/tmp/kyclash-utun-lab-nested/file",
+		"/var/tmp/kyclash-utun-lab-../escape",
+	} {
+		if err := validateUTUNLabOwnerPath(path); err == nil {
+			t.Errorf("validateUTUNLabOwnerPath(%q) unexpectedly succeeded", path)
+		}
+	}
 }
 
 func ipcMetric(state, key string) uint64 {

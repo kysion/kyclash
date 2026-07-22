@@ -32,6 +32,33 @@ pub struct SignedNetworkPolicyPayload {
     pub profile: NetworkProfile,
 }
 
+/// The result of accepting a signed policy envelope.  Keeping the revision
+/// alongside the validated profile is important at the composition boundary:
+/// the route lease must carry the exact revision that was authenticated, not a
+/// caller-supplied or regenerated value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedNetworkPolicy {
+    pub key_id: String,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub revision: u64,
+    pub profile: NetworkProfile,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyTrustBundle {
+    schema_version: u8,
+    keys: Vec<PolicyTrustKey>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyTrustKey {
+    key_id: String,
+    public_key_base64: String,
+}
+
 pub trait PolicyRevisionStore {
     fn latest(&self) -> Result<Option<u64>, NetworkErrorCode>;
     fn store(&mut self, revision: u64) -> Result<(), NetworkErrorCode>;
@@ -153,15 +180,40 @@ pub struct PolicyTrustStore {
 
 impl PolicyTrustStore {
     pub fn from_ed25519_keys(keys: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<Self, NetworkErrorCode> {
-        let public_keys = keys.into_iter().collect::<HashMap<_, _>>();
-        if public_keys.is_empty()
-            || public_keys
-                .iter()
-                .any(|(key_id, public_key)| !valid_key_id(key_id) || public_key.len() != 32)
-        {
+        let mut public_keys = HashMap::new();
+        for (key_id, public_key) in keys {
+            if !valid_key_id(&key_id) || public_key.len() != 32 || public_keys.insert(key_id, public_key).is_some() {
+                return Err(NetworkErrorCode::InvalidConfiguration);
+            }
+        }
+        if public_keys.is_empty() {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
         Ok(Self { public_keys })
+    }
+
+    /// Parse the app-owned, signed-resource trust bundle.  The bundle carries
+    /// public verification material only; private signing keys are never
+    /// accepted by this API.  Callers should obtain these bytes from a
+    /// code-signed resource or another explicitly pinned backend boundary,
+    /// never from a frontend-provided key.
+    pub fn from_json(encoded: &[u8]) -> Result<Self, NetworkErrorCode> {
+        let bundle: PolicyTrustBundle =
+            serde_json::from_slice(encoded).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+        if bundle.schema_version != 1 || bundle.keys.is_empty() {
+            return Err(NetworkErrorCode::InvalidConfiguration);
+        }
+        let keys = bundle
+            .keys
+            .into_iter()
+            .map(|key| {
+                let public_key = STANDARD
+                    .decode(key.public_key_base64)
+                    .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+                Ok((key.key_id, public_key))
+            })
+            .collect::<Result<Vec<_>, NetworkErrorCode>>()?;
+        Self::from_ed25519_keys(keys)
     }
 
     pub fn verify_profile(
@@ -170,6 +222,17 @@ impl PolicyTrustStore {
         now: u64,
         revisions: &mut dyn PolicyRevisionStore,
     ) -> Result<NetworkProfile, NetworkErrorCode> {
+        self.verify(encoded, now, revisions).map(|verified| verified.profile)
+    }
+
+    /// Verify and persist a v2 envelope while retaining the authenticated
+    /// metadata needed by production composition.
+    pub fn verify(
+        &self,
+        encoded: &[u8],
+        now: u64,
+        revisions: &mut dyn PolicyRevisionStore,
+    ) -> Result<VerifiedNetworkPolicy, NetworkErrorCode> {
         let envelope: SignedNetworkPolicyEnvelope =
             serde_json::from_slice(encoded).map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
         if envelope.envelope_version != SIGNED_POLICY_ENVELOPE_VERSION
@@ -204,7 +267,13 @@ impl PolicyTrustStore {
         }
         payload.profile.validate()?;
         revisions.store(payload.revision)?;
-        Ok(payload.profile)
+        Ok(VerifiedNetworkPolicy {
+            key_id: envelope.key_id,
+            issued_at: payload.issued_at,
+            expires_at: payload.expires_at,
+            revision: payload.revision,
+            profile: payload.profile,
+        })
     }
 }
 
@@ -347,6 +416,55 @@ mod tests {
             ),
             Err(NetworkErrorCode::PolicySignatureInvalid)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn trust_bundle_parser_is_strict_and_rejects_duplicate_keys() -> anyhow::Result<()> {
+        let encoded_key = STANDARD.encode(TEST_POLICY_PUBLIC);
+        let valid = serde_json::json!({
+            "schema_version": 1,
+            "keys": [{"key_id": "policy.test", "public_key_base64": encoded_key}],
+        });
+        let trust = PolicyTrustStore::from_json(&serde_json::to_vec(&valid)?);
+        assert!(trust.is_ok());
+
+        let duplicate = serde_json::json!({
+            "schema_version": 1,
+            "keys": [
+                {"key_id": "policy.test", "public_key_base64": STANDARD.encode(TEST_POLICY_PUBLIC)},
+                {"key_id": "policy.test", "public_key_base64": STANDARD.encode(TEST_POLICY_PUBLIC)},
+            ],
+        });
+        assert_eq!(
+            PolicyTrustStore::from_json(&serde_json::to_vec(&duplicate)?).err(),
+            Some(NetworkErrorCode::InvalidConfiguration)
+        );
+        let unknown = serde_json::json!({
+            "schema_version": 1,
+            "keys": [{"key_id": "policy.test", "public_key_base64": encoded_key}],
+            "unexpected": true,
+        });
+        assert_eq!(
+            PolicyTrustStore::from_json(&serde_json::to_vec(&unknown)?).err(),
+            Some(NetworkErrorCode::InvalidConfiguration)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verify_retains_authenticated_revision_for_composition() -> anyhow::Result<()> {
+        let (trust, _, envelope) = signed_fixture(100, 200, 11)?;
+        let verified = trust
+            .verify(
+                &serde_json::to_vec(&envelope)?,
+                150,
+                &mut MemoryPolicyRevisionStore::default(),
+            )
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(verified.key_id, "policy.test");
+        assert_eq!(verified.revision, 11);
+        assert_eq!(verified.profile.profile_id, "profile.test");
         Ok(())
     }
 

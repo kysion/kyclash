@@ -7,7 +7,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/Library/Application Support/KyClash/route-lab/bin/kyclash-utun-lab.test</string>
-    <string>-test.run=^TestRealUTUNHoldForForcedTermination$</string>
+    <string>-test.run=^TestRealUTUNProductionSidecarControllerHoldForForcedTermination$</string>
     <string>-test.count=1</string>
     <string>-test.v=true</string>
   </array>
@@ -15,16 +15,16 @@
   <dict>
     <key>KYCLASH_VM_LAB_CONFIRM</key>
     <string>authorized-kyclash-virtualization-framework-vm</string>
-    <key>KYCLASH_UTUN_LAB_HOLD</key>
+    <key>KYCLASH_UTUN_LAB_COMBINED_HOLD</key>
     <string>1</string>
-    <key>KYCLASH_UTUN_LAB_OWNER_FILE</key>
-    <string>/var/tmp/kyclash-utun-lab-route-owner</string>
+    <key>KYCLASH_UTUN_LAB_COMBINED_EVIDENCE_FILE</key>
+    <string>/var/tmp/kyclash-utun-lab-combined-hold.evidence</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/var/tmp/kyclash-utun-lab-route-owner.log</string>
+  <string>/Library/Application Support/KyClash/route-lab/combined-hold.log</string>
   <key>StandardErrorPath</key>
-  <string>/var/tmp/kyclash-utun-lab-route-owner.log</string>
+  <string>/Library/Application Support/KyClash/route-lab/combined-hold.log</string>
 </dict>
 </plist>

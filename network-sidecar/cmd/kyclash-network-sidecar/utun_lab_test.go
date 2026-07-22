@@ -213,6 +213,7 @@ func TestReadProductionPreparedInterfaceRequiresExactOwnership(t *testing.T) {
 		InterfaceName: "utun17",
 		MTU:           profile.TunnelMTU,
 		HasIPv4:       true,
+		HasIPv6:       true,
 		InstanceID:    utunLabInstanceID,
 		OperationID:   utunLabPrepareRequestID,
 	}
@@ -230,7 +231,7 @@ func TestReadProductionPreparedInterfaceRequiresExactOwnership(t *testing.T) {
 		{name: "wrong operation", mutate: func(facts *ipc.TunnelDeviceFacts) { facts.OperationID = "request.other" }},
 		{name: "wrong mtu", mutate: func(facts *ipc.TunnelDeviceFacts) { facts.MTU-- }},
 		{name: "missing ipv4", mutate: func(facts *ipc.TunnelDeviceFacts) { facts.HasIPv4 = false }},
-		{name: "unexpected ipv6", mutate: func(facts *ipc.TunnelDeviceFacts) { facts.HasIPv6 = true }},
+		{name: "missing ipv6", mutate: func(facts *ipc.TunnelDeviceFacts) { facts.HasIPv6 = false }},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			facts := validFacts
@@ -276,7 +277,7 @@ func realUTUNInput(t *testing.T, trailer string) string {
 		ControlPlane:  "https://127.0.0.1/control",
 		IdentityRef:   "keychain:net.kysion.kyclash.test.utun",
 		Site:          profile.Site{ID: "utun-stdin", DisplayName: "utun stdin", PrivateCIDRs: []string{"10.90.0.2/32"}},
-		Tunnel:        profile.Tunnel{LocalAddresses: []string{"10.90.0.1/24"}, PeerPublicKey: base64.StdEncoding.EncodeToString(peerPublic), KeepaliveSeconds: 5},
+		Tunnel:        profile.Tunnel{LocalAddresses: []string{"10.90.0.1/24", "fd00:90::1/64"}, PeerPublicKey: base64.StdEncoding.EncodeToString(peerPublic), KeepaliveSeconds: 5},
 		Transports:    profile.Transports{Primary: profile.QUIC, Fallbacks: []profile.Transport{profile.WSS, profile.TCP}, Endpoints: []profile.Endpoint{{Transport: profile.QUIC, URL: "https://127.0.0.1:443"}, {Transport: profile.WSS, URL: "wss://127.0.0.1:443/kynp"}, {Transport: profile.TCP, URL: "tcp://127.0.0.1:443"}}},
 		Policy:        profile.Policy{ConnectTimeoutSeconds: 5, HealthIntervalSeconds: 1, FallbackThreshold: 1},
 	}
@@ -389,7 +390,7 @@ func readProductionPreparedInterface(reader *bufio.Reader) (string, error) {
 			facts.InstanceID != utunLabInstanceID ||
 			facts.OperationID != expected.requestID ||
 			facts.MTU != profile.TunnelMTU ||
-			!facts.HasIPv4 || facts.HasIPv6 {
+			!facts.HasIPv4 || !facts.HasIPv6 {
 			return "", errors.New("prepare response did not prove exact utun ownership")
 		}
 		return facts.InterfaceName, nil

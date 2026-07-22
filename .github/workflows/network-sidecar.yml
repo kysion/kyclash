@@ -8,6 +8,8 @@ on:
       - 'docs/architecture/kyclash-network-runtime-v1.md'
       - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
       - 'scripts/build-network-sidecar-macos.mjs'
+      - 'scripts/prepare-macos-vm-route-fixture.sh'
+      - 'scripts/macos-vm-route-helper-v2-matrix.sh'
       - 'macos/route-helper/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -21,6 +23,8 @@ on:
       - 'network-sidecar/**'
       - '.github/workflows/network-sidecar.yml'
       - 'scripts/build-network-sidecar-macos.mjs'
+      - 'scripts/prepare-macos-vm-route-fixture.sh'
+      - 'scripts/macos-vm-route-helper-v2-matrix.sh'
       - 'macos/route-helper/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -277,10 +281,34 @@ jobs:
       - name: Vet source
         run: go vet ./...
 
+      - name: Validate disposable-VM route scripts
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          /bin/bash -n \
+            scripts/prepare-macos-vm-route-fixture.sh \
+            scripts/macos-vm-route-helper-v2-matrix.sh
+          env -u BASH_ENV -u ENV \
+            scripts/macos-vm-route-helper-v2-matrix.sh dry-run | \
+            grep -Fx 'dry_run_mutations=none'
+
       - name: Compile owned macOS utun adapter
         run: |
+          set -euo pipefail
           go test -run '^$' -tags=kyclash_utun ./internal/userspace ./cmd/kyclash-network-sidecar
           go test -run '^$' -tags='kyclash_utun kyclash_utun_lab' ./internal/userspace ./cmd/kyclash-network-sidecar
+          go test -run '^$' -tags='kyclash_utun kyclash_utun_lab' \
+            -c -o "${RUNNER_TEMP}/kyclash-utun-mihomo-lab.test" ./internal/userspace
+          go test -run '^$' -tags='kyclash_utun kyclash_utun_lab' \
+            -c -o "${RUNNER_TEMP}/kyclash-utun-lab.test" ./cmd/kyclash-network-sidecar
+          file "${RUNNER_TEMP}/kyclash-utun-mihomo-lab.test" | grep -F 'arm64'
+          file "${RUNNER_TEMP}/kyclash-utun-lab.test" | grep -F 'arm64'
+          "${RUNNER_TEMP}/kyclash-utun-mihomo-lab.test" \
+            -test.list '^TestRealUTUNHoldForForcedTermination$' | \
+            grep -Fx 'TestRealUTUNHoldForForcedTermination'
+          "${RUNNER_TEMP}/kyclash-utun-lab.test" \
+            -test.list '^TestRealUTUNProductionSidecarControllerHoldForForcedTermination$' | \
+            grep -Fx 'TestRealUTUNProductionSidecarControllerHoldForForcedTermination'
 
       - name: Compile typed macOS route helper
         working-directory: ${{ github.workspace }}
@@ -322,7 +350,17 @@ jobs:
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -mmacosx-version-min=13.0 -c macos/route-helper/client.m \
             -o "${RUNNER_TEMP}/kyclash-route-helper-client.o"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -mmacosx-version-min=13.0 -c macos/route-helper/lab-client.m \
+            -o "${RUNNER_TEMP}/kyclash-route-helper-lab-client.o"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -mmacosx-version-min=13.0 \
+            "${RUNNER_TEMP}/kyclash-route-helper-client.o" \
+            "${RUNNER_TEMP}/kyclash-route-helper-lab-client.o" \
+            -framework Foundation \
+            -o "${RUNNER_TEMP}/kyclash-route-helper-lab-client"
           file "${RUNNER_TEMP}/kyclash-route-helper" | grep -F 'arm64'
+          file "${RUNNER_TEMP}/kyclash-route-helper-lab-client" | grep -F 'arm64'
 
       - name: Test actual child data plane
         env:

@@ -1,14 +1,15 @@
 use std::{ffi::CString, sync::Mutex};
 
 use super::{
-    NetworkErrorCode, NetworkProfile, ProductionRouteBoundary, ROUTE_HELPER_PROTOCOL_VERSION, RouteHelperState,
-    RouteHelperStatus, RouteLeaseOwner, RouteLeaseReference, TunnelDeviceFacts,
+    MihomoTunSnapshot, NetworkErrorCode, NetworkProfile, ProductionRouteBoundary, ROUTE_HELPER_PROTOCOL_VERSION,
+    RouteHelperState, RouteHelperStatus, RouteLeaseOwner, RouteLeaseReference, TunnelDeviceFacts,
 };
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct NativeReply {
     transport_status: i32,
+    protocol_version: i32,
     state: i32,
     error_code: i32,
 }
@@ -34,6 +35,10 @@ mod platform {
             tunnel_operation: *const c_char,
             mtu: u16,
             revision: u64,
+            has_ipv4: u8,
+            has_ipv6: u8,
+            mihomo_interfaces: *const *const c_char,
+            mihomo_interface_count: usize,
             cidrs: *const *const c_char,
             cidr_count: usize,
         ) -> NativeReply;
@@ -128,6 +133,12 @@ impl RouteHelperClient {
             .map(|value| c_string(value))
             .collect::<Result<Vec<_>, _>>()?;
         let cidr_pointers = cidrs.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
+        let mihomo_interfaces = owner
+            .active_mihomo_tun_interfaces
+            .iter()
+            .map(|value| c_string(value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mihomo_interface_pointers = mihomo_interfaces.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
         #[cfg(target_os = "macos")]
         {
             // SAFETY: Every pointer references a validated CString retained for the entire
@@ -145,6 +156,10 @@ impl RouteHelperClient {
                         tunnel_operation.as_ptr(),
                         owner.tunnel.mtu,
                         owner.profile_revision,
+                        u8::from(owner.tunnel.has_ipv4),
+                        u8::from(owner.tunnel.has_ipv6),
+                        mihomo_interface_pointers.as_ptr(),
+                        mihomo_interface_pointers.len(),
                         cidr_pointers.as_ptr(),
                         cidr_pointers.len(),
                     )
@@ -161,6 +176,7 @@ impl RouteHelperClient {
                 instance,
                 interface_name,
                 tunnel_operation,
+                mihomo_interface_pointers,
                 cidr_pointers,
             );
             Err(NetworkErrorCode::SidecarUnavailable)
@@ -218,14 +234,63 @@ impl Drop for RouteHelperClient {
 pub struct XpcProductionRouteBoundary {
     client: RouteHelperClient,
     active: Option<RouteLeaseReference>,
+    active_owner: Option<RouteLeaseOwner>,
+    recovery_required: bool,
 }
 
 impl XpcProductionRouteBoundary {
     pub fn connect() -> Result<Self, NetworkErrorCode> {
         let client = RouteHelperClient::connect()?;
         let discovered = client.discover()?;
+        // A fresh process does not possess the frozen owner envelope needed to
+        // prove ownership of a durable journal left by an older process. It
+        // must fail closed instead of synthesising an owner from new input.
         require_helper_status(&discovered, RouteHelperState::Idle)?;
-        Ok(Self { client, active: None })
+        Ok(Self {
+            client,
+            active: None,
+            active_owner: None,
+            recovery_required: false,
+        })
+    }
+
+    fn rollback_after_error(&mut self, reference: &RouteLeaseReference, primary: NetworkErrorCode) -> NetworkErrorCode {
+        match self
+            .client
+            .rollback(reference)
+            .and_then(|status| require_helper_status(&status, RouteHelperState::Idle))
+        {
+            Ok(()) => {
+                self.active = None;
+                self.active_owner = None;
+                self.recovery_required = false;
+                primary
+            }
+            Err(rollback_error) => {
+                // Preserve the exact owner/reference pair. A later retry may
+                // recover only this frozen envelope.
+                self.recovery_required = true;
+                rollback_error
+            }
+        }
+    }
+
+    fn recover_active(&mut self) -> Result<RouteHelperState, NetworkErrorCode> {
+        let owner = self
+            .active_owner
+            .as_ref()
+            .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+        let recovered = self.client.recover(owner)?;
+        if let Some(error) = recovered.error_code {
+            return Err(error);
+        }
+        match recovered.state {
+            RouteHelperState::Prepared | RouteHelperState::Applied => {
+                self.recovery_required = false;
+                Ok(recovered.state)
+            }
+            _ => Err(NetworkErrorCode::InvalidStateTransition),
+        }
     }
 }
 
@@ -236,10 +301,8 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
         operation_id: &str,
         tunnel: &TunnelDeviceFacts,
         profile_revision: u64,
+        mihomo: &MihomoTunSnapshot,
     ) -> Result<(), NetworkErrorCode> {
-        if self.active.is_some() {
-            return Err(NetworkErrorCode::InvalidStateTransition);
-        }
         let owner = RouteLeaseOwner {
             protocol_version: ROUTE_HELPER_PROTOCOL_VERSION,
             lease_id: operation_id.to_owned(),
@@ -247,57 +310,117 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
             sidecar_instance_id: tunnel.instance_id.clone(),
             profile_revision,
             tunnel: tunnel.clone(),
+            active_mihomo_tun_interfaces: mihomo.interfaces().to_vec(),
             private_cidrs: profile.site.private_cidrs.clone(),
         };
+        mihomo.validate_for(&tunnel.interface_name)?;
         owner.validate()?;
         let reference = RouteLeaseReference {
             protocol_version: ROUTE_HELPER_PROTOCOL_VERSION,
             lease_id: owner.lease_id.clone(),
             operation_id: owner.operation_id.clone(),
         };
-        self.active = Some(reference.clone());
-        let begin = match self.client.begin(&owner) {
-            Ok(status) => status,
-            Err(error) => {
-                let _ = self.client.rollback(&reference);
-                self.active = None;
-                return Err(error);
+
+        if self.recovery_required {
+            if self.active.as_ref() != Some(&reference) || self.active_owner.as_ref() != Some(&owner) {
+                return Err(NetworkErrorCode::InvalidStateTransition);
             }
-        };
-        if let Err(error) = require_helper_status(&begin, RouteHelperState::Prepared) {
-            let _ = self.client.rollback(&reference);
-            self.active = None;
-            return Err(error);
+            match self.recover_active()? {
+                RouteHelperState::Applied => {
+                    return Ok(());
+                }
+                RouteHelperState::Prepared => {}
+                _ => return Err(NetworkErrorCode::InvalidStateTransition),
+            }
+        } else {
+            if self.active.is_some() || self.active_owner.is_some() {
+                return Err(NetworkErrorCode::InvalidStateTransition);
+            }
+            self.active = Some(reference.clone());
+            self.active_owner = Some(owner.clone());
+            let begin = match self.client.begin(&owner) {
+                Ok(status) => status,
+                Err(error) => {
+                    return Err(self.rollback_after_error(&reference, error));
+                }
+            };
+            if let Err(error) = require_helper_status(&begin, RouteHelperState::Prepared) {
+                return Err(self.rollback_after_error(&reference, error));
+            }
         }
         let applied = match self.client.apply(&reference) {
             Ok(status) => status,
             Err(error) => {
-                let _ = self.client.rollback(&reference);
-                self.active = None;
-                return Err(error);
+                return Err(self.rollback_after_error(&reference, error));
             }
         };
         if let Err(error) = require_helper_status(&applied, RouteHelperState::Applied) {
-            let _ = self.client.rollback(&reference);
-            self.active = None;
-            return Err(error);
+            return Err(self.rollback_after_error(&reference, error));
         }
         Ok(())
     }
 
-    fn rollback(&mut self, _operation_id: &str) -> Result<(), NetworkErrorCode> {
-        let Some(reference) = self.active.take() else {
+    fn heartbeat(&mut self, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        if self.recovery_required {
+            match self.recover_active()? {
+                RouteHelperState::Applied => {}
+                RouteHelperState::Prepared => return Err(NetworkErrorCode::InvalidStateTransition),
+                _ => return Err(NetworkErrorCode::InvalidStateTransition),
+            }
+        }
+        let reference = self
+            .active
+            .as_ref()
+            .filter(|reference| reference.operation_id == operation_id)
+            .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+        match self.client.heartbeat(reference) {
+            Ok(status) => {
+                let result = require_helper_status(&status, RouteHelperState::Applied);
+                if result.is_err() {
+                    self.recovery_required = true;
+                }
+                result
+            }
+            Err(error) => {
+                self.recovery_required = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn rollback(&mut self, operation_id: &str) -> Result<(), NetworkErrorCode> {
+        let Some(reference) = self.active.clone() else {
             return Ok(());
         };
-        let status = self.client.rollback(&reference)?;
-        require_helper_status(&status, RouteHelperState::Idle)
+        if reference.operation_id != operation_id {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        if self.recovery_required {
+            // Recovery authenticates the frozen owner before a rollback retry.
+            self.recover_active()?;
+        }
+        let status = match self.client.rollback(&reference) {
+            Ok(status) => status,
+            Err(error) => {
+                self.recovery_required = true;
+                return Err(error);
+            }
+        };
+        if let Err(error) = require_helper_status(&status, RouteHelperState::Idle) {
+            self.recovery_required = true;
+            return Err(error);
+        }
+        self.active = None;
+        self.active_owner = None;
+        self.recovery_required = false;
+        Ok(())
     }
 }
 
 impl Drop for XpcProductionRouteBoundary {
     fn drop(&mut self) {
-        if let Some(reference) = self.active.take() {
-            let _ = self.client.rollback(&reference);
+        if let Some(reference) = self.active.as_ref() {
+            let _ = self.client.rollback(reference);
         }
     }
 }
@@ -309,6 +432,9 @@ fn c_string(value: &str) -> Result<CString, NetworkErrorCode> {
 fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<RouteHelperStatus, NetworkErrorCode> {
     if reply.transport_status != 0 {
         return Err(NetworkErrorCode::SidecarUnavailable);
+    }
+    if reply.protocol_version != i32::from(ROUTE_HELPER_PROTOCOL_VERSION) {
+        return Err(NetworkErrorCode::UnsupportedProtocolVersion);
     }
     let state = match reply.state {
         0 => RouteHelperState::Idle,
@@ -323,17 +449,21 @@ fn native_status(reply: NativeReply, operation_id: Option<String>) -> Result<Rou
         1 => Some(NetworkErrorCode::SidecarUnavailable),
         2 => Some(NetworkErrorCode::InvalidConfiguration),
         3 => Some(NetworkErrorCode::PermissionDenied),
-        4..=6 => Some(NetworkErrorCode::PermissionDenied),
-        7..=8 => Some(NetworkErrorCode::InvalidStateTransition),
+        4 => Some(NetworkErrorCode::RouteJournalUnavailable),
+        5 => Some(NetworkErrorCode::PermissionDenied),
+        6..=7 => Some(NetworkErrorCode::RouteRollbackFailed),
+        8 => Some(NetworkErrorCode::RouteJournalCorrupted),
         9 => Some(NetworkErrorCode::RouteConflict),
         _ => return Err(NetworkErrorCode::UnsupportedProtocolVersion),
     };
-    Ok(RouteHelperStatus {
+    let status = RouteHelperStatus {
         protocol_version: ROUTE_HELPER_PROTOCOL_VERSION,
         state,
         operation_id,
         error_code,
-    })
+    };
+    status.validate()?;
+    Ok(status)
 }
 
 fn require_helper_status(status: &RouteHelperStatus, expected: RouteHelperState) -> Result<(), NetworkErrorCode> {
@@ -356,6 +486,7 @@ mod tests {
             native_status(
                 NativeReply {
                     transport_status: 0,
+                    protocol_version: i32::from(ROUTE_HELPER_PROTOCOL_VERSION),
                     state: 99,
                     error_code: 0,
                 },
@@ -366,7 +497,20 @@ mod tests {
         assert_eq!(
             native_status(
                 NativeReply {
+                    transport_status: 0,
+                    protocol_version: 1,
+                    state: 0,
+                    error_code: 0,
+                },
+                None,
+            ),
+            Err(NetworkErrorCode::UnsupportedProtocolVersion)
+        );
+        assert_eq!(
+            native_status(
+                NativeReply {
                     transport_status: -1,
+                    protocol_version: i32::from(ROUTE_HELPER_PROTOCOL_VERSION),
                     state: 0,
                     error_code: 0,
                 },
@@ -378,18 +522,20 @@ mod tests {
             native_status(
                 NativeReply {
                     transport_status: 0,
+                    protocol_version: i32::from(ROUTE_HELPER_PROTOCOL_VERSION),
                     state: 4,
                     error_code: 8,
                 },
                 None,
             )
             .map(|status| status.error_code),
-            Ok(Some(NetworkErrorCode::InvalidStateTransition))
+            Ok(Some(NetworkErrorCode::RouteJournalCorrupted))
         );
         assert_eq!(
             native_status(
                 NativeReply {
                     transport_status: 0,
+                    protocol_version: i32::from(ROUTE_HELPER_PROTOCOL_VERSION),
                     state: 4,
                     error_code: 9,
                 },
@@ -402,6 +548,7 @@ mod tests {
             native_status(
                 NativeReply {
                     transport_status: 0,
+                    protocol_version: i32::from(ROUTE_HELPER_PROTOCOL_VERSION),
                     state: 4,
                     error_code: 99,
                 },

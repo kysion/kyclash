@@ -59,7 +59,9 @@ tools; this becomes the clean base.
 
 On 2026-07-21, the base guest was initialized, stopped cleanly, and cloned to
 `kyclash-macos-lab-work`. The work guest obtained NAT address `192.168.64.3`.
-Remote Login was not enabled at first boot, so SSH automation remains pending.
+Remote Login was not enabled at first boot, so SSH automation was pending at
+that checkpoint. It was subsequently enabled for the dedicated guest account,
+and the VM-only key below is now the automation boundary.
 
 To enable password-free automation without sharing the guest password, generate
 a VM-only key under the ignored `target/macos-vm-lab/ssh` directory. In the
@@ -295,11 +297,11 @@ The matrix proved:
 - exact IPv4 and IPv6 pre-existing routes return `route_conflict`;
 - a more-specific `192.0.2.128/25` route also returns `route_conflict` even
   though the network-base lookup resolves through the default underlay;
-- the current helper fails closed on every non-default overlap, including
-  less-specific `128.0.0.0/1` and `fd00::/8` coverage. The historical
-  less-specific probe is superseded and is not current coexistence acceptance
-  evidence; a typed active-Mihomo-interface ownership amendment is required
-  before such coverage may be allowed;
+- the v1 helper used for this historical probe failed closed on every non-
+  default overlap, including less-specific `128.0.0.0/1` and `fd00::/8`
+  coverage. That probe is superseded and is not current coexistence acceptance
+  evidence; the typed active-Mihomo-interface ownership amendment is exercised
+  separately by the v2 matrix below;
 - no fixed test route, helper journal, helper process, or test utun remained
   after scoped cleanup.
 
@@ -307,10 +309,157 @@ The lookup parser and fail-closed overlap policy are also covered by the
 helper's read-only self-test. The raw command/results file is retained only as
 historical trace at
 `target/macos-vm-lab/evidence/app-launch-20260722/route-helper-dual-conflict-20260722.txt`;
-it must not be cited as current less-specific coexistence evidence. This
-advances S1.12 only and does not substitute for the typed ownership amendment,
-packaged Mihomo TUN, journal-corruption/restart, guest-reboot, or
-private-service reachability matrix.
+it must not be cited as current less-specific coexistence evidence. This was
+partial historical S1.12 evidence and does not substitute for the v2 matrix
+below, packaged Mihomo TUN, guest-reboot, or private-service reachability. The
+v2 matrix now supplies the typed-ownership and helper journal-corruption/
+restart evidence.
+
+## Route-helper v2 fixture matrix
+
+`scripts/macos-vm-route-helper-v2-matrix.sh` is the fixed S1.12/S1.13
+fixture-level executor. Its `preflight` and `run` modes require all of the
+following before they inspect or mutate the guest:
+
+- macOS arm64 with `hw.model` beginning with `VirtualMac`;
+- `KYCLASH_RUNNER_ENVIRONMENT=local-virtualization-framework` and the exact
+  `KYCLASH_VM_LAB_CONFIRM` marker;
+- the signed helper, primary production-sidecar utun fixture, separate signed
+  synthetic-Mihomo utun test binary, and hold client staged as `root:wheel`
+  executables below the private `/Library/Application Support/KyClash/route-lab`
+  tree by `scripts/prepare-macos-vm-route-fixture.sh`; the same typed client is
+  copied byte-for-byte to the fixed root-owned public path
+  `/var/tmp/kyclash-route-helper-lab-client-v2.scp` because the private parent
+  directory is intentionally mode `700`;
+- both fixed launchd fixtures already bootstrapped, an idle v2 helper, and no
+  pre-existing matrix route, helper journal, or combined-utun evidence file.
+
+The caller can select only `dry-run`, `preflight`, or `run`; it cannot supply a
+CIDR, interface, route command, executable, path, or launchd label. The static
+dry-run performs no inspection or mutation:
+
+```bash
+scripts/macos-vm-route-helper-v2-matrix.sh dry-run
+
+env -u BASH_ENV -u ENV \
+  KYCLASH_RUNNER_ENVIRONMENT=local-virtualization-framework \
+  KYCLASH_VM_LAB_CONFIRM=authorized-kyclash-virtualization-framework-vm \
+  scripts/macos-vm-route-helper-v2-matrix.sh preflight
+
+env -u BASH_ENV -u ENV \
+  KYCLASH_RUNNER_ENVIRONMENT=local-virtualization-framework \
+  KYCLASH_VM_LAB_CONFIRM=authorized-kyclash-virtualization-framework-vm \
+  scripts/macos-vm-route-helper-v2-matrix.sh run
+```
+
+Use a clean shell boundary: unset inherited startup hooks (`BASH_ENV`/`ENV`)
+before setting the two fixed confirmation variables. Bash reads these hooks
+before a script can unset them internally, so leaving either variable set is
+not an accepted invocation. The script itself still rejects every non-
+`VirtualMac` guest and requires interactive `sudo`.
+
+The preparer is fail-closed around the privileged boundary: it uses a fixed
+system `PATH` and restrictive `umask`, verifies every staged executable/client
+and launchd plist as a root-owned single-link file, pre-creates the launchd
+stdout/stderr target as a root-owned `0600` file below the private stage tree,
+and accepts only an explicitly absent launchd job during bootout. It waits for
+both the job and its exact staged process to disappear before replacing or
+removing them. User-writable binary and plist inputs are first copied to fixed
+root-owned incoming files and revalidated there before they replace any
+launchd-referenced slot. `remove` refuses to erase any synthetic-Mihomo owner
+evidence or running fixture it cannot prove safe; inspect and clean that
+evidence with the matrix's bounded cleanup first.
+
+The current guest pre-populates both TEST-NET blocks on its `en0` underlay
+(`192.0.2.0/24` and `198.51.100.0/24`), so the v2 fixture deliberately uses the
+fixed private pair `10.200.0.0/16` and synthetic IPv6 `fd00:200::/48`, which
+the guest route check confirms are absent. The run is restricted to those
+fixed desired routes, their fixed `/24` and `/64` conflict probes, and their
+fixed `/15` and `/47` covering-route probes. It never changes a default route
+or DNS. The preflight overlap guard rejects an existing route within the fixed
+`10.200.0.0/16`/`10.200.0.0/15` or `fd00:200::/48`/`fd00:200::/47` matrix
+prefixes and probes representative addresses to catch less-specific coverage
+(`10/8`, `10.128/9`, `fd00::/8`, or split-default routes). Unrelated guest
+routes such as `10.127.0.0/16` and the combined fixture's own `10.90.0.1` host
+route are not treated as collisions.
+It covers v2 discovery, normal dual-stack apply/rollback, exact and
+more-specific conflict refusal, an unknown-interface covering conflict, the
+empty/wrong/matching `--mihomo-utun` boundary, helper kill/restart recovery,
+corrupt-journal fail-closed behavior, and final route/journal/lease absence.
+Its exit trap may remove only a route it recorded with the exact fixed
+destination and interface, an exact PID it started, or the byte-identical
+corrupt journal it installed. Evidence is copied as root-owned files below
+`/Library/Application Support/KyClash/route-lab/evidence-v2`.
+
+The retained primary launchd fixture writes exactly two root-owned `0600` lines
+to `/var/tmp/kyclash-utun-lab-combined-hold.evidence`: the canonical primary
+utun name and the production-sidecar child PID. Preflight verifies both lines,
+the live launchd controller PID, the exact staged fixture command, and that the
+recorded child has that controller as its direct parent before using the
+interface.
+
+The two Go test binaries are intentionally distinct: the launchd primary is the
+`cmd/kyclash-network-sidecar` package (combined production controller/child),
+while the second carrier is built from `internal/userspace`, which contains
+`TestRealUTUNHoldForForcedTermination`. A source staging directory must contain
+both fixed names, `kyclash-utun-lab.test` and
+`kyclash-utun-mihomo-lab.test`; the preparer rejects a missing or unsigned
+second binary instead of silently running a no-tests binary.
+
+For a host-built arm64 fixture directory (under ignored `target/`), the two
+test binaries can be produced with the same locked tags:
+
+```bash
+mkdir -p target/macos-vm-lab/v2-fixture
+(cd network-sidecar && \
+  go test -c -tags='kyclash_utun kyclash_utun_lab' \
+    -o ../target/macos-vm-lab/v2-fixture/kyclash-utun-lab.test \
+    ./cmd/kyclash-network-sidecar)
+(cd network-sidecar && \
+  go test -c -tags='kyclash_utun kyclash_utun_lab' \
+    -o ../target/macos-vm-lab/v2-fixture/kyclash-utun-mihomo-lab.test \
+    ./internal/userspace)
+```
+
+Each output must be Developer ID signed for Team ID `RQUQ8Y3S9H` before it is
+copied into the guest staging directory; the preparer performs the strict
+signature, arm64, owner, and mode checks again.
+
+The pre-staged primary utun launchd fixture is intentionally left running so
+the guest remains ready for the next isolated probe; the script stops and
+checks absence of only the second synthetic utun it starts. Use the fixture
+script's explicit `remove` mode when discarding the disposable guest. The
+matrix's final-absence assertion is specifically for the fixed routes, journal,
+and XPC lease, not for an intentionally retained primary fixture.
+
+The second utun in this script is a signed synthetic carrier fixture. This
+matrix validates the root-staged signed helper and typed v2 ownership boundary,
+but it is not proof that the helper came from the installed app, nor is it
+packaged-Mihomo/live-control-API, private-service reachability, guest-reboot, or
+physical active-VPN coexistence evidence. It therefore does not by itself close
+S1.13.
+
+### v2 matrix run — 2026-07-22
+
+The refreshed signed fixtures were staged and verified in the authorized
+`VirtualMac2,1` guest with the fail-closed preparer (including bootout,
+root-owned incoming validation, and atomic replacement), then the complete
+`run` matrix passed. The redacted matrix log is retained at
+`target/macos-vm-lab/evidence/route-helper-v2-20260722/route-helper-v2-matrix.log`
+with SHA-256
+`7054e0c0cf66b73e969ea880cd8a901eb4a71f68419feb205b8587b4b8645661`; the
+synthetic owner log is beside it with SHA-256
+`9df6a2394737ae626c1effcacc7452a8403e0f4eb1630e007decb2fbba3de7dc`.
+
+Observed cases were dual-stack normal apply/rollback, exact and more-specific
+conflicts even when the interface was presented as Mihomo, unknown-interface
+covering conflict, empty/wrong/matching typed Mihomo covering classification,
+helper SIGKILL/restart recovery, corrupt-journal error 8, and final absence of
+the fixed routes, journal, and lease. The guest retained only the intentionally
+running primary `utun4` hold fixture; the synthetic `utun5` and all matrix
+routes were absent after cleanup. This closes the S1.12 v2 route-lease gate and
+advances S1.13, but does not claim packaged Mihomo live API, private-service,
+reboot, or physical coexistence evidence.
 
 ## Disposable test cycle
 
