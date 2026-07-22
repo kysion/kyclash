@@ -172,22 +172,15 @@ public-distribution enhancement rather than a current development blocker.
   production and lab Go children; and Go module, formatting, normal, race,
   vet, and shared-fixture parity gates passed. This evidence is loopback/local
   and is not a production-endpoint claim.
-- The protocol-v2 sidecar workflow is now active on every relevant change. Run
-  `29921505966` for XPC-A completed its signing, impaired-network, and Linux
-  reliability jobs, while its verification job exposed the three cancellation
-  races corrected in commit `8811dda9`. Local ordinary/race stress, the full
-  Go race suite (`-count=5`), and a 20-round loopback soak pass for that fix;
-  The latest hosted run `29923178571` passed signing, Linux impaired-network,
-  and loopback-soak jobs but its macOS verify job still failed in the hosted
-  race step; the hosted gate remains red and is not represented as green here.
-  The failure was reproduced as a low-CPU race-instrumentation timing false
-  negative in loopback health probes (not a reported data race). The workflow
-  now isolates the labserver race package, applies a `race && kyclash_race_lab`
-  test-only budget while keeping the shipped one-second probe deadline, and
-  runs benchmark/actual-child diagnostics whenever the run is not cancelled.
-  Local split `GOMAXPROCS=3` race ×5, ordinary Go tests, vet, formatting, and
-  the benchmark all pass; a replacement hosted run is required before this
-  gate can be called green.
+- The protocol-v2 sidecar workflow is active on every relevant change. GitHub
+  Actions run `29932701242` (#69) passed all four jobs: macOS verify (including
+  per-package `-race -count=5`, actual-child, benchmark, vet, reproducible
+  build, and SBOM), signed macOS bundle, Linux loopback reliability soak, and
+  Linux impaired-network matrix. The race evidence artifact is `8535377645`
+  with digest
+  `sha256:04441aecb2f2d21bd32d8e27ae0ca8ab010f7e71e9b3cce30602134cc6f82f98`.
+  The hosted CI gate is now green; it does not substitute for the still-open
+  production-feature VM/live-source aggregate gate.
 
 ## Remaining system, external, and activation gates
 

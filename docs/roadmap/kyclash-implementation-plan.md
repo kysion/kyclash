@@ -551,19 +551,14 @@ locally tested. Connect reserves before task publication; replacement
 compare-removes only the selected Arc/generation, builds off-slot, and retains
 bounded redacted old-generation evidence when replacement fails.
 The sidecar cancellation amendment is committed as `8811dda9` with local
-full-race and 20-round soak
-evidence. Hosted replacement run `29928929743` proved the benchmark and
-actual-child data-plane steps green, but the old aggregate non-lab race command
-reached its Go 600-second timeout before later compile gates, so the hosted gate
-remains open. No data-race assertion was reported. The workflow now keeps
-every package at `-race -count=5`, writes per-package evidence, runs the
-non-lab set in two bounded workers, isolates tagged labserver timing, preserves
-the shipped one-second probe deadline, and retains benchmark/actual-child
-diagnostics after a non-cancelled failure. A fresh hosted run is required
-before this gate is called green.
-Local split race ×5, ordinary tests,
-vet, formatting, and benchmark validation pass; the replacement hosted run is
-still required for a green hosted gate.
+full-race and 20-round soak evidence. GitHub Actions run `29932701242` (#69)
+then passed the complete macOS verification: per-package `-race -count=5`
+(10m19s), benchmark, actual-child, vet, reproducible build, SBOM, and signed
+bundle checks all succeeded, as did both Linux impaired-network/loopback jobs.
+The retained race evidence artifact is `8535377645` with digest
+`sha256:04441aecb2f2d21bd32d8e27ae0ca8ab010f7e71e9b3cce30602134cc6f82f98`.
+The hosted CI gate is closed; the production-feature VM aggregate remains
+independent and incomplete.
 
 The route-helper v2 lease/journal implementation and signed disposable-VM
 matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,

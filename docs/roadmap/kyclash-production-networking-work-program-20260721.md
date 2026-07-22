@@ -102,20 +102,18 @@ disposable-VM candidate and its fail-closed package classification. The first
 incomplete aggregate criterion remains S1.13.
 Overall S1 status: in progress.
 
-Hosted CI continuation (2026-07-22): the previous macOS verify failure was
-reproduced as a race-detector scheduling false negative in loopback health
-sampling on the constrained runner, not a data race. The workflow now keeps
-the shipped one-second userspace probe deadline, applies a separate
+Hosted CI continuation (2026-07-22): the replacement macOS verify run
+`29932701242` (GitHub Actions run #69) is fully successful. It keeps the
+shipped one-second userspace probe deadline, applies a separate
 `race && kyclash_race_lab` test-only budget to the isolated labserver package,
-retains all reachability/loss/order assertions, and runs benchmark plus
-actual-child evidence after a non-cancelled race failure. Local GOMAXPROCS=3
-split race ×5, ordinary tests, vet, formatting, YAML validation, and the
-benchmark pass. Hosted run `29928929743` proved benchmark and actual-child
-data-plane steps green but reached the Go 600-second timeout in the old
-aggregate non-lab race command. The replacement workflow keeps
-`-race -count=5`, uses per-package logs and two bounded non-lab workers, and
-keeps tagged labserver isolated. A fresh hosted run remains an open gate until
-its macOS verify job actually succeeds.
+retains all reachability/loss/order assertions, and uses per-package
+`-race -count=5` logs with bounded workers. macOS verify, race (10m19s),
+actual-child, benchmark, vet, reproducible-build, SBOM, signed-bundle, and
+both Linux impaired-network/loopback jobs all passed. The race evidence
+artifact is `8535377645` with digest
+`sha256:04441aecb2f2d21bd32d8e27ae0ca8ab010f7e71e9b3cce30602134cc6f82f98`.
+This closes the hosted CI gate; it does not close the remaining production
+feature VM aggregate.
 
 ### Work-package dependency chain
 
@@ -841,8 +839,9 @@ late `context.AfterFunc` deadline callback (callback join before reset), and a
 cancelled probe racing a buffered Pong (cancellation wins while consuming the
 matching Pong). Deterministic unit tests, ordinary and race stress, the full
 Go race suite (`-count=5`), and a 20-round loopback reliability soak passed.
-The replacement hosted run is `29922714543`; its result is retained as the
-next CI gate rather than inferred from the earlier run.
+Hosted run `29932701242` subsequently passed the full macOS verification,
+including the cancellation/race and actual-child steps; its evidence is
+recorded in the hosted continuation above.
 
 The consolidated short CI matrix is configured in the macOS sidecar workflow;
 stable reason-code assertions for the exercised impairments are covered locally
