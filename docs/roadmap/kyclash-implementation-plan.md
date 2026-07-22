@@ -482,13 +482,14 @@ bootstrap fixture is decoded by both languages. Actual-child tests prove
 authenticated status/shutdown and proof-mismatch termination without socket,
 route, Keychain, utun, or external network I/O.
 
-N1 progress (2026-07-21): complete. The real child validates profiles,
+N1 data-plane progress remains complete except for the reopened stdio
+protocol-v2 cancellation amendment. The real child validates profiles,
 enforces granular tunnel/carrier state order and explicit break-before-make,
-and carries encrypted payload traffic over QUIC, WSS, and TLS/TCP. The Rust
-stdio runtime proves concurrent cancellation with request correlation,
-UDP-blackhole fallback, bounded timeout/child cleanup, crash-loop backoff, and
-repeated cycles. N2A was the next incomplete evidence unit at that historical
-checkpoint; the authoritative current first incomplete criterion is S1.13.
+and carries encrypted payload traffic over QUIC, WSS, and TLS/TCP. Existing
+UDP-blackhole fail-stop, bounded timeout/child cleanup, crash-loop backoff, and
+repeated-cycle evidence remains valid. Concurrent cancellation must now pass
+the locked `kyclash-sidecar-stdio-v2-control-review-20260722.md` contract before
+it is reclaimed. The aggregate system criterion remains in progress at S1.13.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and
@@ -509,7 +510,7 @@ The route-helper v2 lease/journal implementation and signed disposable-VM
 matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,
 exact/more-specific/unknown-interface conflict refusal, explicit synthetic
 Mihomo covering classification, helper restart, corrupt-journal recovery, and
-final route/journal/lease absence. S1.13 is now the first incomplete criterion.
+final route/journal/lease absence. S1.13 is the first incomplete VM aggregate.
 Its packaged-Mihomo/live-control matrix and a separate signed App-managed
 `utun4093` GUI/lifecycle matrix pass in the disposable VM. The remaining gate
 is the production-feature Rust live-source path, private-service reachability,

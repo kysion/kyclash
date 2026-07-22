@@ -4,6 +4,11 @@ Status: approved and locked for N0/N1
 
 Date: 2026-07-21
 
+Current implementation note: this document remains the immutable protocol v1
+record. `kyclash-sidecar-stdio-v2-control-review-20260722.md` is the reviewed
+and locked successor for the current App/sidecar implementation; v1 fixtures
+are retained as historical and downgrade-rejection evidence.
+
 Amends: `kyclash-production-networking-plan-20260721.md`
 
 ## Finding

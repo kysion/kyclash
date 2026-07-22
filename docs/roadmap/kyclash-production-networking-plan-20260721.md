@@ -122,12 +122,14 @@ real userspace WireGuard integration carries bidirectional encrypted traffic
 over loopback QUIC, WSS, and TLS/TCP servers through the actual child IPC
 session.
 
-N1A through N1D are complete: strict shared data-plane contracts, the real
-userspace backend driving wireguard-go through an explicit single-carrier
-switchboard, the compatible loopback peer, concurrent cancellation, fallback,
-timeout cleanup, crash/backoff, and repeated actual-child cycles have passed
-their gates. N2A (the default-off production Rust controller) is the first
-incomplete merge unit.
+N1A through N1D were complete at this historical checkpoint: strict shared
+data-plane contracts, the real userspace backend driving wireguard-go through
+an explicit single-carrier switchboard, the compatible loopback peer,
+fallback, timeout cleanup, crash/backoff, and repeated actual-child cycles had
+passed their gates. The concurrent-cancellation subclaim is reopened by the
+locked `kyclash-sidecar-stdio-v2-control-review-20260722.md` amendment because
+protocol v1 could not legally carry that control exception. Later N2 source
+work remains valid while this atomic protocol remediation executes first.
 
 Tasks:
 

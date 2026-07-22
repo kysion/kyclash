@@ -56,7 +56,7 @@ stopping points.
 
 | Work packages | Scope | Evidence status |
 | --- | --- | --- |
-| S1.01–S1.04 | contracts, carriers, lab server, actual child | complete |
+| S1.01–S1.04 | contracts, carriers, lab server, actual child | S1.01–S1.03 complete; S1.04 reopened only for the locked stdio protocol-v2 cancellation amendment |
 | S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
 | S1.08 | reproducible signed nested sidecar and launch trust | complete; local authorized Developer ID evidence; notarization remains optional hardening |
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
@@ -67,7 +67,9 @@ stopping points.
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
-First incomplete criterion: S1.13. Overall S1 status: in progress.
+First incomplete source criterion: S1.04 protocol-v2 cancellation amendment.
+After that atomic remediation, execution resumes at the first incomplete VM
+aggregate criterion, S1.13. Overall S1 status: in progress.
 
 ### Work-package dependency chain
 
@@ -186,34 +188,19 @@ Review amendment: `kyclash-actual-child-lab-review-20260721.md` locks a
 injects ephemeral trust directly in memory. The production bootstrap and
 handshake remain unchanged and reject lab fields.
 
-Status (2026-07-21): complete. The Rust stdio runtime drives the real lab child
-through apply, prepare, QUIC/WSS/TCP connect, encrypted payload health,
-break-before-make disconnect, concurrent cancel, tunnel stop, EOF/process
-shutdown, and a UDP-blackhole timeout. Cancellation responses are correlated
-by request ID even when they arrive before the canceled operation. The timeout
-path kills and reaps the child within its deadline, and deterministic
-controller tests cover restart/crash-loop backoff. CI repeats the complete lab
-child cycle three times. Combined lab-server abort and actual-child tests leave
-no host interface, route, DNS, Keychain, external connection, or live child.
-N1A through N1D now pass together.
-
-Deliverables:
-
-- Drive the real Go executable from the Rust stdio runtime through apply,
-  prepare, QUIC connect, health, disconnect, WSS connect, TCP connect, cancel,
-  stop, and session disconnect.
-- Cover UDP-blocked fallback commands, reconnect, repeated cycles, premature
-  server exit, sidecar exit, controller timeout, and crash-loop backoff.
-
-Exit evidence:
-
-- Encrypted bidirectional WireGuard traffic passes over all three carriers.
-- Every case ends with no child and no host interface, route, DNS, Keychain, or
-  external-network change.
+Status (2026-07-22): reopened only for the locked stdio protocol v2 control
+amendment. Apply, prepare, QUIC/WSS/TCP traffic, break-before-make disconnect,
+tunnel stop, EOF/process shutdown, UDP-blackhole timeout, child reap, and
+restart/crash-loop evidence remain valid. The former concurrent-cancel claim
+used protocol-v1 framing contrary to its locked single-flight review and is not
+accepted as current evidence. S1.04 returns to complete only after the atomic
+v2 fixture, cancellation, lifecycle, and actual-child gate in
+`kyclash-sidecar-stdio-v2-control-review-20260722.md` passes.
 
 Merge unit: `test(networking): close actual-child userspace data-plane gate`.
 
-S1.01–S1.04 evidence status: complete. S1 remains in progress.
+S1.01–S1.03 evidence status: complete. S1.04 v2 cancellation amendment is the
+first incomplete source criterion; aggregate S1 remains in progress at S1.13.
 
 ### S1 work packages: production Rust controller and credential path
 
@@ -576,8 +563,10 @@ its interactive administrator session, launchd submitted the bundle-owned job.
 A Developer ID-signed lab client then completed the real privileged Mach-
 service `discover` round trip with idle state and no error; launchd reported
 the helper running with one successful exec. The v2 executor, lease, and
-crash-recovery evidence are recorded under S1.12 below; packaged Mihomo
-coexistence remains the first incomplete S1.13 criterion.
+crash-recovery evidence are recorded under S1.12 below; packaged-Mihomo
+evidence is recorded under S1.13. Its remaining production live-source,
+reachability, abort/reboot, and aggregate-cleanup cases remain the first
+incomplete VM system criterion.
 
 Deliverables:
 
@@ -752,11 +741,12 @@ fragment expiry, replay refusal, abrupt server close, and Rust-commanded
 QUIC/WSS/TCP fallback already have focused coverage. Additional bounded tests
 now cover blocked stream writes, cancelled QUIC receives, abrupt authenticated
 QUIC peer close, and twelve repeated userspace connect/disconnect cycles. The
-full Go suite and the CI-equivalent race suite pass at `-count=5`; a loopback
-soak driver is available at `network-sidecar/lab/linux/reliability-soak.sh` and
-completed ten rounds. The Rust process-level actual-child matrix also passed
-with freshly built temporary Go binaries, covering IPC health traffic,
-explicit QUIC/WSS/TCP sequencing, and cancellation. Evidence is recorded in
+prior full Go suite and CI-equivalent race suite passed at `-count=5`; a
+loopback soak driver is available at
+`network-sidecar/lab/linux/reliability-soak.sh` and completed ten rounds. The
+Rust process-level actual-child traffic and explicit QUIC/WSS/TCP sequencing
+evidence remains valid. Its concurrent-cancellation claim is reopened until
+the locked stdio protocol-v2 matrix passes. Evidence scope is recorded in
 `docs/testing/kyclash-network-reliability-20260722.md`.
 
 The production service monitor now also performs the locked runtime fallback

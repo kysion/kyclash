@@ -5,10 +5,12 @@
 The locked single S1 stage remains in progress. Its architecture, isolated
 runtime proof, development UI, credential boundary, release procedure,
 branding, documentation, CI, signed-but-unnotarized arm64 development PKG, and
-route-helper v2 evidence have passed their applicable gates through S1.12.
-S1.13 is the first incomplete criterion, so this audit must not be read as a
-terminal completion or as permission to stop continuous delivery while safe
-S1.13 work remains.
+route-helper v2 evidence have passed their applicable gates through S1.12,
+except that S1.04 concurrent-cancellation evidence is reopened for the locked
+stdio protocol-v2 amendment. S1.04 is therefore the first incomplete safe
+source criterion; after it closes, execution resumes at the incomplete S1.13
+VM aggregate. This audit is not a terminal completion or permission to stop
+continuous delivery while either body of safe work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
 route and lifecycle gates still require disposable hosts, and impaired-network
@@ -340,8 +342,8 @@ live managed TUN, final runtime absence, and original App-data restoration;
 its evidence SHA-256 is
 `1e06355753e3856e01ac3e1aaf6f18687b8a6a6cb96d41e9f84c124abd6095bd`.
 
-S1.13 remains the first incomplete criterion for production Rust live-source
-invocation, private-service reachability, app/sidecar/helper abort,
+S1.13 remains the first incomplete VM aggregate criterion for production Rust
+live-source invocation, private-service reachability, app/sidecar/helper abort,
 reboot/retry, and the aggregate foreign-state/credential cleanup gate. The
 ordinary App matrix does not substitute for the default-off production
 control path. No endpoint, release, updater activation, production

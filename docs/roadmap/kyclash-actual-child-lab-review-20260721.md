@@ -4,6 +4,11 @@ Status: approved and locked for N1D
 
 Date: 2026-07-21
 
+Current protocol amendment: the lab boundary remains locked as written, while
+its current bootstrap/IPC execution moves atomically to the narrow cancellation
+contract in `kyclash-sidecar-stdio-v2-control-review-20260722.md`. Lab trust and
+production trust remain separate; KYNP carrier framing remains v1.
+
 Amends test-harness details of:
 
 - `kyclash-dataplane-contract-review-20260721.md`
