@@ -194,6 +194,42 @@ unit test, valid signature, installed PKG, or historical screenshot cannot
 replace the current guest launch. If launch or evidence collection fails, keep
 the criterion `in progress`, fix the failure, and retry in the guest.
 
+### Preserve the guest screenshot trust boundary
+
+An SSH process is not automatically in the logged-in Aqua bootstrap and a
+plain SSH invocation of `screencapture` can fail even while the App has a real
+window. Handle that boundary explicitly:
+
+- Never replace a failed guest capture with a host screenshot of the VM window,
+  a historical guest image, a build artifact, or an Accessibility-only window
+  count.
+- Use `scripts/macos-vm-capture-visible-app.command` from the work guest's
+  `Terminal.app`. Copy it into a fresh mode-0700 evidence directory and launch
+  that exact regular file through guest LaunchServices. The script must refuse
+  non-`VirtualMac` hardware, a non-installed App path, multiple App PIDs,
+  symlinked/pre-existing output, and non-PNG or empty output.
+- Treat `launchctl bsexec` as privileged guest execution. Do not run it on the
+  host and do not pass a password through SSH, a tool call, argv, stdin, logs,
+  source, or evidence. A successful command still needs the same guest PNG
+  validation and visual inspection.
+- If macOS denies Terminal Screen Recording, open the corresponding Privacy &
+  Security pane inside `kyclash-macos-lab-work` and request the user to enable
+  only `Terminal`. Do not reset TCC, edit a TCC database, grant wider access,
+  automate the password prompt, or infer consent from an older grant. Quit and
+  reopen Terminal after the user confirms the setting, then retry into a new
+  evidence path.
+- After capture, require a newly created, guest-user-owned, mode-0600 regular
+  PNG with nonzero dimensions and SHA-256. Copy it to ignored host evidence,
+  inspect that exact file, and reject screenshots showing a TCC prompt, lock
+  screen, Terminal obstruction, or a different App candidate.
+
+The same honesty rule applies to installation. Expanding a verified PKG and
+atomically placing its exact payload in `/Applications` is useful internal App
+deployment evidence, but it is not a successful `installer(8)` transaction and
+must not be reported as receipt/upgrade proof. If guest administrator
+authorization is required, show the guest prompt for the user; never transmit
+or reuse their password programmatically.
+
 ## Report outcomes instead of defending activity
 
 - Lead every runtime update with the concrete artifact and execution target,
