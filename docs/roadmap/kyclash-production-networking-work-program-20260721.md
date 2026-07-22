@@ -57,7 +57,7 @@ stopping points.
 | Work packages | Scope | Evidence status |
 | --- | --- | --- |
 | S1.01–S1.04 | contracts, carriers, lab server, actual child | complete; the atomic stdio protocol-v2 cancellation amendment passes Rust/Go fixture, race, lifecycle, strict-wire, and actual-child gates |
-| S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete |
+| S1.05–S1.07 | production controller, policy/credentials, API/UI lifecycle | complete; the exact-envelope identity/restart amendment now also passes durable zero-write, migration, concurrency, publication, rollback, resource-boundary, and deferred-materialization gates |
 | S1.08 | reproducible signed nested sidecar and launch trust | complete; local authorized Developer ID evidence; notarization remains optional hardening |
 | S1.09 | owned real utun lifecycle | complete; signed disposable-VM evidence and encrypted traffic cleanup passed |
 | S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
@@ -67,10 +67,12 @@ stopping points.
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
-First incomplete source criterion: the locked production restart and
-rematerialization implementation required by the S1.13 exact production VM
-matrix. The first incomplete aggregate criterion remains S1.13. Overall S1
-status: in progress.
+The exact policy-identity portion of the locked production restart and
+rematerialization amendment is complete at the source boundary. The first
+incomplete source criterion is now XPC connection-generation registration and
+rematerialization, beginning with the helper accepted-connection barrier. The
+first incomplete aggregate criterion remains S1.13. Overall S1 status: in
+progress.
 
 ### Work-package dependency chain
 
@@ -246,13 +248,18 @@ Merge unit: `feat(networking): add gated production controller`.
 
 #### S1.06 — signed policy v2 and Keychain boundary (formerly N2B)
 
-Status (2026-07-21): complete. Envelope v2 signs the domain separator, key ID,
+Status (2026-07-22): complete. Envelope v2 signs the domain separator, key ID,
 algorithm, and strict payload containing `issued_at`, `expires_at`, monotonic
 revision, and the validated profile. A pinned synthetic Ed25519 test root and
 clock/revision tests reject v1, unsigned/malformed, future, expired, replayed,
-unknown-key, and tampered policies. The fail-closed revision store persists
-only schema version plus the latest revision using a private atomic file and
-refuses corruption/symlinks; injected persistence failure prevents acceptance.
+unknown-key, and tampered policies. The fail-closed identity store now persists
+only schema version, revision, exact signed-envelope SHA-256, and key ID using
+a private descriptor-relative transaction. Same-revision acceptance requires
+the exact envelope identity; v1 records remain a lower-bound floor and migrate
+only on a higher valid revision. Cross-process locking, commit-time expiry,
+zero-write restart, `NOREPLACE`/`EXCHANGE` publication, conservative rollback,
+directory/lock replacement, corruption, metadata-only change, and filesystem
+fault tests all fail closed without persisting a profile or secret.
 Credential resolution accepts only `keychain:` references. The production
 macOS store has the fixed `net.kysion.kyclash.networking` service, while the
 test service is available only to tests/keychain-lab. Missing 32-byte
@@ -302,10 +309,14 @@ navigation entry.
 
 The application composition gap is now closed with an explicit two-phase
 boundary. App setup registers only a fixed-resource provider; the
-`initialize_networking` command reads and verifies the code-signed
+`initialize_networking` command opens the durable identity transaction, reads
+and verifies the code-signed
 `resources/kyclash-networking-policy-keys.json` trust bundle and
-`resources/kyclash-networking-policy-v2.json` envelope, persists the accepted
-revision, and installs a deferred service factory. Initialization never reads
+`resources/kyclash-networking-policy-v2.json` envelope, validates every bounded
+composition resource, commits the exact accepted policy identity, and installs
+a deferred service factory. Concurrent initialization is single-flight, and an
+exact app restart neither rewrites the identity record nor materializes runtime.
+Initialization never reads
 Keychain, opens route-helper XPC, starts the Go sidecar, creates utun, or
 mutates routes. `connect_networking` is the only path that materializes that
 factory; on macOS it then resolves the fixed KyClash Keychain service, creates
@@ -338,8 +349,10 @@ Exit evidence:
 
 Merge unit: `feat(networking): wire gated production UI and lifecycle`.
 
-S1.05–S1.07 evidence status: complete; the feature remains default-off. S1
-remains in progress.
+S1.05–S1.07 evidence status: complete, including the exact-envelope durable
+identity/restart amendment; the feature remains default-off. S1 remains in
+progress at the XPC generation/rematerialization source gate required by
+S1.13.
 
 ### S1 work packages: trusted bundle and real macOS utun
 

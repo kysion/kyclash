@@ -495,8 +495,10 @@ encrypted payload traffic over QUIC, WSS, and TLS/TCP. Shared v2 fixtures,
 strict JSON and downgrade refusal, exact Connect/Health cancellation races,
 both response orders, bounded timeout/child reap, crash-loop backoff, and
 post-cancel carrier reuse pass across Rust and Go. The aggregate system
-criterion remains in progress at S1.13, with the locked production
-restart/rematerialization implementation as its next source gate.
+criterion remains in progress at S1.13. The exact policy-identity portion of
+the locked production restart/rematerialization implementation is complete;
+the helper accepted-connection barrier is now the first source gate in the XPC
+generation/rematerialization chain.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and
@@ -512,6 +514,18 @@ command verifies the app-owned signed policy/trust resources, and Connect is
 the only path that lazily materializes the Keychain, typed XPC route boundary,
 trusted Go sidecar runtime, and live Mihomo source. Missing policy resources
 fail closed and do not guess an endpoint, key, credential, or route.
+
+The restart hardening now commits a strict v2 identity containing only the
+revision, exact signed-envelope SHA-256, and key ID under a bounded
+descriptor-relative cross-process transaction. Exact restart is zero-write;
+same-revision byte changes, expiry, lower revisions, metadata/path swaps,
+concurrent writers, publication faults, and unprovable rollback fail closed.
+Legacy revision-only records migrate only on a higher authenticated revision.
+Initialization remains single-flight and installs only a deferred factory, so
+this source evidence does not claim an App launch, XPC connection, Keychain
+read, sidecar, utun, or route mutation. The next source unit is the Swift
+helper accepted-connection barrier, followed by native/Rust XPC generation
+rematerialization and typed cleanup outcomes.
 
 The route-helper v2 lease/journal implementation and signed disposable-VM
 matrix are complete for S1.12. Evidence covers dual-stack apply/rollback,

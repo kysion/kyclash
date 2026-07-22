@@ -24,31 +24,35 @@ use std::{
 };
 
 use async_trait::async_trait;
+#[cfg(any(target_os = "macos", test))]
 use ring::rand::{SecureRandom as _, SystemRandom};
 
 use super::{
-    ActiveMihomoTunSource, FilePolicyRevisionStore, MihomoTunSnapshot, NetworkErrorCode, NetworkProfile, NetworkState,
-    PolicyRevisionStore, PolicyTrustStore, ProductionControllerHandle, ProductionNetworkStatus,
-    ProductionNetworkingService, ProductionRouteBoundary, ProductionSiteSummary, SidecarLifecycleState,
-    SidecarTrustManifest, StaticActiveMihomoTunSource, XpcProductionRouteBoundary, prepare_sidecar_launch_context,
-    sidecar_auth_proof,
+    ActiveMihomoTunSource, FilePolicyIdentityStore, MihomoTunSnapshot, NetworkErrorCode, NetworkProfile, NetworkState,
+    PolicyIdentityCandidate, PolicyTrustStore, ProductionNetworkStatus, ProductionNetworkingService,
+    ProductionSiteSummary, SidecarLifecycleState, SidecarTrustManifest, StaticActiveMihomoTunSource,
 };
 
-#[cfg(all(unix, feature = "networking-production"))]
-use super::{AsyncStdioSidecarRuntime, StdioSidecarRuntime, spawn_production_controller};
 #[cfg(target_os = "macos")]
-use super::{MacOsKeychainCredentialStore, MacosActiveMihomoTunSource};
+use super::{
+    AsyncStdioSidecarRuntime, MacOsKeychainCredentialStore, MacosActiveMihomoTunSource, ProductionControllerHandle,
+    ProductionRouteBoundary, StdioSidecarRuntime, XpcProductionRouteBoundary, prepare_sidecar_launch_context,
+    sidecar_auth_proof, spawn_production_controller,
+};
 
 /// Fixed, app-owned resource names.  They are intentionally not configurable
 /// through a frontend command or an environment variable.
 pub const POLICY_RESOURCE_NAME: &str = "kyclash-networking-policy-v2.json";
 pub const POLICY_TRUST_RESOURCE_NAME: &str = "kyclash-networking-policy-keys.json";
+const POLICY_RESOURCE_MAX_BYTES: usize = 64 * 1024;
+const POLICY_TRUST_RESOURCE_MAX_BYTES: usize = 64 * 1024;
+const SIDECAR_TRUST_RESOURCE_MAX_BYTES: usize = 16 * 1024;
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const SIDECAR_TRUST_RESOURCE_NAME: &str = "kyclash-network-sidecar-aarch64-apple-darwin.trust.json";
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const SIDECAR_TRUST_RESOURCE_NAME: &str = "kyclash-network-sidecar-x86_64-apple-darwin.trust.json";
-#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[cfg(not(all(target_os = "macos", any(target_arch = "aarch64", target_arch = "x86_64"))))]
 const SIDECAR_TRUST_RESOURCE_NAME: &str = "kyclash-network-sidecar-unsupported.trust.json";
 
 const SIDECAR_RESOURCE_NAME: &str = "kyclash-network-sidecar";
@@ -258,6 +262,7 @@ impl ProductionServiceFactory for DeferredProductionServiceFactory {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn random_instance_id(seed: &[u8]) -> Result<String, NetworkErrorCode> {
     if seed.len() != 32 {
         return Err(NetworkErrorCode::InvalidConfiguration);
@@ -279,19 +284,23 @@ fn random_instance_id(seed: &[u8]) -> Result<String, NetworkErrorCode> {
 #[derive(Debug, Clone)]
 pub struct BundleProductionInitializationProvider {
     resource_dir: PathBuf,
-    revision_path: PathBuf,
+    app_data_dir: PathBuf,
     now: Option<u64>,
+    #[cfg(test)]
+    fail_after_configuration: bool,
 }
 
 impl BundleProductionInitializationProvider {
-    pub fn new(resource_dir: PathBuf, revision_path: PathBuf) -> Result<Self, NetworkErrorCode> {
-        if !resource_dir.is_absolute() || !revision_path.is_absolute() {
+    pub fn new(resource_dir: PathBuf, app_data_dir: PathBuf) -> Result<Self, NetworkErrorCode> {
+        if !resource_dir.is_absolute() || !app_data_dir.is_absolute() {
             return Err(NetworkErrorCode::InvalidConfiguration);
         }
         Ok(Self {
             resource_dir,
-            revision_path,
+            app_data_dir,
             now: None,
+            #[cfg(test)]
+            fail_after_configuration: false,
         })
     }
 
@@ -302,62 +311,66 @@ impl BundleProductionInitializationProvider {
         self
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub const fn with_composition_failure(mut self) -> Self {
+        self.fail_after_configuration = true;
+        self
+    }
+
     fn initialize_sync(&self) -> Result<Arc<dyn ProductionServiceFactory>, NetworkErrorCode> {
         let resources = self.resource_dir.join("resources");
-        let trust_bytes = read_owned_resource(&resources.join(POLICY_TRUST_RESOURCE_NAME))?;
-        let policy_bytes = read_owned_resource(&resources.join(POLICY_RESOURCE_NAME))?;
-        // Parse all immutable bundle metadata before touching the replay
-        // revision store. A malformed trust manifest must not consume a valid
-        // policy revision and brick the next retry.
-        let manifest_bytes = read_owned_resource(&resources.join(SIDECAR_TRUST_RESOURCE_NAME))?;
+        let store = FilePolicyIdentityStore::new(self.app_data_dir.clone())?;
+        // The cross-process lock and durable snapshot precede authentication.
+        // It remains held across every immutable composition check and the
+        // commit-time freshness/snapshot recheck.
+        let mut transaction = store.begin()?;
+        let now = self.now.unwrap_or_else(unix_now);
+        let trust_bytes = read_owned_resource(
+            &resources.join(POLICY_TRUST_RESOURCE_NAME),
+            POLICY_TRUST_RESOURCE_MAX_BYTES,
+        )?;
+        let policy_bytes = read_owned_resource(&resources.join(POLICY_RESOURCE_NAME), POLICY_RESOURCE_MAX_BYTES)?;
+        let trust = PolicyTrustStore::from_json(&trust_bytes)?;
+        let verified = trust.verify(&policy_bytes, now)?;
+        let candidate = PolicyIdentityCandidate::new(
+            verified.revision,
+            verified.envelope_sha256.clone(),
+            verified.key_id.clone(),
+            verified.issued_at,
+            verified.expires_at,
+        )?;
+        if transaction.classify(candidate, now)? == super::PolicyIdentityDecision::Reject {
+            return Err(NetworkErrorCode::PolicySignatureInvalid);
+        }
+
+        // Parse every remaining immutable composition input before allowing
+        // the classified identity to commit. A malformed manifest or final
+        // configuration leaves both legacy and v2 snapshots untouched.
+        let manifest_bytes = read_owned_resource(
+            &resources.join(SIDECAR_TRUST_RESOURCE_NAME),
+            SIDECAR_TRUST_RESOURCE_MAX_BYTES,
+        )?;
         let manifest: SidecarTrustManifest =
             serde_json::from_slice(&manifest_bytes).map_err(|_| NetworkErrorCode::AuthenticationFailed)?;
         validate_trust_metadata(&manifest)?;
-        let trust = PolicyTrustStore::from_json(&trust_bytes)?;
-        let mut revisions = FilePolicyRevisionStore::new(self.revision_path.clone())?;
-        let now = self.now.unwrap_or_else(unix_now);
-        // Stage the revision until every non-secret composition input has
-        // passed validation. The real file store is written only after the
-        // factory configuration is complete.
-        let mut staged = StagedRevisionStore {
-            backing: &revisions,
-            pending: None,
-        };
-        let verified = trust.verify(&policy_bytes, now, &mut staged)?;
         let configuration = VerifiedProductionConfiguration::new(
-            verified.profile,
+            verified.profile.clone(),
             verified.revision,
             self.resource_dir.join(SIDECAR_RESOURCE_NAME),
             manifest,
         )?;
-        let accepted_revision = staged.pending.ok_or(NetworkErrorCode::PolicySignatureInvalid)?;
-        revisions.store(accepted_revision)?;
+        #[cfg(test)]
+        if self.fail_after_configuration {
+            return Err(NetworkErrorCode::InvalidConfiguration);
+        }
+        let commit_now = self.now.unwrap_or_else(unix_now);
+        verified.validate_at(commit_now)?;
+        transaction.commit(commit_now)?;
         let factory = DeferredProductionServiceFactory::new(configuration);
         #[cfg(all(target_os = "macos", feature = "networking-production"))]
         let factory = factory.with_mihomo_source(Arc::new(MacosActiveMihomoTunSource));
         Ok(Arc::new(factory))
-    }
-}
-
-/// A transactional adapter around the durable revision store. Policy
-/// verification can validate replay/freshness against the existing value and
-/// record the candidate revision, while the provider delays the actual write
-/// until the sidecar manifest and profile composition have also passed.
-struct StagedRevisionStore<'a> {
-    backing: &'a dyn PolicyRevisionStore,
-    pending: Option<u64>,
-}
-
-impl PolicyRevisionStore for StagedRevisionStore<'_> {
-    fn latest(&self) -> Result<Option<u64>, NetworkErrorCode> {
-        self.backing.latest()
-    }
-
-    fn store(&mut self, revision: u64) -> Result<(), NetworkErrorCode> {
-        if self.pending.replace(revision).is_some() {
-            return Err(NetworkErrorCode::PolicySignatureInvalid);
-        }
-        Ok(())
     }
 }
 
@@ -371,7 +384,18 @@ impl ProductionInitializationProvider for BundleProductionInitializationProvider
     }
 }
 
-fn read_owned_resource(path: &Path) -> Result<Vec<u8>, NetworkErrorCode> {
+fn read_owned_resource(path: &Path, maximum_bytes: usize) -> Result<Vec<u8>, NetworkErrorCode> {
+    read_owned_resource_with_hook(path, maximum_bytes, || Ok(()))
+}
+
+fn read_owned_resource_with_hook<F>(
+    path: &Path,
+    maximum_bytes: usize,
+    after_initial_stat: F,
+) -> Result<Vec<u8>, NetworkErrorCode>
+where
+    F: FnOnce() -> Result<(), NetworkErrorCode>,
+{
     // Open the final path without following a symlink.  The bundle is an
     // app-owned trust boundary: a metadata check followed by `fs::read` has
     // a replace-between-check-and-use window in which a writable resource
@@ -383,20 +407,49 @@ fn read_owned_resource(path: &Path) -> Result<Vec<u8>, NetworkErrorCode> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        // O_NONBLOCK prevents an attacker-controlled FIFO/device replacement
+        // from hanging initialization before descriptor-type validation.
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let mut file = options.open(path).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
-    if !file
-        .metadata()
-        .map_err(|_| NetworkErrorCode::InvalidConfiguration)?
-        .is_file()
-    {
+    let before = file.metadata().map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    let expected_len = usize::try_from(before.len()).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    if !before.is_file() || expected_len == 0 || expected_len > maximum_bytes {
         return Err(NetworkErrorCode::InvalidConfiguration);
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    after_initial_stat()?;
+    let mut bytes = Vec::with_capacity(expected_len);
+    (&mut file)
+        .take((maximum_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
         .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    let after = file.metadata().map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    if bytes.len() != expected_len || bytes.len() > maximum_bytes || !same_resource_snapshot(&before, &after) {
+        return Err(NetworkErrorCode::InvalidConfiguration);
+    }
     Ok(bytes)
+}
+
+#[cfg(unix)]
+fn same_resource_snapshot(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.len() == after.len()
+        && before.mtime() == after.mtime()
+        && before.mtime_nsec() == after.mtime_nsec()
+        && before.ctime() == after.ctime()
+        && before.ctime_nsec() == after.ctime_nsec()
+}
+
+#[cfg(not(unix))]
+fn same_resource_snapshot(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    before.len() == after.len()
+        && matches!(
+            (before.modified(), after.modified()),
+            (Ok(before_modified), Ok(after_modified)) if before_modified == after_modified
+        )
 }
 
 fn unix_now() -> u64 {
@@ -405,12 +458,132 @@ fn unix_now() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
+#[cfg(all(test, unix))]
+pub(crate) use tests::{signed_policy as signed_test_policy, write_bundle_resources as write_test_bundle_resources};
+
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[cfg(unix)]
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    #[cfg(unix)]
+    use ring::signature::{Ed25519KeyPair, KeyPair as _};
+
     use super::*;
+
+    #[cfg(unix)]
+    const TEST_POLICY_SEED: [u8; 32] = [
+        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c, 0xc4, 0x44, 0x49,
+        0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60,
+    ];
+
+    #[cfg(unix)]
+    fn policy_signing_message(key_id: &str, algorithm: &str, payload: &[u8]) -> Vec<u8> {
+        let mut message = b"kyclash-policy-envelope-v2\0".to_vec();
+        message.extend_from_slice(key_id.as_bytes());
+        message.push(0);
+        message.extend_from_slice(algorithm.as_bytes());
+        message.push(0);
+        message.extend_from_slice(payload);
+        message
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn signed_policy(
+        revision: u64,
+        issued_at: u64,
+        expires_at: u64,
+    ) -> anyhow::Result<(crate::networking::SignedNetworkPolicyEnvelope, Vec<u8>)> {
+        signed_policy_with_profile(
+            revision,
+            issued_at,
+            expires_at,
+            "policy.test",
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-v1.valid.json"))?,
+        )
+    }
+
+    #[cfg(unix)]
+    fn signed_policy_with_profile(
+        revision: u64,
+        issued_at: u64,
+        expires_at: u64,
+        key_id: &str,
+        profile: NetworkProfile,
+    ) -> anyhow::Result<(crate::networking::SignedNetworkPolicyEnvelope, Vec<u8>)> {
+        let pair = Ed25519KeyPair::from_seed_unchecked(&TEST_POLICY_SEED)
+            .map_err(|_| anyhow::anyhow!("decode test policy key"))?;
+        let payload = crate::networking::SignedNetworkPolicyPayload {
+            issued_at,
+            expires_at,
+            revision,
+            profile,
+        };
+        let payload_bytes = serde_json::to_vec(&payload)?;
+        let envelope = crate::networking::SignedNetworkPolicyEnvelope {
+            envelope_version: 2,
+            key_id: key_id.into(),
+            algorithm: "ed25519".into(),
+            payload_base64: STANDARD.encode(&payload_bytes),
+            signature_base64: STANDARD.encode(
+                pair.sign(&policy_signing_message(key_id, "ed25519", &payload_bytes))
+                    .as_ref(),
+            ),
+        };
+        Ok((envelope, pair.public_key().as_ref().to_vec()))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn write_bundle_resources(
+        resource_dir: &Path,
+        envelope: &crate::networking::SignedNetworkPolicyEnvelope,
+        public_key: &[u8],
+        pretty_policy: bool,
+    ) -> anyhow::Result<()> {
+        let resources = resource_dir.join("resources");
+        fs::create_dir_all(&resources)?;
+        let trust = serde_json::json!({
+            "schema_version": 1,
+            "keys": [{
+                "key_id": envelope.key_id.clone(),
+                "public_key_base64": STANDARD.encode(public_key),
+            }],
+        });
+        fs::write(resources.join(POLICY_TRUST_RESOURCE_NAME), serde_json::to_vec(&trust)?)?;
+        fs::write(
+            resources.join(POLICY_RESOURCE_NAME),
+            if pretty_policy {
+                serde_json::to_vec_pretty(envelope)?
+            } else {
+                serde_json::to_vec(envelope)?
+            },
+        )?;
+        let manifest = SidecarTrustManifest {
+            schema_version: 1,
+            sha256: "a".repeat(64),
+            architecture: "arm64".into(),
+            team_id: "RQUQ8Y3S9H".into(),
+            designated_requirement: "identifier \"net.kysion.kyclash.network-sidecar\"".into(),
+        };
+        fs::write(
+            resources.join(SIDECAR_TRUST_RESOURCE_NAME),
+            serde_json::to_vec(&manifest)?,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn provider(
+        resource_dir: PathBuf,
+        app_data_dir: PathBuf,
+        now: u64,
+    ) -> anyhow::Result<BundleProductionInitializationProvider> {
+        BundleProductionInitializationProvider::new(resource_dir, app_data_dir)
+            .map(|provider| provider.with_now(now))
+            .map_err(|error| anyhow::anyhow!("{error:?}"))
+    }
 
     #[test]
     fn configuration_rejects_relative_sidecar_and_invalid_identity() -> anyhow::Result<()> {
@@ -500,14 +673,16 @@ mod tests {
         assert_eq!(builds.load(Ordering::SeqCst), 0);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn missing_bundle_resources_fail_closed_without_materialization_or_revision_write() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
         let resource_dir = directory.path().join("KyClash.app/Contents/Resources");
         fs::create_dir_all(&resource_dir)?;
-        let revision_path = directory.path().join("app-data/networking/policy-revision.json");
-        let provider = BundleProductionInitializationProvider::new(resource_dir, revision_path.clone())
-            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let app_data_dir = directory.path().join("app-data");
+        fs::create_dir(&app_data_dir)?;
+        let revision_path = app_data_dir.join("networking/policy-revision.json");
+        let provider = provider(resource_dir, app_data_dir, 150)?;
         assert_eq!(
             provider.initialize().await.err(),
             Some(NetworkErrorCode::InvalidConfiguration)
@@ -516,23 +691,267 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn malformed_sidecar_manifest_is_reported_before_policy_revision_commit() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
         let resource_dir = directory.path().join("KyClash.app/Contents/Resources");
         let resources = resource_dir.join("resources");
-        fs::create_dir_all(&resources)?;
-        fs::write(resources.join(POLICY_TRUST_RESOURCE_NAME), br"{}")?;
-        fs::write(resources.join(POLICY_RESOURCE_NAME), br"{}")?;
+        let (envelope, public_key) = signed_policy(42, 100, 200)?;
+        write_bundle_resources(&resource_dir, &envelope, &public_key, false)?;
         fs::write(resources.join(SIDECAR_TRUST_RESOURCE_NAME), br"{")?;
-        let revision_path = directory.path().join("app-data/networking/policy-revision.json");
-        let provider = BundleProductionInitializationProvider::new(resource_dir, revision_path.clone())
-            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let app_data_dir = directory.path().join("app-data");
+        fs::create_dir(&app_data_dir)?;
+        let revision_path = app_data_dir.join("networking/policy-revision.json");
+        let provider = provider(resource_dir, app_data_dir, 150)?;
         assert_eq!(
             provider.initialize().await.err(),
             Some(NetworkErrorCode::AuthenticationFailed)
         );
         assert!(!revision_path.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_restart_accepts_exact_policy_identity_without_rewrite_or_runtime_materialization() -> anyhow::Result<()>
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let resource_dir = directory.path().join("KyClash.app/Contents/Resources");
+        let app_data_dir = directory.path().join("app-data");
+        fs::create_dir(&app_data_dir)?;
+        let (envelope, public_key) = signed_policy(42, 100, 200)?;
+        write_bundle_resources(&resource_dir, &envelope, &public_key, false)?;
+
+        let first = provider(resource_dir.clone(), app_data_dir.clone(), 150)?
+            .initialize()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(first.initial_status().state, NetworkState::Disconnected);
+        let record_path = app_data_dir.join("networking/policy-revision.json");
+        let before_bytes = fs::read(&record_path)?;
+        let before = fs::metadata(&record_path)?;
+
+        let restarted = provider(resource_dir, app_data_dir, 151)?
+            .initialize()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(restarted.initial_status().state, NetworkState::Disconnected);
+        let after = fs::metadata(&record_path)?;
+        assert_eq!(fs::read(&record_path)?, before_bytes);
+        assert_eq!(after.ino(), before.ino());
+        assert_eq!(after.mtime(), before.mtime());
+        assert_eq!(after.mtime_nsec(), before.mtime_nsec());
+
+        let record: serde_json::Value = serde_json::from_slice(&before_bytes)?;
+        let keys = record
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("identity record object"))?
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            ["envelope_sha256", "key_id", "revision", "schema_version"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        );
+        let encoded = String::from_utf8(before_bytes)?;
+        for forbidden in [
+            "profile",
+            "endpoint",
+            "identity_ref",
+            "signature",
+            "private",
+            "keychain:",
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn same_revision_whitespace_change_and_expired_exact_restart_fail_without_mutation() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let resource_dir = directory.path().join("KyClash.app/Contents/Resources");
+        let app_data_dir = directory.path().join("app-data");
+        fs::create_dir(&app_data_dir)?;
+        let (envelope, public_key) = signed_policy(42, 100, 200)?;
+        write_bundle_resources(&resource_dir, &envelope, &public_key, false)?;
+        provider(resource_dir.clone(), app_data_dir.clone(), 150)?
+            .initialize()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let record_path = app_data_dir.join("networking/policy-revision.json");
+        let accepted = fs::read(&record_path)?;
+
+        write_bundle_resources(&resource_dir, &envelope, &public_key, true)?;
+        assert_eq!(
+            provider(resource_dir.clone(), app_data_dir.clone(), 151)?
+                .initialize()
+                .await
+                .err(),
+            Some(NetworkErrorCode::PolicySignatureInvalid)
+        );
+        assert_eq!(fs::read(&record_path)?, accepted);
+
+        write_bundle_resources(&resource_dir, &envelope, &public_key, false)?;
+        assert_eq!(
+            provider(resource_dir, app_data_dir, 200)?.initialize().await.err(),
+            Some(NetworkErrorCode::PolicySignatureInvalid)
+        );
+        assert_eq!(fs::read(&record_path)?, accepted);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_rejects_all_same_revision_identity_changes_and_lower_then_accepts_higher() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let resource_dir = directory.path().join("KyClash.app/Contents/Resources");
+        let resources = resource_dir.join("resources");
+        let policy_path = resources.join(POLICY_RESOURCE_NAME);
+        let app_data_dir = directory.path().join("app-data");
+        fs::create_dir(&app_data_dir)?;
+        let (original, public_key) = signed_policy(42, 100, 200)?;
+        write_bundle_resources(&resource_dir, &original, &public_key, false)?;
+        provider(resource_dir.clone(), app_data_dir.clone(), 150)?
+            .initialize()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let record_path = app_data_dir.join("networking/policy-revision.json");
+        let accepted = fs::read(&record_path)?;
+
+        let reordered = format!(
+            "{{\"signature_base64\":{},\"payload_base64\":{},\"algorithm\":{},\"key_id\":{},\"envelope_version\":{}}}",
+            serde_json::to_string(&original.signature_base64)?,
+            serde_json::to_string(&original.payload_base64)?,
+            serde_json::to_string(&original.algorithm)?,
+            serde_json::to_string(&original.key_id)?,
+            original.envelope_version,
+        );
+        fs::write(&policy_path, reordered)?;
+        assert_eq!(
+            provider(resource_dir.clone(), app_data_dir.clone(), 151)?
+                .initialize()
+                .await
+                .err(),
+            Some(NetworkErrorCode::PolicySignatureInvalid)
+        );
+        assert_eq!(fs::read(&record_path)?, accepted);
+
+        let profile: NetworkProfile =
+            serde_json::from_str(include_str!("../../../schemas/fixtures/network-v1.valid.json"))?;
+        let (rotated_key, rotated_public) =
+            signed_policy_with_profile(42, 100, 200, "policy.rotated", profile.clone())?;
+        write_bundle_resources(&resource_dir, &rotated_key, &rotated_public, false)?;
+        assert_eq!(
+            provider(resource_dir.clone(), app_data_dir.clone(), 151)?
+                .initialize()
+                .await
+                .err(),
+            Some(NetworkErrorCode::PolicySignatureInvalid)
+        );
+        assert_eq!(fs::read(&record_path)?, accepted);
+
+        let mut changed_profile = profile;
+        changed_profile.site.display_name = "Changed Site".into();
+        let (changed_payload, changed_public) =
+            signed_policy_with_profile(42, 100, 200, "policy.test", changed_profile)?;
+        write_bundle_resources(&resource_dir, &changed_payload, &changed_public, false)?;
+        assert_eq!(
+            provider(resource_dir.clone(), app_data_dir.clone(), 151)?
+                .initialize()
+                .await
+                .err(),
+            Some(NetworkErrorCode::PolicySignatureInvalid)
+        );
+        assert_eq!(fs::read(&record_path)?, accepted);
+
+        let mut changed_signature = original.clone();
+        let replacement = if changed_signature.signature_base64.starts_with('A') {
+            "B"
+        } else {
+            "A"
+        };
+        changed_signature.signature_base64.replace_range(..1, replacement);
+        write_bundle_resources(&resource_dir, &changed_signature, &public_key, false)?;
+        assert_eq!(
+            provider(resource_dir.clone(), app_data_dir.clone(), 151)?
+                .initialize()
+                .await
+                .err(),
+            Some(NetworkErrorCode::PolicySignatureInvalid)
+        );
+        assert_eq!(fs::read(&record_path)?, accepted);
+
+        let (lower, lower_public) = signed_policy(41, 100, 200)?;
+        write_bundle_resources(&resource_dir, &lower, &lower_public, false)?;
+        assert_eq!(
+            provider(resource_dir.clone(), app_data_dir.clone(), 151)?
+                .initialize()
+                .await
+                .err(),
+            Some(NetworkErrorCode::PolicySignatureInvalid)
+        );
+        assert_eq!(fs::read(&record_path)?, accepted);
+
+        let (higher, higher_public) = signed_policy(43, 100, 200)?;
+        write_bundle_resources(&resource_dir, &higher, &higher_public, false)?;
+        let factory = provider(resource_dir, app_data_dir, 151)?
+            .initialize()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(factory.initial_status().state, NetworkState::Disconnected);
+        let advanced: serde_json::Value = serde_json::from_slice(&fs::read(&record_path)?)?;
+        assert_eq!(advanced["revision"], 43);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manifest_and_final_composition_failures_preserve_legacy_and_v2_records() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        for durable_version in [1_u8, 2] {
+            for failure in ["manifest", "composition"] {
+                let directory = tempfile::tempdir()?;
+                let resource_dir = directory.path().join("KyClash.app/Contents/Resources");
+                let app_data_dir = directory.path().join("app-data");
+                fs::create_dir(&app_data_dir)?;
+                let (accepted_policy, public_key) = signed_policy(42, 100, 200)?;
+                write_bundle_resources(&resource_dir, &accepted_policy, &public_key, false)?;
+                let record_path = app_data_dir.join("networking/policy-revision.json");
+                if durable_version == 1 {
+                    fs::create_dir(app_data_dir.join("networking"))?;
+                    fs::set_permissions(app_data_dir.join("networking"), fs::Permissions::from_mode(0o700))?;
+                    fs::write(&record_path, br#"{"schema_version":1,"revision":42}"#)?;
+                    fs::set_permissions(&record_path, fs::Permissions::from_mode(0o600))?;
+                } else {
+                    provider(resource_dir.clone(), app_data_dir.clone(), 150)?
+                        .initialize()
+                        .await
+                        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+                }
+                let before = fs::read(&record_path)?;
+                let (higher, higher_public) = signed_policy(43, 100, 200)?;
+                write_bundle_resources(&resource_dir, &higher, &higher_public, false)?;
+                let mut failing = provider(resource_dir.clone(), app_data_dir.clone(), 151)?;
+                let expected = if failure == "manifest" {
+                    fs::write(resource_dir.join("resources").join(SIDECAR_TRUST_RESOURCE_NAME), br"{")?;
+                    NetworkErrorCode::AuthenticationFailed
+                } else {
+                    failing = failing.with_composition_failure();
+                    NetworkErrorCode::InvalidConfiguration
+                };
+                assert_eq!(failing.initialize().await.err(), Some(expected));
+                assert_eq!(fs::read(&record_path)?, before);
+            }
+        }
         Ok(())
     }
 
@@ -548,13 +967,62 @@ mod tests {
         symlink(&regular, &link)?;
 
         assert_eq!(
-            read_owned_resource(&regular).map_err(|error| anyhow::anyhow!("{error:?}"))?,
+            read_owned_resource(&regular, 16).map_err(|error| anyhow::anyhow!("{error:?}"))?,
             b"{}".to_vec()
         );
         assert_eq!(
-            read_owned_resource(&link).err(),
+            read_owned_resource(&link, 16).err(),
             Some(NetworkErrorCode::InvalidConfiguration)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn owned_resource_read_rejects_empty_and_oversized_files() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("resource.json");
+        fs::write(&path, b"")?;
+        assert_eq!(
+            read_owned_resource(&path, 16).err(),
+            Some(NetworkErrorCode::InvalidConfiguration)
+        );
+        fs::write(&path, [0x41; 17])?;
+        assert_eq!(
+            read_owned_resource(&path, 16).err(),
+            Some(NetworkErrorCode::InvalidConfiguration)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn each_owned_resource_limit_rejects_empty_oversize_and_changed_during_read() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        for (name, maximum) in [
+            (POLICY_RESOURCE_NAME, POLICY_RESOURCE_MAX_BYTES),
+            (POLICY_TRUST_RESOURCE_NAME, POLICY_TRUST_RESOURCE_MAX_BYTES),
+            (SIDECAR_TRUST_RESOURCE_NAME, SIDECAR_TRUST_RESOURCE_MAX_BYTES),
+        ] {
+            let path = directory.path().join(name);
+            fs::write(&path, b"")?;
+            assert_eq!(
+                read_owned_resource(&path, maximum),
+                Err(NetworkErrorCode::InvalidConfiguration)
+            );
+            fs::write(&path, vec![b'x'; maximum + 1])?;
+            assert_eq!(
+                read_owned_resource(&path, maximum),
+                Err(NetworkErrorCode::InvalidConfiguration)
+            );
+            fs::write(&path, b"0123456789abcdef")?;
+            let changed_path = path.clone();
+            assert_eq!(
+                read_owned_resource_with_hook(&path, maximum, move || {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    fs::write(changed_path, b"fedcba9876543210").map_err(|_| NetworkErrorCode::InvalidConfiguration)
+                }),
+                Err(NetworkErrorCode::InvalidConfiguration)
+            );
+        }
         Ok(())
     }
 }

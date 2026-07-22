@@ -9,6 +9,8 @@ mod mock;
 mod mock_control;
 mod operation;
 mod policy;
+#[cfg(feature = "networking-production")]
+mod policy_identity_store;
 #[cfg(feature = "networking-dev")]
 mod process_runtime;
 #[cfg(feature = "networking-production")]
@@ -28,6 +30,8 @@ mod sidecar_trust;
 mod state;
 mod stdio_runtime;
 
+#[cfg(feature = "networking-production")]
+pub use self::policy_identity_store::*;
 #[cfg(feature = "networking-dev")]
 pub use self::process_runtime::*;
 #[cfg(feature = "networking-production")]

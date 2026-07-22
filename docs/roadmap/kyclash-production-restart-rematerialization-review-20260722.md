@@ -1,6 +1,7 @@
 # KyClash production restart and rematerialization review
 
-Status: approved and locked
+Status: approved and locked; policy-store publication amendment re-reviewed and
+re-locked on 2026-07-22
 
 Date: 2026-07-22
 
@@ -61,9 +62,9 @@ App-data descriptor. There is no path-based `create_dir_all` and no recursive
 creation of an untrusted ancestor.
 
 The transaction then pins the revision-store parent leaf's device and inode.
-Every lock, record, temporary, rename, unlink, and directory-sync operation is
-descriptor-relative (`openat`, `renameat`, `unlinkat`, `fsync`) through that one
-leaf descriptor. The path is re-opened relative to the pinned App-data
+Every lock, record, temporary, rename, and directory-sync operation is
+descriptor-relative (`openat`, `renameat`, `fsync`) through that one leaf
+descriptor. The path is re-opened relative to the pinned App-data
 descriptor and compared to the pinned device/inode before classification and
 before reporting commit, so parent replacement fails closed rather than
 creating a second lock domain.
@@ -129,11 +130,88 @@ revision floor. Because it has no digest or key ID, equality cannot be proven:
   identity record; and
 - v1 is never rewritten merely by reading or by a rejected candidate.
 
-For `new`, `advance`, or legacy migration, the store uses a create-new private
-temporary regular file, writes only the strict v2 record, syncs it, performs an
-atomic rename, then syncs the parent directory before reporting success. It
-removes only its exact temporary path on failure. The destination and parent
-are revalidated against symlink/non-directory replacement at each boundary.
+### Publication, rollback, and retained private records
+
+For `new`, `advance`, or legacy migration, the store creates a randomized
+create-new name under the pinned `networking` descriptor. The name includes
+128 bits of system entropy and is opened with `O_EXCL | O_NOFOLLOW`; the file
+must be an effective-user-owned, single-link regular file with mode exactly
+`0600`. KyClash writes only the bounded strict v2 identity record, syncs the
+descriptor, and reopens the name to prove its inode and exact bytes immediately
+before publication.
+
+A `new` publication uses the descriptor-relative no-replace rename primitive.
+It cannot overwrite an entry that appeared at the fixed active-record name. An
+`advance` or v1 migration uses the descriptor-relative atomic exchange
+primitive: the candidate becomes `policy-revision.json` and the exact previous
+active inode becomes a retired record at the randomized temporary name. The
+complete retained snapshot, including ctime, is compared immediately before
+publication. Because the exchange itself legitimately changes the old inode's
+ctime, post-exchange proof deliberately compares only its stable identity
+fields (device, inode, length, and mtime), private-file shape, and exact retained
+bytes; ctime equality after an exchange is neither expected nor accepted as an
+integrity requirement. Before the transaction can report success, it also
+proves the active name still refers to the exact candidate inode and bytes,
+syncs the pinned directory, then repeats active-record and attachment checks.
+
+`policy-revision.json` is the sole authoritative identity input. A retained
+temporary orphan, an exchanged retired record, or a rollback quarantine is
+never enumerated, parsed, promoted, or used as a revision floor. Normal
+content-bearing store-created orphans and retired records are randomized,
+effective-user-owned, single-link `0600` regular files of at most 4 KiB. A
+create/permission failure may retain only an unwritten randomly named entry
+created with requested mode `0600`; no application data is written until exact
+private-file validation passes. A quarantine produced after detected pathname
+substitution is untrusted, may contain attacker-controlled content, and is not
+treated as a private regular record. KyClash never writes a profile, endpoint
+credential, private key, Keychain value, signature bytes, decoded WireGuard
+key, or any other secret to any of these files; its own retained files contain
+identity metadata only.
+
+If either immediate post-publication proof fails, rollback is conservative:
+
+- after an exchange, it attempts one atomic exchange back, syncs the directory,
+  and accepts rollback only after the prior active file's stable identity
+  fields, private-file shape, and exact bytes are again proven at the active
+  name. The rollback exchange also legitimately changes ctime, so rollback does
+  not compare it to the pre-exchange ctime;
+- after a fresh publication, it moves the suspect active entry to a new
+  no-replace randomized quarantine name, syncs the directory, and accepts
+  rollback only after the active name is proven absent; and
+- any exchange, quarantine, sync, or proof failure leaves the outcome
+  unresolved and returns a fail-closed error. It never reports the candidate as
+  committed and never guesses which pathname is safe to delete.
+
+Once the immediate candidate and retired-record proofs succeed, a later
+directory-sync, attachment, or final active-record report-boundary failure also
+returns an error without a blind compensating rename or unlink. The next
+transaction must reacquire the named lock and classify a fresh authoritative
+active-record snapshot; the failed attempt itself conveys no acceptance. This
+permits recovery from an uncertain durability result without risking deletion
+or replacement of an entry that changed after the last proof.
+
+The transaction intentionally performs no orphan or retired-record cleanup.
+Portable POSIX APIs provide no operation that both compares a pathname to a
+previously verified inode and unlinks that same object atomically. An
+`fstat`/`unlinkat` sequence would reintroduce a same-UID pathname-substitution
+race and could delete an entry the transaction did not create. Retaining the
+randomized ignored record is therefore the fail-closed choice. Any retention
+limit or cleanup procedure is a separately reviewed maintenance design; it
+must use an OS-specific descriptor-safe deletion proof and must not run inside
+the identity transaction.
+
+The locked threat boundary is explicit. The private directory, descriptor
+pinning, exact snapshots, advisory lock, no-replace/exchange publication,
+post-publication verification, and proven rollback detect corruption and
+uncooperative same-UID changes at their defined checkpoints. POSIX advisory
+locking cannot exclude a malicious process already running as the same
+effective UID, and there is no claim of uninterrupted protection against that
+process replacing a name between adjacent syscalls. Compromise of the user
+account or arbitrary same-UID code execution is outside this store's security
+boundary. The implementation must nevertheless fail closed whenever a
+checkpoint observes replacement and must not weaken any check on the theory
+that the same-UID case is out of scope.
+
 Tests must also prove that a failed manifest/composition step or commit-time
 snapshot change does not advance or migrate the durable identity.
 
@@ -347,8 +425,28 @@ reread a client private key outside its fixed Keychain reference.
 - corrupt, unknown, symlinked, hard-linked, wrong-owner/mode, directory,
   permission-failed, lock-timeout, interrupted write, rename, and parent-sync
   failures fail closed;
+- fresh publication refuses an occupied active name, while advance and v1
+  migration atomically exchange the exact candidate and prior inode; tests
+  prove the complete snapshot immediately before exchange, then prove the
+  active candidate plus the retired record's stable device, inode, length,
+  mtime, private-file shape, and exact bytes after exchange without requiring
+  unchanged ctime;
+- pre-publication write/sync/rename faults may retain one randomized private
+  orphan, and a successful advance may retain its exact prior record under the
+  randomized retired name; neither class is consulted by a later transaction;
+- injected substitution immediately before publication and immediately after
+  the last pre-publication proof is detected. Fresh rollback proves the active
+  name absent, while advance rollback proves the prior active file's stable
+  identity, private-file shape, and exact bytes without requiring its ctime to
+  equal the pre-exchange value. An unprovable rollback returns an error without
+  claiming commit success;
+- no transaction fault path opportunistically unlinks a pathname after a
+  separate identity check. Retained content-bearing store-created records
+  remain bounded, single-link, `0600`, identity-only metadata, and diagnostics
+  do not disclose their contents;
 - parent-directory swap cannot create a second lock domain or redirect any
-  record/temp/rename/unlink operation away from the pinned directory descriptor;
+  record, temporary, rename, or directory-sync operation away from the pinned
+  directory descriptor;
 - clean-install creation of the absent `networking` leaf succeeds with mode
   `0700` and ancestor sync; symlink, `EEXIST` non-directory, unsafe owner/mode,
   `mkdirat`, open, and ancestor-sync faults fail closed;
@@ -425,6 +523,26 @@ The macOS integration cases run only in `kyclash-macos-lab-work`. Evidence must
 identify `VirtualMac*`, the guest receipt and nested signatures, guest PIDs,
 exact route/utun ownership, and final absence. The host may build and
 orchestrate but must not install or launch KyClash or mutate host networking.
+
+## Policy-store amendment re-lock record
+
+On 2026-07-22 the policy-store portion of this review was reconciled against
+the Unix implementation's success paths, every injected publication fault
+boundary, freshness decision, secret lifetime, restart behavior, and realistic
+POSIX same-effective-UID concurrency guarantees. The blocking documentation
+defect was the earlier instruction to remove an "exact temporary path" after
+failure: pathname identity cannot remain exact across a later `unlinkat`, so
+that wording would have required an unsafe compare-then-delete race.
+
+The corrected publication, retained-record, rollback, active-authority, and
+threat-boundary rules above resolve that defect without weakening the signed
+policy identity or revision floor. This amendment is approved and locked for
+implementation. Locking the design does not mark its required tests complete,
+does not authorize orphan cleanup, and does not broaden access to secrets,
+production infrastructure, App Store distribution, or release publication.
+Adding cleanup, promoting a retained file, changing the active record name, or
+claiming protection from arbitrary same-UID code requires a new reviewed and
+locked amendment.
 
 ## Out of scope
 

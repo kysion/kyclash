@@ -244,10 +244,16 @@ corepack pnpm run knip:check
 corepack pnpm run release:ownership-check
 cargo fmt --all --check
 cargo test -p clash-verge --lib
-cargo test -p clash-verge --features networking-dev --test networking_sidecar
+cargo test -p clash-verge --features networking-dev,clippy --test networking_sidecar
 cargo clippy -p clash-verge --all-targets --all-features -- -D warnings
 git diff --check
 ```
+
+The `networking_sidecar` integration target compiles the desktop library
+without Rust's `cfg(test)`. Include the repository's `clippy` non-application
+feature so it uses the mock Tauri context while `networking-dev` deliberately
+skips application resource packaging. Do not replace this with a host App
+launch or remove either feature to make the gate appear to pass.
 
 Use a temporary Corepack shim in `PATH` when Git hooks cannot locate `pnpm`.
 Preserve hooks; never bypass them. Validate any changed workflow YAML and run

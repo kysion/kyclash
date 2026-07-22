@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use ring::digest::{SHA256, digest};
 use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +9,6 @@ use super::{NetworkErrorCode, NetworkProfile};
 
 const SIGNED_POLICY_ENVELOPE_VERSION: u8 = 2;
 const SIGNED_POLICY_ALGORITHM: &str = "ed25519";
-const REVISION_STORE_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,10 +36,25 @@ pub struct SignedNetworkPolicyPayload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedNetworkPolicy {
     pub key_id: String,
+    /// Lowercase SHA-256 of the exact signed-envelope resource bytes. This is
+    /// deliberately not calculated from a reserialized envelope or payload.
+    pub envelope_sha256: String,
     pub issued_at: u64,
     pub expires_at: u64,
     pub revision: u64,
     pub profile: NetworkProfile,
+}
+
+impl VerifiedNetworkPolicy {
+    /// Recheck authenticated temporal fields against a caller-supplied clock.
+    /// The durable identity transaction invokes this again immediately before
+    /// commit so an otherwise idempotent restart cannot outlive policy expiry.
+    pub const fn validate_at(&self, now: u64) -> Result<(), NetworkErrorCode> {
+        if self.revision == 0 || self.issued_at > now || self.expires_at <= now || self.expires_at <= self.issued_at {
+            return Err(NetworkErrorCode::PolicySignatureInvalid);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,120 +69,6 @@ struct PolicyTrustBundle {
 struct PolicyTrustKey {
     key_id: String,
     public_key_base64: String,
-}
-
-pub trait PolicyRevisionStore {
-    fn latest(&self) -> Result<Option<u64>, NetworkErrorCode>;
-    fn store(&mut self, revision: u64) -> Result<(), NetworkErrorCode>;
-}
-
-#[derive(Default)]
-pub struct MemoryPolicyRevisionStore {
-    latest: Option<u64>,
-    fail_store: bool,
-}
-
-impl MemoryPolicyRevisionStore {
-    #[cfg(test)]
-    const fn failing() -> Self {
-        Self {
-            latest: None,
-            fail_store: true,
-        }
-    }
-}
-
-impl PolicyRevisionStore for MemoryPolicyRevisionStore {
-    fn latest(&self) -> Result<Option<u64>, NetworkErrorCode> {
-        Ok(self.latest)
-    }
-    fn store(&mut self, revision: u64) -> Result<(), NetworkErrorCode> {
-        if self.fail_store {
-            return Err(NetworkErrorCode::PolicySignatureInvalid);
-        }
-        self.latest = Some(revision);
-        Ok(())
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RevisionRecord {
-    schema_version: u8,
-    revision: u64,
-}
-
-pub struct FilePolicyRevisionStore {
-    path: PathBuf,
-}
-
-impl FilePolicyRevisionStore {
-    pub fn new(path: PathBuf) -> Result<Self, NetworkErrorCode> {
-        if path.file_name().is_none() || path.parent().is_none() {
-            return Err(NetworkErrorCode::InvalidConfiguration);
-        }
-        Ok(Self { path })
-    }
-
-    fn refuse_symlink(&self) -> Result<(), NetworkErrorCode> {
-        if self
-            .path
-            .symlink_metadata()
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            return Err(NetworkErrorCode::PolicySignatureInvalid);
-        }
-        Ok(())
-    }
-}
-
-impl PolicyRevisionStore for FilePolicyRevisionStore {
-    fn latest(&self) -> Result<Option<u64>, NetworkErrorCode> {
-        self.refuse_symlink()?;
-        let bytes = match fs::read(&self.path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(NetworkErrorCode::PolicySignatureInvalid),
-        };
-        let record: RevisionRecord =
-            serde_json::from_slice(&bytes).map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
-        if record.schema_version != REVISION_STORE_VERSION {
-            return Err(NetworkErrorCode::PolicySignatureInvalid);
-        }
-        Ok(Some(record.revision))
-    }
-
-    fn store(&mut self, revision: u64) -> Result<(), NetworkErrorCode> {
-        self.refuse_symlink()?;
-        let parent = self.path.parent().ok_or(NetworkErrorCode::InvalidConfiguration)?;
-        fs::create_dir_all(parent).map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
-        let temporary = temporary_path(&self.path);
-        let bytes = serde_json::to_vec(&RevisionRecord {
-            schema_version: REVISION_STORE_VERSION,
-            revision,
-        })
-        .map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let result = (|| {
-            let mut file = options
-                .open(&temporary)
-                .map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
-            fs::rename(&temporary, &self.path).map_err(|_| NetworkErrorCode::PolicySignatureInvalid)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result
-    }
 }
 
 #[derive(Default)]
@@ -216,23 +114,15 @@ impl PolicyTrustStore {
         Self::from_ed25519_keys(keys)
     }
 
-    pub fn verify_profile(
-        &self,
-        encoded: &[u8],
-        now: u64,
-        revisions: &mut dyn PolicyRevisionStore,
-    ) -> Result<NetworkProfile, NetworkErrorCode> {
-        self.verify(encoded, now, revisions).map(|verified| verified.profile)
+    pub fn verify_profile(&self, encoded: &[u8], now: u64) -> Result<NetworkProfile, NetworkErrorCode> {
+        self.verify(encoded, now).map(|verified| verified.profile)
     }
 
-    /// Verify and persist a v2 envelope while retaining the authenticated
-    /// metadata needed by production composition.
-    pub fn verify(
-        &self,
-        encoded: &[u8],
-        now: u64,
-        revisions: &mut dyn PolicyRevisionStore,
-    ) -> Result<VerifiedNetworkPolicy, NetworkErrorCode> {
+    /// Verify a v2 envelope while retaining the authenticated metadata needed
+    /// by production composition. Replay classification and durable identity
+    /// persistence are intentionally owned by the caller's locked identity
+    /// transaction so the lock spans this complete authentication step.
+    pub fn verify(&self, encoded: &[u8], now: u64) -> Result<VerifiedNetworkPolicy, NetworkErrorCode> {
         let envelope: SignedNetworkPolicyEnvelope =
             serde_json::from_slice(encoded).map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
         if envelope.envelope_version != SIGNED_POLICY_ENVELOPE_VERSION
@@ -257,24 +147,26 @@ impl PolicyTrustStore {
             .map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
         let payload: SignedNetworkPolicyPayload =
             serde_json::from_slice(&payload_bytes).map_err(|_| NetworkErrorCode::PolicySignatureInvalid)?;
-        if payload.revision == 0
-            || payload.issued_at > now
-            || payload.expires_at <= now
-            || payload.expires_at <= payload.issued_at
-            || revisions.latest()?.is_some_and(|latest| payload.revision <= latest)
-        {
-            return Err(NetworkErrorCode::PolicySignatureInvalid);
-        }
         payload.profile.validate()?;
-        revisions.store(payload.revision)?;
-        Ok(VerifiedNetworkPolicy {
+        let verified = VerifiedNetworkPolicy {
             key_id: envelope.key_id,
+            envelope_sha256: hex_sha256(encoded),
             issued_at: payload.issued_at,
             expires_at: payload.expires_at,
             revision: payload.revision,
             profile: payload.profile,
-        })
+        };
+        verified.validate_at(now)?;
+        Ok(verified)
     }
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    digest(&SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn signing_message(key_id: &str, algorithm: &str, payload: &[u8]) -> Vec<u8> {
@@ -285,12 +177,6 @@ fn signing_message(key_id: &str, algorithm: &str, payload: &[u8]) -> Vec<u8> {
     message.push(0);
     message.extend_from_slice(payload);
     message
-}
-
-fn temporary_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(".{}.tmp", std::process::id()));
-    PathBuf::from(name)
 }
 
 fn valid_key_id(value: &str) -> bool {
@@ -346,29 +232,27 @@ mod tests {
     }
 
     #[test]
-    fn v2_accepts_once_and_rejects_replay_and_clock_boundaries() -> anyhow::Result<()> {
+    fn v2_verification_is_pure_and_rejects_clock_boundaries() -> anyhow::Result<()> {
         let (trust, _, envelope) = signed_fixture(100, 200, 7)?;
         let encoded = serde_json::to_vec(&envelope)?;
-        let mut revisions = MemoryPolicyRevisionStore::default();
         assert_eq!(
             trust
-                .verify_profile(&encoded, 100, &mut revisions)
+                .verify_profile(&encoded, 100)
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?
                 .profile_id,
             "profile.test"
         );
         assert_eq!(
-            trust.verify_profile(&encoded, 101, &mut revisions),
-            Err(NetworkErrorCode::PolicySignatureInvalid)
+            trust
+                .verify_profile(&encoded, 101)
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?
+                .profile_id,
+            "profile.test"
         );
         for (issued, expires, now) in [(101, 200, 100), (100, 100, 100), (100, 200, 200)] {
             let (trust, _, envelope) = signed_fixture(issued, expires, 8)?;
             assert_eq!(
-                trust.verify_profile(
-                    &serde_json::to_vec(&envelope)?,
-                    now,
-                    &mut MemoryPolicyRevisionStore::default()
-                ),
+                trust.verify_profile(&serde_json::to_vec(&envelope)?, now),
                 Err(NetworkErrorCode::PolicySignatureInvalid)
             );
         }
@@ -376,44 +260,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_v1_unknown_key_tamper_and_revision_store_failure() -> anyhow::Result<()> {
+    fn rejects_v1_unknown_key_and_tamper() -> anyhow::Result<()> {
         let (trust, _, mut envelope) = signed_fixture(100, 200, 9)?;
         envelope.envelope_version = 1;
         assert_eq!(
-            trust.verify_profile(
-                &serde_json::to_vec(&envelope)?,
-                150,
-                &mut MemoryPolicyRevisionStore::default()
-            ),
+            trust.verify_profile(&serde_json::to_vec(&envelope)?, 150),
             Err(NetworkErrorCode::PolicySignatureInvalid)
         );
         let (trust, _, mut envelope) = signed_fixture(100, 200, 9)?;
         envelope.key_id = "policy.unknown".into();
         assert_eq!(
-            trust.verify_profile(
-                &serde_json::to_vec(&envelope)?,
-                150,
-                &mut MemoryPolicyRevisionStore::default()
-            ),
+            trust.verify_profile(&serde_json::to_vec(&envelope)?, 150),
             Err(NetworkErrorCode::PolicySignatureInvalid)
         );
         let (trust, _, mut envelope) = signed_fixture(100, 200, 9)?;
         envelope.payload_base64.push('A');
         assert_eq!(
-            trust.verify_profile(
-                &serde_json::to_vec(&envelope)?,
-                150,
-                &mut MemoryPolicyRevisionStore::default()
-            ),
-            Err(NetworkErrorCode::PolicySignatureInvalid)
-        );
-        let (trust, _, envelope) = signed_fixture(100, 200, 9)?;
-        assert_eq!(
-            trust.verify_profile(
-                &serde_json::to_vec(&envelope)?,
-                150,
-                &mut MemoryPolicyRevisionStore::failing()
-            ),
+            trust.verify_profile(&serde_json::to_vec(&envelope)?, 150),
             Err(NetworkErrorCode::PolicySignatureInvalid)
         );
         Ok(())
@@ -456,38 +319,35 @@ mod tests {
     fn verify_retains_authenticated_revision_for_composition() -> anyhow::Result<()> {
         let (trust, _, envelope) = signed_fixture(100, 200, 11)?;
         let verified = trust
-            .verify(
-                &serde_json::to_vec(&envelope)?,
-                150,
-                &mut MemoryPolicyRevisionStore::default(),
-            )
+            .verify(&serde_json::to_vec(&envelope)?, 150)
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         assert_eq!(verified.key_id, "policy.test");
         assert_eq!(verified.revision, 11);
         assert_eq!(verified.profile.profile_id, "profile.test");
+        assert_eq!(verified.envelope_sha256.len(), 64);
+        assert!(verified.envelope_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()));
         Ok(())
     }
 
     #[test]
-    fn file_store_persists_only_revision_and_refuses_corruption() -> anyhow::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("revision.json");
-        let mut store = FilePolicyRevisionStore::new(path.clone()).map_err(|error| anyhow::anyhow!("{error:?}"))?;
-        store.store(42).map_err(|error| anyhow::anyhow!("{error:?}"))?;
-        assert_eq!(store.latest().map_err(|error| anyhow::anyhow!("{error:?}"))?, Some(42));
-        let bytes = fs::read(&path)?;
-        assert!(!String::from_utf8_lossy(&bytes).contains("profile"));
-        fs::write(&path, b"not-json")?;
-        assert_eq!(store.latest(), Err(NetworkErrorCode::PolicySignatureInvalid));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-            fs::remove_file(&path)?;
-            let target = directory.path().join("target.json");
-            fs::write(&target, br#"{"schema_version":1,"revision":99}"#)?;
-            symlink(&target, &path)?;
-            assert_eq!(store.latest(), Err(NetworkErrorCode::PolicySignatureInvalid));
-        }
+    fn exact_envelope_digest_changes_with_json_whitespace() -> anyhow::Result<()> {
+        let (trust, _, envelope) = signed_fixture(100, 200, 12)?;
+        let compact = serde_json::to_vec(&envelope)?;
+        let pretty = serde_json::to_vec_pretty(&envelope)?;
+        let compact_verified = trust
+            .verify(&compact, 150)
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let pretty_verified = trust
+            .verify(&pretty, 150)
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(compact_verified.revision, pretty_verified.revision);
+        assert_ne!(compact_verified.envelope_sha256, pretty_verified.envelope_sha256);
+        assert!(
+            compact_verified
+                .envelope_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
         Ok(())
     }
 }

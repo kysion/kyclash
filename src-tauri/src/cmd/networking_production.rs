@@ -193,13 +193,11 @@ pub fn configure_bundle_provider_now(app: &AppHandle, state: &ProductionCommandS
         .path()
         .resource_dir()
         .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
-    let revision_path = app
+    let app_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|_| NetworkErrorCode::InvalidConfiguration)?
-        .join("networking")
-        .join("policy-revision.json");
-    let provider = BundleProductionInitializationProvider::new(resource_dir, revision_path)?;
+        .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+    let provider = BundleProductionInitializationProvider::new(resource_dir, app_data_dir)?;
     state.configure_provider_now(Arc::new(provider))
 }
 
@@ -368,6 +366,19 @@ mod tests {
         }
     }
 
+    struct CountingBundleProvider {
+        initializes: Arc<AtomicUsize>,
+        inner: BundleProductionInitializationProvider,
+    }
+
+    #[async_trait]
+    impl ProductionInitializationProvider for CountingBundleProvider {
+        async fn initialize(&self) -> Result<Arc<dyn ProductionServiceFactory>, NetworkErrorCode> {
+            self.initializes.fetch_add(1, Ordering::SeqCst);
+            self.inner.initialize().await
+        }
+    }
+
     #[tokio::test]
     async fn initialization_and_status_do_not_materialize_runtime() -> anyhow::Result<()> {
         let builds = Arc::new(AtomicUsize::new(0));
@@ -429,6 +440,73 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn real_bundle_concurrent_initialize_and_app_restart_are_single_flight_zero_write() -> anyhow::Result<()> {
+        use std::{fs, os::unix::fs::MetadataExt as _};
+
+        let directory = tempfile::tempdir()?;
+        let resource_dir = directory.path().join("KyClash.app/Contents/Resources");
+        let app_data_dir = directory.path().join("app-data");
+        fs::create_dir(&app_data_dir)?;
+        let (envelope, public_key) = crate::networking::signed_test_policy(42, 100, 200)?;
+        crate::networking::write_test_bundle_resources(&resource_dir, &envelope, &public_key, false)?;
+
+        let initializes = Arc::new(AtomicUsize::new(0));
+        let first_provider = BundleProductionInitializationProvider::new(resource_dir.clone(), app_data_dir.clone())
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?
+            .with_now(150);
+        let state = Arc::new(ProductionCommandState::default());
+        state
+            .configure_provider_now(Arc::new(CountingBundleProvider {
+                initializes: Arc::clone(&initializes),
+                inner: first_provider,
+            }))
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let first_state = Arc::clone(&state);
+        let second_state = Arc::clone(&state);
+        let (first, second) = tokio::join!(
+            tokio::spawn(async move { first_state.initialize().await }),
+            tokio::spawn(async move { second_state.initialize().await }),
+        );
+        first
+            .map_err(|error| anyhow::anyhow!("{error}"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        second
+            .map_err(|error| anyhow::anyhow!("{error}"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(initializes.load(Ordering::SeqCst), 1);
+        assert!(state.factory.read().await.is_some());
+        assert!(state.service.read().await.is_none());
+
+        let record_path = app_data_dir.join("networking/policy-revision.json");
+        let before_bytes = fs::read(&record_path)?;
+        let before = fs::metadata(&record_path)?;
+        let restarted = ProductionCommandState::default();
+        let restarted_provider = BundleProductionInitializationProvider::new(resource_dir, app_data_dir)
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?
+            .with_now(151);
+        restarted
+            .configure_provider_now(Arc::new(CountingBundleProvider {
+                initializes: Arc::clone(&initializes),
+                inner: restarted_provider,
+            }))
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let status = restarted
+            .initialize()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(status.state, crate::networking::NetworkState::Disconnected);
+        assert!(restarted.service.read().await.is_none());
+        let after = fs::metadata(&record_path)?;
+        assert_eq!(fs::read(&record_path)?, before_bytes);
+        assert_eq!(after.ino(), before.ino());
+        assert_eq!(after.mtime(), before.mtime());
+        assert_eq!(after.mtime_nsec(), before.mtime_nsec());
+        assert_eq!(initializes.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn connect_is_the_only_path_that_materializes_a_registered_factory() -> anyhow::Result<()> {
         let builds = Arc::new(AtomicUsize::new(0));
@@ -483,6 +561,35 @@ mod tests {
         ));
         assert!(state.factory.read().await.is_some());
         assert!(state.service.read().await.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn production_diagnostic_serialization_is_a_secret_free_allowlist() -> anyhow::Result<()> {
+        let event = ProductionDiagnosticEvent {
+            sequence: 7,
+            operation_id: Some("networking.production.connect.7".into()),
+            kind: "failed",
+            error: Some(NetworkErrorCode::AuthenticationFailed),
+        };
+        let encoded = serde_json::to_string(&event)?;
+        for forbidden in [
+            "profile",
+            "endpoint",
+            "identity_ref",
+            "signature",
+            "private_key",
+            "keychain:",
+            "payload_base64",
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded)?
+                .as_object()
+                .map(|object| object.len()),
+            Some(4)
+        );
         Ok(())
     }
 }

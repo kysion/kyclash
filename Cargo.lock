@@ -1119,6 +1119,7 @@ dependencies = [
  "ring",
  "runas",
  "rust_iso3166",
+ "rustix 1.1.4",
  "rustls",
  "scopeguard",
  "security-framework",

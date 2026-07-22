@@ -7,11 +7,13 @@ runtime proof, development UI, credential boundary, release procedure,
 branding, documentation, CI, signed-but-unnotarized arm64 development PKG, and
 route-helper v2 evidence have passed their applicable gates through S1.12.
 S1.04 is complete again after the atomic stdio protocol-v2 Rust/Go/TypeScript,
-strict-wire, race, actual-child, and lifecycle gates passed. The locked
-production restart/rematerialization implementation is now the first
-incomplete safe source criterion required by the incomplete S1.13 VM
-aggregate. This audit is not a terminal completion or permission to stop
-continuous delivery while safe work remains.
+strict-wire, race, actual-child, and lifecycle gates passed. The exact
+policy-identity portion of the locked production restart/rematerialization
+implementation is now complete; the XPC connection-generation chain,
+beginning with the helper accepted-connection barrier, is the first incomplete
+safe source criterion required by the incomplete S1.13 VM aggregate. This
+audit is not a terminal completion or permission to stop continuous delivery
+while safe work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
 route and lifecycle gates still require disposable hosts, and impaired-network
@@ -22,6 +24,13 @@ public-distribution enhancement rather than a current development blocker.
 
 - The route transaction engine covers conflict refusal, rollback, restart
   recovery, idempotence, and fault injection without changing host routes.
+- Production initialization now persists only revision, exact signed-envelope
+  SHA-256, and key ID under a bounded cross-process transaction. Exact restart
+  is zero-write; v1 migration, expiry, same-revision identity changes,
+  concurrent writers, directory/lock replacement, atomic publication,
+  rollback, and resource TOCTOU/fault boundaries have deterministic coverage.
+  Initialization still cannot read Keychain, open XPC, start a sidecar, create
+  utun, or mutate routes.
 - The Go sidecar implements authenticated bootstrap and IPC, WireGuard carrier
   adaptation, QUIC fragmentation/reassembly/replay protection, and authenticated
   WSS/TCP fallback boundaries.
@@ -138,8 +147,9 @@ authorized disposable-VM matrix continue without another routine prompt;
 production infrastructure, updater publication, and release activation remain
 separate authorization boundaries:
 
-1. Exercise the production-feature Rust live-source path against the packaged
-   Mihomo control API in the disposable VM, including private-service
+1. Finish the locked XPC connection-generation/rematerialization source chain,
+   then exercise the production-feature Rust live-source path against the
+   packaged Mihomo control API in the disposable VM, including private-service
    reachability, app/sidecar/helper abort, reboot/retry, and aggregate
    foreign-route cleanup. The ordinary signed-App managed-TUN subcase has
    passed and is not substituted for this production boundary.
@@ -357,5 +367,7 @@ S1.13 remains the first incomplete VM aggregate criterion for production Rust
 live-source invocation, private-service reachability, app/sidecar/helper abort,
 reboot/retry, and the aggregate foreign-state/credential cleanup gate. The
 ordinary App matrix does not substitute for the default-off production
-control path. No endpoint, release, updater activation, production
+control path. Its exact policy-identity/restart source prerequisite is now
+complete; XPC connection-generation/rematerialization remains the first source
+prerequisite. No endpoint, release, updater activation, production
 infrastructure, or real login-Keychain lifecycle was touched.
