@@ -762,6 +762,57 @@ private-service reachability, app/sidecar/helper abort, guest reboot/retry, and
 complete synthetic-credential/foreign-state cleanup remain required; the
 packaged lab-client path is not production-controller evidence.
 
+#### Current no-sign App-first VM probe — 2026-07-23
+
+The user-authorized deliverable for this run is an `.app` only, without a
+Developer ID signing step. The
+candidate `KyClash-Lab-05516b7d.app` was launched visibly in the selected
+`kyclash-macos-lab-work` guest (`VirtualMac2,1`, arm64, console user `supen`).
+The KyClash Network page rendered the fixed single-site profile, and the
+bundled Mihomo child stayed healthy. The main executable reports only an
+ad-hoc/linker signature with no Team ID, so this is not a Developer ID-signed
+candidate; no installer transaction was performed for this probe.
+
+The UI's explicit Enable action returned `sidecar_unavailable` and kept the
+helper status at `not_found`. The ad-hoc candidate cannot satisfy the helper's
+fixed Developer ID and code-signing requirement, so registration/enablement
+failed closed.
+The production sidecar was then driven directly through its normal stdin IPC
+inside the same guest as uid 501. Bootstrap and `apply_profile` were accepted,
+but `prepare_tunnel` failed before the carrier or route phases; the independent
+utun probe reports the underlying `tun.CreateTUN` error as `operation not
+permitted`. The subsequent disconnect performed bounded cleanup. The interface
+inventory remained unchanged and the sidecar exited cleanly, with no owned
+utun left behind. The redacted probe record is retained locally at
+`target/macos-vm-lab/evidence/prepare-utun-nonroot-20260723.md`.
+
+The non-privileged actual-child VM run did pass independently against the
+repository's loopback userspace lab: QUIC, WSS, and TCP each connected and
+returned healthy samples; an attempted overlap was rejected with
+`invalid_state_transition`; every transport was explicitly disconnected before
+the next one; and the child exited cleanly. This closes only the userspace
+carrier/IPC evidence slice, not the production utun/helper gate.
+
+A separate user-owned Mihomo probe also failed closed at the OS boundary with
+`configure tun interface: Connect: operation not permitted`; no interface or
+route remained. The run root/leaf files pass local chain/key checks, but the
+current System Keychain has zero matching root fingerprints, so the
+system-trust probe failed. Trust import remains a separate later carrier
+prerequisite. These observations are current evidence, not completion of S1.13.
+No password automation, Keychain mutation, route mutation, signing, release,
+or production endpoint was used.
+
+The uid-501 failure exposed an unimplemented privilege boundary rather than a
+carrier defect. The corrective architecture is now approved and locked in
+`kyclash-privileged-tunnel-broker-review-20260723.md`: a second, independently
+authenticated tunnel broker owns only the fixed sidecar/utun session, while
+the existing helper remains route-only. The required route-before-tunnel crash
+ordering is locked separately in
+`kyclash-tunnel-route-retirement-interlock-review-20260723.md`. Source work has
+started at the reusable stdio launch/process-control seam. These reviews do not
+convert the current no-sign probe into a production pass; an ad-hoc App remains
+restricted to userspace/UI and explicit disposable-VM lab evidence.
+
 The independent App-managed Mihomo matrix now also passes against a freshly
 installed Developer ID-signed internal PKG in the same `VirtualMac2,1` guest.
 LaunchServices produced a visible frontmost guest window, the exact installed

@@ -1,8 +1,8 @@
 #[cfg(unix)]
 mod unix {
-    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
     use std::path::PathBuf;
-    use std::process::{Child, ChildStdin, Command, Stdio};
+    use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
@@ -46,10 +46,89 @@ mod unix {
         pub cancel_endpoint: String,
     }
 
-    pub struct StdioSidecarRuntime {
+    /// The process-control seam owned by the stdio runtime.
+    ///
+    /// A broker implementation may provide the same typed stdio handles while
+    /// keeping the actual child in a privileged service.  The runtime never
+    /// accepts a path, argv, environment, or shell from this trait; those
+    /// launch-policy decisions stay with the launcher implementation.
+    pub trait SidecarProcessControl: Send {
+        /// The monotonically increasing generation assigned by the launcher.
+        /// A handle from an older generation must never be used to terminate a
+        /// newer child.
+        fn generation(&self) -> u64;
+
+        /// Probe and reap only this exact process handle when it has exited.
+        /// `None` means that this exact child is still running; `Some` carries
+        /// the child's exit-success bit after wait/reap confirmation.
+        fn try_wait_status(&mut self) -> std::io::Result<Option<bool>>;
+
+        /// Request termination of this exact process handle.
+        fn kill_owned(&mut self) -> std::io::Result<()>;
+
+        /// Transfer the one owned stdin/stdout descriptor to the protocol
+        /// runtime.  Returning boxed stdio keeps the broker bridge independent
+        /// of `std::process::Child` while preserving EOF-based cleanup.
+        fn take_stdin(&mut self) -> Option<Box<dyn io::Write + Send>>;
+        fn take_stdout(&mut self) -> Option<Box<dyn io::Read + Send>>;
+    }
+
+    impl<T: SidecarProcessControl + ?Sized> SidecarProcessControl for Box<T> {
+        fn generation(&self) -> u64 {
+            (**self).generation()
+        }
+
+        fn try_wait_status(&mut self) -> std::io::Result<Option<bool>> {
+            (**self).try_wait_status()
+        }
+
+        fn kill_owned(&mut self) -> std::io::Result<()> {
+            (**self).kill_owned()
+        }
+
+        fn take_stdin(&mut self) -> Option<Box<dyn io::Write + Send>> {
+            (**self).take_stdin()
+        }
+
+        fn take_stdout(&mut self) -> Option<Box<dyn io::Read + Send>> {
+            (**self).take_stdout()
+        }
+    }
+
+    /// Creates one fixed-policy sidecar process and returns its exact process
+    /// control.  Implementations must not broaden this API with arbitrary
+    /// command, argument, environment, route, or secret fields.
+    pub trait StdioSidecarLauncher: Send {
+        fn launch(&mut self, generation: u64) -> Result<Box<dyn SidecarProcessControl>, NetworkErrorCode>;
+    }
+
+    /// Local process implementation used by the existing userspace and
+    /// development paths.  The future macOS broker client will implement the
+    /// same launcher seam without changing protocol-v2 framing.
+    #[derive(Debug, Clone, Default)]
+    pub struct LocalProcessLauncher {
         executable: PathBuf,
-        child: Option<Child>,
-        stdin: Option<ChildStdin>,
+    }
+
+    impl LocalProcessLauncher {
+        #[must_use]
+        pub fn new(executable: PathBuf) -> Self {
+            Self { executable }
+        }
+    }
+
+    struct LocalProcessControl {
+        generation: u64,
+        child: Child,
+    }
+
+    pub struct StdioSidecarRuntime<L: StdioSidecarLauncher = LocalProcessLauncher> {
+        executable: PathBuf,
+        launcher: L,
+        child: Option<Box<dyn SidecarProcessControl>>,
+        generation: Option<u64>,
+        next_generation: u64,
+        stdin: Option<Box<dyn io::Write + Send>>,
         records: Option<Receiver<Result<Vec<u8>, NetworkErrorCode>>>,
         response_timeout: Duration,
         cancel_drain_timeout: Duration,
@@ -57,26 +136,52 @@ mod unix {
         trust: Option<SidecarTrustManifest>,
     }
 
-    trait TerminableChild {
-        fn try_wait_confirmed(&mut self) -> std::io::Result<bool>;
-        fn kill_owned(&mut self) -> std::io::Result<()>;
-    }
+    impl SidecarProcessControl for LocalProcessControl {
+        fn generation(&self) -> u64 {
+            self.generation
+        }
 
-    impl TerminableChild for Child {
-        fn try_wait_confirmed(&mut self) -> std::io::Result<bool> {
-            self.try_wait().map(|status| status.is_some())
+        fn try_wait_status(&mut self) -> std::io::Result<Option<bool>> {
+            self.child.try_wait().map(|status| status.map(|value| value.success()))
         }
 
         fn kill_owned(&mut self) -> std::io::Result<()> {
-            self.kill()
+            self.child.kill()
+        }
+
+        fn take_stdin(&mut self) -> Option<Box<dyn io::Write + Send>> {
+            self.child
+                .stdin
+                .take()
+                .map(|stdin: ChildStdin| Box::new(stdin) as Box<dyn io::Write + Send>)
+        }
+
+        fn take_stdout(&mut self) -> Option<Box<dyn io::Read + Send>> {
+            self.child
+                .stdout
+                .take()
+                .map(|stdout: ChildStdout| Box::new(stdout) as Box<dyn io::Read + Send>)
         }
     }
 
-    fn terminate_child_handle<C: TerminableChild>(child: &mut Option<C>) -> Result<(), NetworkErrorCode> {
+    impl StdioSidecarLauncher for LocalProcessLauncher {
+        fn launch(&mut self, generation: u64) -> Result<Box<dyn SidecarProcessControl>, NetworkErrorCode> {
+            let child = Command::new(&self.executable)
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+            Ok(Box::new(LocalProcessControl { generation, child }))
+        }
+    }
+
+    fn terminate_child_handle<C: SidecarProcessControl>(child: &mut Option<C>) -> Result<(), NetworkErrorCode> {
         terminate_child_handle_with_timeout(child, CHILD_REAP_TIMEOUT, CHILD_REAP_POLL_INTERVAL)
     }
 
-    fn terminate_child_handle_with_timeout<C: TerminableChild>(
+    fn terminate_child_handle_with_timeout<C: SidecarProcessControl>(
         child: &mut Option<C>,
         timeout: Duration,
         poll_interval: Duration,
@@ -84,7 +189,7 @@ mod unix {
         let Some(process) = child.as_mut() else {
             return Ok(());
         };
-        if matches!(process.try_wait_confirmed(), Ok(true)) {
+        if matches!(process.try_wait_status(), Ok(Some(_))) {
             child.take();
             return Ok(());
         }
@@ -98,7 +203,7 @@ mod unix {
         let _ = process.kill_owned();
         let deadline = Instant::now() + timeout;
         loop {
-            if matches!(process.try_wait_confirmed(), Ok(true)) {
+            if matches!(process.try_wait_status(), Ok(Some(_))) {
                 child.take();
                 return Ok(());
             }
@@ -110,30 +215,42 @@ mod unix {
         }
     }
 
-    impl StdioSidecarRuntime {
-        pub const fn new(executable: PathBuf) -> Self {
-            Self {
-                executable,
-                child: None,
-                stdin: None,
-                records: None,
-                response_timeout: Duration::from_secs(2),
-                cancel_drain_timeout: DEFAULT_CANCEL_DRAIN_TIMEOUT,
-                next_cancel_sequence: 1,
-                trust: None,
-            }
+    impl StdioSidecarRuntime<LocalProcessLauncher> {
+        pub fn new(executable: PathBuf) -> Self {
+            Self::with_launcher(executable.clone(), LocalProcessLauncher::new(executable))
         }
 
-        pub const fn new_trusted(executable: PathBuf, trust: SidecarTrustManifest) -> Self {
+        pub fn new_trusted(executable: PathBuf, trust: SidecarTrustManifest) -> Self {
             Self {
+                launcher: LocalProcessLauncher::new(executable.clone()),
                 executable,
                 child: None,
+                generation: None,
+                next_generation: 0,
                 stdin: None,
                 records: None,
                 response_timeout: Duration::from_secs(2),
                 cancel_drain_timeout: DEFAULT_CANCEL_DRAIN_TIMEOUT,
                 next_cancel_sequence: 1,
                 trust: Some(trust),
+            }
+        }
+    }
+
+    impl<L: StdioSidecarLauncher> StdioSidecarRuntime<L> {
+        pub const fn with_launcher(executable: PathBuf, launcher: L) -> Self {
+            Self {
+                executable,
+                launcher,
+                child: None,
+                generation: None,
+                next_generation: 0,
+                stdin: None,
+                records: None,
+                response_timeout: Duration::from_secs(2),
+                cancel_drain_timeout: DEFAULT_CANCEL_DRAIN_TIMEOUT,
+                next_cancel_sequence: 1,
+                trust: None,
             }
         }
 
@@ -347,23 +464,32 @@ mod unix {
             if let Some(trust) = &self.trust {
                 verify_macos_sidecar(&self.executable, trust)?;
             }
-            let child = Command::new(&self.executable)
-                .env_clear()
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
-            self.child = Some(child);
-            let Some(mut stdin) = self.child.as_mut().and_then(|child| child.stdin.take()) else {
+            let generation = self
+                .next_generation
+                .checked_add(1)
+                .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+            self.next_generation = generation;
+            let mut process = self.launcher.launch(generation)?;
+            if process.generation() != generation {
+                // A launcher must never hand an older generation back to the
+                // runtime.  Reap only the exact returned handle, then refuse
+                // the session; do not guess by PID or process name.
+                let _ = terminate_child_handle(&mut Some(process));
+                return Err(NetworkErrorCode::InvalidStateTransition);
+            }
+            self.generation = Some(generation);
+            let Some(mut stdin) = process.take_stdin() else {
+                let _ = terminate_child_handle(&mut Some(process));
                 let _ = self.terminate_child();
                 return Err(NetworkErrorCode::SidecarUnavailable);
             };
-            let Some(stdout) = self.child.as_mut().and_then(|child| child.stdout.take()) else {
+            let Some(stdout) = process.take_stdout() else {
                 drop(stdin);
+                let _ = terminate_child_handle(&mut Some(process));
                 let _ = self.terminate_child();
                 return Err(NetworkErrorCode::SidecarUnavailable);
             };
+            self.child = Some(process);
             let (sender, receiver) = mpsc::channel();
             std::thread::spawn(move || read_records(stdout, sender));
             let bootstrap = BootstrapRecord {
@@ -441,11 +567,28 @@ mod unix {
         fn terminate_child(&mut self) -> Result<(), NetworkErrorCode> {
             self.stdin.take();
             self.records.take();
-            terminate_child_handle(&mut self.child)
+            let Some(expected_generation) = self.generation else {
+                return terminate_child_handle(&mut self.child);
+            };
+            let Some(process) = self.child.as_ref() else {
+                self.generation = None;
+                return Ok(());
+            };
+            if process.generation() != expected_generation {
+                // Never terminate a process whose generation does not match
+                // this runtime slot.  Keep the handle quarantined for a
+                // caller that still owns that exact generation.
+                return Err(NetworkErrorCode::InvalidStateTransition);
+            }
+            let result = terminate_child_handle(&mut self.child);
+            if result.is_ok() {
+                self.generation = None;
+            }
+            result
         }
     }
 
-    impl SidecarRuntime for StdioSidecarRuntime {
+    impl<L: StdioSidecarLauncher> SidecarRuntime for StdioSidecarRuntime<L> {
         fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
             let result = self
                 .start_record(context)
@@ -458,15 +601,21 @@ mod unix {
 
         fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
             let child = self.child.as_mut().ok_or(NetworkErrorCode::SidecarUnavailable)?;
-            match child.try_wait().map_err(|_| NetworkErrorCode::SidecarUnavailable)? {
+            let expected_generation = self.generation.ok_or(NetworkErrorCode::SidecarUnavailable)?;
+            if child.generation() != expected_generation {
+                return Err(NetworkErrorCode::InvalidStateTransition);
+            }
+            match child
+                .try_wait_status()
+                .map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+            {
                 None => Ok(SidecarProcessStatus::Running),
-                Some(status) => {
+                Some(success) => {
                     self.child.take();
+                    self.generation = None;
                     self.stdin.take();
                     self.records.take();
-                    Ok(SidecarProcessStatus::Exited {
-                        success: status.success(),
-                    })
+                    Ok(SidecarProcessStatus::Exited { success })
                 }
             }
         }
@@ -487,11 +636,11 @@ mod unix {
                     if self
                         .child
                         .as_mut()
-                        .and_then(|child| child.try_wait().ok())
-                        .flatten()
+                        .and_then(|child| child.try_wait_status().ok().flatten())
                         .is_some()
                     {
                         self.child.take();
+                        self.generation = None;
                         self.stdin.take();
                         self.records.take();
                         return Ok(());
@@ -503,7 +652,7 @@ mod unix {
         }
     }
 
-    impl Drop for StdioSidecarRuntime {
+    impl<L: StdioSidecarLauncher> Drop for StdioSidecarRuntime<L> {
         fn drop(&mut self) {
             let _ = self.stop();
         }
@@ -526,7 +675,7 @@ mod unix {
         encoded
     }
 
-    fn read_records(stdout: std::process::ChildStdout, sender: mpsc::Sender<Result<Vec<u8>, NetworkErrorCode>>) {
+    fn read_records(stdout: Box<dyn io::Read + Send>, sender: mpsc::Sender<Result<Vec<u8>, NetworkErrorCode>>) {
         let mut reader = BufReader::new(stdout);
         loop {
             let mut record = Vec::new();
@@ -557,9 +706,11 @@ mod unix {
     #[cfg(test)]
     mod tests {
         use std::{
+            collections::VecDeque,
             fs,
+            io::{Read, Write},
             os::unix::fs::PermissionsExt as _,
-            sync::{Arc, atomic::AtomicUsize},
+            sync::{Arc, Mutex, atomic::AtomicUsize},
             thread,
         };
 
@@ -629,7 +780,9 @@ mod unix {
             .map_err(|_| NetworkErrorCode::InvalidConfiguration)
         }
 
-        fn request_cancel(runtime: &mut StdioSidecarRuntime) -> Result<IpcResponse, NetworkErrorCode> {
+        fn request_cancel<L: StdioSidecarLauncher>(
+            runtime: &mut StdioSidecarRuntime<L>,
+        ) -> Result<IpcResponse, NetworkErrorCode> {
             let cancel = Arc::new(AtomicBool::new(false));
             let signal = Arc::clone(&cancel);
             let canceller = thread::spawn(move || {
@@ -657,16 +810,20 @@ mod unix {
             poll_calls: Arc<AtomicUsize>,
         }
 
-        impl TerminableChild for InjectedTerminationChild {
-            fn try_wait_confirmed(&mut self) -> std::io::Result<bool> {
+        impl SidecarProcessControl for InjectedTerminationChild {
+            fn generation(&self) -> u64 {
+                1
+            }
+
+            fn try_wait_status(&mut self) -> std::io::Result<Option<bool>> {
                 self.poll_calls.fetch_add(1, Ordering::AcqRel);
                 match self.polls_before_exit.as_mut() {
-                    Some(remaining) if *remaining == 0 => Ok(true),
+                    Some(remaining) if *remaining == 0 => Ok(Some(true)),
                     Some(remaining) => {
                         *remaining -= 1;
-                        Ok(false)
+                        Ok(None)
                     }
-                    None => Ok(false),
+                    None => Ok(None),
                 }
             }
 
@@ -678,6 +835,349 @@ mod unix {
                     Ok(())
                 }
             }
+
+            fn take_stdin(&mut self) -> Option<Box<dyn io::Write + Send>> {
+                None
+            }
+
+            fn take_stdout(&mut self) -> Option<Box<dyn io::Read + Send>> {
+                None
+            }
+        }
+
+        #[derive(Clone, Default)]
+        struct FakePipeMetrics {
+            stdin_drops: Arc<AtomicUsize>,
+            stdout_drops: Arc<AtomicUsize>,
+            writes: Arc<Mutex<Vec<u8>>>,
+            kill_calls: Arc<AtomicUsize>,
+            poll_calls: Arc<AtomicUsize>,
+            reaped: Arc<AtomicUsize>,
+        }
+
+        struct FakeWriter {
+            writes: Arc<Mutex<Vec<u8>>>,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl Write for FakeWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.writes.lock().expect("fake writer lock").extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl Drop for FakeWriter {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        struct FakeReader {
+            lines: VecDeque<Vec<u8>>,
+            pending: Vec<u8>,
+            delay_after_first: Option<Duration>,
+            reads: usize,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl Read for FakeReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.reads > 0 {
+                    if let Some(delay) = self.delay_after_first.take() {
+                        thread::sleep(delay);
+                    }
+                }
+                self.reads = self.reads.saturating_add(1);
+                if self.pending.is_empty() {
+                    let Some(mut line) = self.lines.pop_front() else {
+                        return Ok(0);
+                    };
+                    line.push(b'\n');
+                    self.pending = line;
+                }
+                let count = buffer.len().min(self.pending.len());
+                buffer[..count].copy_from_slice(&self.pending[..count]);
+                self.pending.drain(..count);
+                Ok(count)
+            }
+        }
+
+        impl Drop for FakeReader {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        struct FakeProcessControl {
+            generation: u64,
+            polls_before_exit: Option<usize>,
+            kill_fails: bool,
+            exit_success: bool,
+            stdin: Option<FakeWriter>,
+            stdout: Option<FakeReader>,
+            metrics: FakePipeMetrics,
+        }
+
+        impl SidecarProcessControl for FakeProcessControl {
+            fn generation(&self) -> u64 {
+                self.generation
+            }
+
+            fn try_wait_status(&mut self) -> std::io::Result<Option<bool>> {
+                self.metrics.poll_calls.fetch_add(1, Ordering::AcqRel);
+                match self.polls_before_exit.as_mut() {
+                    Some(remaining) if *remaining == 0 => {
+                        self.metrics.reaped.fetch_add(1, Ordering::AcqRel);
+                        Ok(Some(self.exit_success))
+                    }
+                    Some(remaining) => {
+                        *remaining -= 1;
+                        Ok(None)
+                    }
+                    None => Ok(None),
+                }
+            }
+
+            fn kill_owned(&mut self) -> std::io::Result<()> {
+                self.metrics.kill_calls.fetch_add(1, Ordering::AcqRel);
+                if self.kill_fails {
+                    return Err(std::io::Error::other("fake kill race"));
+                }
+                self.polls_before_exit = Some(0);
+                Ok(())
+            }
+
+            fn take_stdin(&mut self) -> Option<Box<dyn io::Write + Send>> {
+                self.stdin
+                    .take()
+                    .map(|writer| Box::new(writer) as Box<dyn io::Write + Send>)
+            }
+
+            fn take_stdout(&mut self) -> Option<Box<dyn io::Read + Send>> {
+                self.stdout
+                    .take()
+                    .map(|reader| Box::new(reader) as Box<dyn io::Read + Send>)
+            }
+        }
+
+        struct FakeLaunchSpec {
+            generation: Option<u64>,
+            records: Vec<Vec<u8>>,
+            delay_after_first: Option<Duration>,
+            polls_before_exit: Option<usize>,
+            kill_fails: bool,
+            metrics: FakePipeMetrics,
+        }
+
+        struct FakeLauncher {
+            specs: VecDeque<FakeLaunchSpec>,
+        }
+
+        impl FakeLauncher {
+            fn one(spec: FakeLaunchSpec) -> Self {
+                Self {
+                    specs: VecDeque::from([spec]),
+                }
+            }
+        }
+
+        impl StdioSidecarLauncher for FakeLauncher {
+            fn launch(&mut self, generation: u64) -> Result<Box<dyn SidecarProcessControl>, NetworkErrorCode> {
+                let spec = self.specs.pop_front().ok_or(NetworkErrorCode::SidecarUnavailable)?;
+                let actual_generation = spec.generation.unwrap_or(generation);
+                let lines = spec.records.into_iter().collect();
+                Ok(Box::new(FakeProcessControl {
+                    generation: actual_generation,
+                    polls_before_exit: spec.polls_before_exit,
+                    kill_fails: spec.kill_fails,
+                    exit_success: true,
+                    stdin: Some(FakeWriter {
+                        writes: Arc::clone(&spec.metrics.writes),
+                        drops: Arc::clone(&spec.metrics.stdin_drops),
+                    }),
+                    stdout: Some(FakeReader {
+                        lines,
+                        pending: Vec::new(),
+                        delay_after_first: spec.delay_after_first,
+                        reads: 0,
+                        drops: Arc::clone(&spec.metrics.stdout_drops),
+                    }),
+                    metrics: spec.metrics,
+                }))
+            }
+        }
+
+        fn fake_metrics() -> FakePipeMetrics {
+            FakePipeMetrics::default()
+        }
+
+        fn fake_handshake_record(context: &SidecarLaunchContext) -> Vec<u8> {
+            serde_json::to_vec(&SidecarHandshake {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                instance_id: context.instance_id.clone(),
+                auth_proof: sidecar_auth_proof(context.auth_token(), &context.instance_id),
+            })
+            .expect("fake handshake serialization")
+        }
+
+        fn fake_runtime_with_spec(
+            context: &SidecarLaunchContext,
+            mut records: Vec<Vec<u8>>,
+            metrics: FakePipeMetrics,
+            delay_after_first: Option<Duration>,
+            generation: Option<u64>,
+        ) -> StdioSidecarRuntime<FakeLauncher> {
+            let handshake = fake_handshake_record(context);
+            records.insert(0, handshake);
+            let launcher = FakeLauncher::one(FakeLaunchSpec {
+                generation,
+                records,
+                delay_after_first,
+                polls_before_exit: None,
+                kill_fails: false,
+                metrics,
+            });
+            StdioSidecarRuntime::with_launcher(PathBuf::from("fixed-sidecar"), launcher)
+                .with_response_timeout(Duration::from_millis(100))
+                .with_cancel_drain_timeout(Duration::from_millis(200))
+        }
+
+        fn fake_runtime(
+            context: &SidecarLaunchContext,
+            records: Vec<Vec<u8>>,
+            metrics: FakePipeMetrics,
+        ) -> StdioSidecarRuntime<FakeLauncher> {
+            fake_runtime_with_spec(context, records, metrics, None, None)
+        }
+
+        fn wait_for_drop(count: &Arc<AtomicUsize>) {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while count.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        #[test]
+        fn fake_launcher_preserves_handshake_request_and_descriptor_cleanup() -> Result<(), NetworkErrorCode> {
+            let context =
+                SidecarLaunchContext::new("fake.handshake".into(), vec![0x31; 32]).with_private_key(vec![0x32; 32]);
+            let metrics = fake_metrics();
+            let mut runtime = fake_runtime(&context, vec![status_record()?.into_bytes()], metrics.clone());
+            let handshake = runtime.start(&context)?;
+            assert_eq!(handshake.instance_id, context.instance_id);
+            let response = runtime.request(&IpcRequest {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                request_id: "request.status".into(),
+                payload: IpcRequestPayload::GetStatus,
+            })?;
+            assert!(matches!(response.result, Ok(IpcResponsePayload::Status(_))));
+            let _ = runtime.stop();
+
+            let writes = String::from_utf8(metrics.writes.lock().expect("fake writes lock").clone())
+                .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            assert!(writes.contains("\"protocol_version\":2"));
+            assert!(writes.contains("\"request_id\":\"request.status\""));
+            wait_for_drop(&metrics.stdin_drops);
+            wait_for_drop(&metrics.stdout_drops);
+            assert_eq!(metrics.stdin_drops.load(Ordering::Acquire), 1);
+            assert_eq!(metrics.stdout_drops.load(Ordering::Acquire), 1);
+            Ok(())
+        }
+
+        #[test]
+        fn fake_launcher_cancel_drains_correlated_pair_before_exact_reap() -> Result<(), NetworkErrorCode> {
+            let context =
+                SidecarLaunchContext::new("fake.cancel".into(), vec![0x33; 32]).with_private_key(vec![0x34; 32]);
+            let (primary, control) = scenario_records(include_str!(
+                "../../../schemas/fixtures/network-ipc-v2.cancel-wins.json"
+            ))?;
+            let metrics = fake_metrics();
+            let mut runtime = fake_runtime_with_spec(
+                &context,
+                vec![primary.into_bytes(), control.into_bytes()],
+                metrics.clone(),
+                Some(Duration::from_millis(40)),
+                None,
+            );
+            runtime.start(&context)?;
+            let result = request_cancel(&mut runtime);
+            assert_eq!(result, Err(NetworkErrorCode::OperationCancelled));
+            runtime.terminate_child()?;
+            assert_eq!(metrics.kill_calls.load(Ordering::Acquire), 1);
+            assert!(metrics.reaped.load(Ordering::Acquire) >= 1);
+            Ok(())
+        }
+
+        #[test]
+        fn fake_launcher_timeout_forces_exact_reap_and_closes_pipes() -> Result<(), NetworkErrorCode> {
+            let context =
+                SidecarLaunchContext::new("fake.timeout".into(), vec![0x35; 32]).with_private_key(vec![0x36; 32]);
+            let metrics = fake_metrics();
+            let mut runtime = fake_runtime_with_spec(
+                &context,
+                Vec::new(),
+                metrics.clone(),
+                Some(Duration::from_millis(100)),
+                None,
+            )
+            .with_response_timeout(Duration::from_millis(20));
+            runtime.start(&context)?;
+            assert_eq!(
+                runtime.request(&IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: "request.timeout.fake".into(),
+                    payload: IpcRequestPayload::GetStatus,
+                }),
+                Err(NetworkErrorCode::OperationTimedOut)
+            );
+            assert_eq!(metrics.kill_calls.load(Ordering::Acquire), 1);
+            assert!(metrics.reaped.load(Ordering::Acquire) >= 1);
+            wait_for_drop(&metrics.stdin_drops);
+            wait_for_drop(&metrics.stdout_drops);
+            Ok(())
+        }
+
+        #[test]
+        fn fake_launcher_rejects_stale_generation_without_reusing_process_handle() {
+            let context =
+                SidecarLaunchContext::new("fake.stale".into(), vec![0x37; 32]).with_private_key(vec![0x38; 32]);
+            let metrics = fake_metrics();
+            let mut runtime = fake_runtime_with_spec(&context, Vec::new(), metrics.clone(), None, Some(99));
+            assert_eq!(runtime.start(&context), Err(NetworkErrorCode::InvalidStateTransition));
+            assert_eq!(metrics.kill_calls.load(Ordering::Acquire), 1);
+            assert!(metrics.reaped.load(Ordering::Acquire) >= 1);
+            assert_eq!(runtime.status(), Err(NetworkErrorCode::SidecarUnavailable));
+        }
+
+        #[test]
+        fn fake_process_exact_reap_does_not_release_unconfirmed_handle() -> Result<(), NetworkErrorCode> {
+            let metrics = fake_metrics();
+            let mut process = Some(FakeProcessControl {
+                generation: 7,
+                polls_before_exit: None,
+                kill_fails: true,
+                exit_success: true,
+                stdin: None,
+                stdout: None,
+                metrics: metrics.clone(),
+            });
+            assert_eq!(
+                terminate_child_handle_with_timeout(&mut process, Duration::ZERO, Duration::ZERO),
+                Err(NetworkErrorCode::SidecarUnavailable)
+            );
+            assert!(process.is_some());
+            process.as_mut().expect("quarantined fake process").polls_before_exit = Some(1);
+            process.as_mut().expect("quarantined fake process").kill_fails = false;
+            terminate_child_handle(&mut process)?;
+            assert!(process.is_none());
+            assert_eq!(metrics.kill_calls.load(Ordering::Acquire), 2);
+            assert!(metrics.reaped.load(Ordering::Acquire) >= 1);
+            Ok(())
         }
 
         #[test]
@@ -1221,4 +1721,6 @@ mod unix {
 #[cfg(all(unix, feature = "networking-dev"))]
 pub use unix::LabSidecarHandshake;
 #[cfg(unix)]
-pub use unix::{StdioSidecarRuntime, sidecar_auth_proof};
+pub use unix::{
+    LocalProcessLauncher, SidecarProcessControl, StdioSidecarLauncher, StdioSidecarRuntime, sidecar_auth_proof,
+};
