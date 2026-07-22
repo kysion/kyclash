@@ -9,7 +9,12 @@ on:
       - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
       - 'scripts/build-network-sidecar-macos.mjs'
       - 'macos/route-helper/**'
-      - 'src-tauri/src/networking/sidecar_trust.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/build.rs'
+      - 'src-tauri/src/lib.rs'
+      - 'src-tauri/src/networking/**'
   push:
     branches: [main]
     paths:
@@ -17,7 +22,12 @@ on:
       - '.github/workflows/network-sidecar.yml'
       - 'scripts/build-network-sidecar-macos.mjs'
       - 'macos/route-helper/**'
-      - 'src-tauri/src/networking/sidecar_trust.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/build.rs'
+      - 'src-tauri/src/lib.rs'
+      - 'src-tauri/src/networking/**'
   workflow_dispatch:
 
 permissions:
