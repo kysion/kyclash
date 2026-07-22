@@ -37,6 +37,7 @@
     "macos:production-vm:trust-probe": "node scripts/build-system-trust-probe-macos.mjs",
     "macos:production-vm:keychain-helper": "node scripts/build-keychain-public-helper-macos.mjs",
     "macos:production-vm:peer": "node scripts/build-networking-system-lab-peer-macos.mjs",
+    "macos:production-vm:peer-run": "node scripts/run-networking-vm-lab-peer.mjs",
     "macos:production-vm:copy-fixtures": "node scripts/copy-networking-vm-lab-fixtures.mjs",
     "fix-alpha-version": "node scripts/fix-alpha_version.mjs",
     "release-version": "node scripts/release-version.mjs",

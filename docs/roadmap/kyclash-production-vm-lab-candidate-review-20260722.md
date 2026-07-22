@@ -541,21 +541,24 @@ public `policy_expiry_ceiling_epoch` printed by `prepare`; it must remain more
 than ten minutes in the future and can therefore never exceed the peer's
 24-hour lifetime limit or the certificate safety ceiling. The peer runs in a
 dedicated persistent SSH execution session whose stdin stays open; the
-orchestrator retains that session handle until cleanup. A one-shot/background
+host-only runner retains that session handle until cleanup. A one-shot/background
 SSH command is forbidden because EOF or parent loss intentionally removes the
-descriptor and terminates the peer:
+descriptor and terminates the peer. Use the checked-in runner from a second
+host terminal so the three guest markers are injected into the remote `env`
+command instead of relying on an unrelated guest shell export:
 
 ```bash
-/private/var/tmp/kyclash-networking-vm-lab/<run-id>/kyclash-networking-system-lab \
-  --run-id <run-id> \
-  --client-public-key /private/var/tmp/kyclash-networking-vm-lab/<run-id>/client-public.key \
-  --private-dir /private/var/tmp/kyclash-networking-vm-lab/<run-id> \
-  --descriptor /private/var/tmp/kyclash-networking-vm-lab/<run-id>/guest-descriptor.json \
-  --root-cert /private/var/tmp/kyclash-networking-vm-lab/<run-id>/loopback-trust-root.pem \
-  --leaf-cert /private/var/tmp/kyclash-networking-vm-lab/<run-id>/loopback-leaf.pem \
-  --leaf-key /private/var/tmp/kyclash-networking-vm-lab/<run-id>/loopback-leaf.key \
-  --expires-at <EXPIRES_AT>
+# HOST / keep this terminal attached until the App has disconnected and
+# guest cleanup has proved that the peer descriptor is absent.
+corepack pnpm macos:production-vm:peer-run \
+  --run-id <run-id> --expires-at <EXPIRES_AT>
 ```
+
+The runner resolves only `kyclash-macos-lab-work`, uses strict known-host and
+batch SSH settings, launches the exact run-root binary, waits for the fixed
+`KYCLASH_SYSTEM_LAB_READY` record, and does not close stdin before the caller
+explicitly ends the session. It prints only the selected VM, run ID, and ready
+status; it never copies peer keys, certificates, or manifests to the host.
 
 Once the peer has published its descriptor and the guest fixture has written
 the policy preflight, the host pulls only the three reviewed public inputs. The
@@ -570,7 +573,7 @@ PULL_PARENT="$(mktemp -d "$PWD/target/macos-vm-lab/pull.XXXXXX")"
 chmod 700 "$PULL_PARENT"
 PULL_ROOT="$PULL_PARENT/public-input"
 corepack pnpm macos:production-vm:copy-fixtures \
-  -- --pull-run --run-id <run-id> --output-root "$PULL_ROOT"
+  --pull-run --run-id <run-id> --output-root "$PULL_ROOT"
 ```
 
 The resulting root contains only `guest-descriptor.json`,

@@ -56,6 +56,10 @@ test('production VM package scripts point at the reviewed executable chain', () 
     'node scripts/build-networking-system-lab-peer-macos.mjs',
   )
   assert.equal(
+    scripts['macos:production-vm:peer-run'],
+    'node scripts/run-networking-vm-lab-peer.mjs',
+  )
+  assert.equal(
     scripts['macos:production-vm:copy-fixtures'],
     'node scripts/copy-networking-vm-lab-fixtures.mjs',
   )

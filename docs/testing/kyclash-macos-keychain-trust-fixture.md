@@ -88,7 +88,15 @@ FIXTURE="$HOME/kyclash-macos-vm-keychain-trust-fixture.sh"
 "$FIXTURE" mark-keychain-created --run-id "$RUN_ID"
 "$FIXTURE" import-cert --run-id "$RUN_ID"
 "$FIXTURE" probe --run-id "$RUN_ID"
-# Start the guest peer with the exact run-bound client-public.key file.
+# HOST (second terminal): compute EXPIRES_AT from the printed ceiling and keep
+# this persistent runner attached while the candidate App connects. The
+# runner injects all three guest markers and keeps stdin open; do not replace
+# it with a one-shot SSH/background command.
+EXPIRES_AT=<smaller-of-now-plus-21600-and-policy_expiry_ceiling_epoch>
+corepack pnpm macos:production-vm:peer-run \
+  --run-id "$RUN_ID" --expires-at "$EXPIRES_AT"
+# Return to the guest terminal only after the App has disconnected and the
+# host runner has been explicitly closed; then remove the fixture certificate.
 "$FIXTURE" remove-cert --run-id "$RUN_ID"
 "$FIXTURE" probe-absent --run-id "$RUN_ID"
 "$FIXTURE" cleanup --run-id "$RUN_ID"
@@ -103,7 +111,7 @@ PULL_PARENT="$(mktemp -d "$PWD/target/macos-vm-lab/pull.XXXXXX")"
 chmod 700 "$PULL_PARENT"
 PULL_ROOT="$PULL_PARENT/public-input"
 corepack pnpm macos:production-vm:copy-fixtures \
-  -- --pull-run --run-id "$RUN_ID" --output-root "$PULL_ROOT"
+  --pull-run --run-id "$RUN_ID" --output-root "$PULL_ROOT"
 
 node scripts/generate-networking-production-vm-lab.mjs \
   --descriptor "$PULL_ROOT/guest-descriptor.json" \
