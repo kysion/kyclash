@@ -261,9 +261,10 @@ fn validate_ipc_override(value: &str) -> Result<PathBuf> {
     if value.is_empty() || value.len() > 100 || !path.is_absolute() {
         return Err(anyhow::anyhow!("{IPC_PATH_ENV} must be an absolute Unix socket path"));
     }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    if value.split('/').any(|component| matches!(component, "." | ".."))
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
     {
         return Err(anyhow::anyhow!(
             "{IPC_PATH_ENV} must not contain relative path components"
@@ -335,6 +336,7 @@ mod tests {
     #[test]
     fn ipc_override_rejects_relative_traversal_and_unsafe_names() {
         assert!(validate_ipc_override("target/kyclash.sock").is_err());
+        assert!(validate_ipc_override(&candidate("./dev.sock")).is_err());
         assert!(validate_ipc_override(&candidate("../escape.sock")).is_err());
         assert!(validate_ipc_override(&candidate("dev.sock;rm")).is_err());
         assert!(validate_ipc_override(&candidate("dev.txt")).is_err());
