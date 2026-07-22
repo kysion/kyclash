@@ -75,6 +75,10 @@ test('fixture keeps the exact trust and cleanup boundary', () => {
   assert.match(source, /probe-before-import-failed/u)
   assert.match(source, /probe-after-import-passed/u)
   assert.match(source, /probe-after-remove-failed/u)
+  assert.match(
+    source,
+    /local expectation="\$1" phase="\$2" output error\n\s+output="\$RUN_ROOT\/probe-\$phase-output\.txt"/u,
+  )
   assert.match(source, /dump-trust-settings -d/u)
   assert.match(source, /policy_expiry_ceiling_epoch/u)
   assert.match(source, /stat -f '%d' \/var/u)

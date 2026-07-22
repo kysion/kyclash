@@ -339,7 +339,9 @@ prepare_failure_cleanup() {
 }
 
 run_trust_probe() {
-  local expectation="$1" phase="$2" output="$RUN_ROOT/probe-$phase-output.txt" error="$RUN_ROOT/probe-$phase-error.txt"
+  local expectation="$1" phase="$2" output error
+  output="$RUN_ROOT/probe-$phase-output.txt"
+  error="$RUN_ROOT/probe-$phase-error.txt"
   file_shape "$PROBE_PATH" 755
   file_shape "$ROOT_CERT_PATH" 600
   file_shape "$LEAF_CERT_PATH" 600
