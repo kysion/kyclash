@@ -31,13 +31,22 @@ import type {
   RouteHelperRegistrationStatus,
 } from '@/types/networking'
 
-const activeStates = new Set([
+const pollingStates = new Set([
   'authenticating',
   'fetching_config',
   'preparing_tunnel',
   'connecting_primary',
   'connected_primary',
   'degraded_fallback',
+  'reconnecting',
+  'disconnecting',
+])
+
+const cancellableStates = new Set([
+  'authenticating',
+  'fetching_config',
+  'preparing_tunnel',
+  'connecting_primary',
   'reconnecting',
   'disconnecting',
 ])
@@ -99,7 +108,7 @@ const NetworkingPage = () => {
   useEffect(() => void refreshHelper(), [refreshHelper])
 
   useEffect(() => {
-    if (!status || !activeStates.has(status.state)) return
+    if (!status || !pollingStates.has(status.state)) return
     const timer = window.setInterval(() => {
       void getNetworkingStatus()
         .then(setStatus)
@@ -108,7 +117,7 @@ const NetworkingPage = () => {
     return () => window.clearInterval(timer)
   }, [status])
 
-  const isTransitioning = status ? activeStates.has(status.state) : false
+  const isTransitioning = status ? cancellableStates.has(status.state) : false
   return (
     <BasePage
       title="KyClash Network"

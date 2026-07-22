@@ -83,7 +83,8 @@ test('production networking UI keeps polling connected and fallback states', () 
     'utf8',
   )
   assert.match(page, /'connected_primary',\s*'degraded_fallback'/u)
-  assert.match(page, /activeStates\.has\(status\.state\)/u)
+  assert.match(page, /pollingStates\.has\(status\.state\)/u)
+  assert.match(page, /cancellableStates\.has\(status\.state\)/u)
 })
 
 test('production VM contract exposes a guest-to-host public pull only', () => {
