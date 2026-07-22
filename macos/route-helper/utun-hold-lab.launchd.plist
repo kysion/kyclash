@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>net.kysion.kyclash.utun-route-fixture</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Application Support/KyClash/route-lab/bin/kyclash-utun-lab.test</string>
+    <string>-test.run=^TestRealUTUNHoldForForcedTermination$</string>
+    <string>-test.count=1</string>
+    <string>-test.v=true</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>KYCLASH_VM_LAB_CONFIRM</key>
+    <string>authorized-kyclash-virtualization-framework-vm</string>
+    <key>KYCLASH_UTUN_LAB_HOLD</key>
+    <string>1</string>
+    <key>KYCLASH_UTUN_LAB_OWNER_FILE</key>
+    <string>/var/tmp/kyclash-utun-lab-route-owner</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/tmp/kyclash-utun-lab-route-owner.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/tmp/kyclash-utun-lab-route-owner.log</string>
+</dict>
+</plist>

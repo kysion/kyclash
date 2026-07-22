@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct {
   int32_t transport_status;
@@ -46,11 +47,17 @@ int main(int argc, const char *argv[]) {
     BOOL expectConflict = argc == 4 &&
                           strcmp(argv[1], "--expect-conflict") == 0 &&
                           strcmp(argv[2], "--dual-stack") == 0;
-    if (passed && (argc == 2 || dualStack || expectConflict)) {
+    BOOL holdAfterApply = argc == 4 &&
+                          strcmp(argv[1], "--hold-after-apply") == 0 &&
+                          strcmp(argv[2], "--dual-stack") == 0;
+    if (passed &&
+        (argc == 2 || dualStack || expectConflict || holdAfterApply)) {
       const char *cidrs[] = {"192.0.2.0/24", "fd00:64::/48"};
-      uintptr_t cidrCount = (dualStack || expectConflict) ? 2 : 1;
+      uintptr_t cidrCount =
+          (dualStack || expectConflict || holdAfterApply) ? 2 : 1;
       const char *interfaceName = dualStack        ? argv[2]
                                   : expectConflict ? argv[3]
+                                  : holdAfterApply ? argv[3]
                                                    : argv[1];
       KCRClientReply begin = kyclash_route_helper_client_owner(
           client, 0, 1, "lease.lab.route.v1", "operation.lab.route.v1",
@@ -72,6 +79,13 @@ int main(int argc, const char *argv[]) {
                                           client, 3, 1, "lease.lab.route.v1",
                                           "operation.lab.route.v1"),
                                       2);
+      if (passed && holdAfterApply) {
+        printf("KYCLASH_ROUTE_HELPER_LAB_READY state=applied\n");
+        fflush(stdout);
+        for (;;) {
+          pause();
+        }
+      }
       passed = passed && requireReply(@"rollback",
                                       kyclash_route_helper_client_reference(
                                           client, 1, 1, "lease.lab.route.v1",
@@ -81,8 +95,9 @@ int main(int argc, const char *argv[]) {
       fprintf(stderr,
               "usage: %s [utun-interface] | %s --dual-stack "
               "[utun-interface] | %s --expect-conflict --dual-stack "
+              "[utun-interface] | %s --hold-after-apply --dual-stack "
               "[utun-interface]\n",
-              argv[0], argv[0], argv[0]);
+              argv[0], argv[0], argv[0], argv[0]);
       passed = NO;
     }
     kyclash_route_helper_client_destroy(client);
