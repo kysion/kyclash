@@ -207,10 +207,13 @@ const runCli = () => {
     )
   if (target !== 'aarch64-apple-darwin')
     fail('networking-production-vm-lab is arm64-only')
+  const skipAppCodesign = process.env.KYCLASH_SKIP_APP_CODESIGN === 'true'
   const identity = process.env.APPLE_SIGNING_IDENTITY
   const team = process.env.APPLE_TEAM_ID
-  if (!identity || team !== 'RQUQ8Y3S9H')
-    fail('Developer ID Application identity and locked Team ID are required')
+  if (!skipAppCodesign && (!identity || team !== 'RQUQ8Y3S9H'))
+    fail(
+      'Developer ID Application identity and locked Team ID are required unless KYCLASH_SKIP_APP_CODESIGN=true',
+    )
   const sourceCommit = gitHead()
   const app = path.join(
     PROJECT_ROOT,
@@ -278,25 +281,29 @@ const runCli = () => {
   writeOwnedReplacement(stagedMarker, markerBytes, 0o644)
   writeOwnedReplacement(appMarker, markerBytes, 0o644)
 
-  execFileSync(
-    '/usr/bin/codesign',
-    [
-      '--force',
-      '--options',
-      'runtime',
-      '--timestamp',
-      '--preserve-metadata=identifier,entitlements,requirements,flags',
-      '--sign',
-      identity,
-      app,
-    ],
-    { stdio: 'inherit' },
-  )
-  execFileSync(
-    '/usr/bin/codesign',
-    ['--verify', '--deep', '--strict', '--verbose=2', app],
-    { stdio: 'inherit' },
-  )
+  if (!skipAppCodesign) {
+    execFileSync(
+      '/usr/bin/codesign',
+      [
+        '--force',
+        '--options',
+        'runtime',
+        '--timestamp',
+        '--preserve-metadata=identifier,entitlements,requirements,flags',
+        '--sign',
+        identity,
+        app,
+      ],
+      { stdio: 'inherit' },
+    )
+    execFileSync(
+      '/usr/bin/codesign',
+      ['--verify', '--deep', '--strict', '--verbose=2', app],
+      { stdio: 'inherit' },
+    )
+  } else {
+    console.log('kyclash_vm_lab_app_codesign=skipped-by-explicit-user-request')
+  }
   if (
     sha256(readRegular(finalMihomo, finalMihomo)) !== finalMihomoSha256 ||
     sha256(readRegular(finalMihomoAlpha, finalMihomoAlpha)) !==
