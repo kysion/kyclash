@@ -602,6 +602,31 @@ production factory can replace the local launcher. Until that integration and
 fresh restart materialization are complete, the no-sign VM App remains the visible
 userspace lab artifact and cannot claim real utun or private routes.
 
+### 2026-07-23 broker-bound route authority and v3 wire source slice
+
+The locked S1.13 continuation now has a source/test boundary from the broker
+start through route ownership. A controller built from a broker-assigned
+session reference can be started only through a one-shot bound command. The
+accepted handshake produces a non-copyable receipt carrying distinct runtime
+and broker generations; failed or abandoned attempts are reaped or quarantined
+and never restart with stale material.
+
+`ControllerStartReceipt::authorize_routes` consumes that receipt with verified
+tunnel facts and exact lease/operation identifiers to create a sealed
+`BrokerRouteAuthorization`. The pure-Rust route v3 session retains it while
+durably enforcing hold-before-route and route-before-release ordering,
+including the `HoldPending -> RetirementPending` recovery path. Its fake
+adapters cover wrong tuple, replay, partial/failed cleanup, release retry, and
+v2 recovery-only behavior.
+
+The native source seam now includes a broker v3 full-tuple XPC service/bridge
+and a separate route-helper v3 wire/journal schema with strict top-level version
+dispatch and an unprivileged contract self-test. Neither is connected to the
+production factory yet: the root bridge is not linked into the ordinary App,
+the route-helper v3 interface is not installed, and the service remains
+default-off. The no-sign App remains userspace-only; the disposable VM real-utun
+test is prepared but still needs the visible guest administrator authorization.
+
 ## Later platform order
 
 1. macOS x64

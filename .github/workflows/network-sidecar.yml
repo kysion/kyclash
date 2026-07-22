@@ -431,11 +431,12 @@ jobs:
           plist_value 'MachServices:net.kysion.kyclash.route-helper' 'true'
           plist_absent 'ProgramArguments'
           plist_absent 'EnvironmentVariables'
-          test "$(grep -c 'interface.setClasses' macos/route-helper/main.swift)" -eq 13
+          test "$(grep -c 'interface.setClasses' macos/route-helper/main.swift)" -eq 18
           xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
             -framework Foundation -o "${RUNNER_TEMP}/kyclash-route-helper" \
             macos/route-helper/main.swift
           "${RUNNER_TEMP}/kyclash-route-helper" --route-readonly-self-test
+          "${RUNNER_TEMP}/kyclash-route-helper" --route-v3-contract-self-test
           "${RUNNER_TEMP}/kyclash-route-helper" --route-coordinator-self-test
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -mmacosx-version-min=13.0 -c macos/route-helper/client.m \

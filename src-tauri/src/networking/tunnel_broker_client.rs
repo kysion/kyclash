@@ -18,7 +18,7 @@ pub struct TunnelBrokerSessionReference {
 }
 
 impl TunnelBrokerSessionReference {
-    fn validate(&self) -> Result<(), NetworkErrorCode> {
+    pub(crate) fn validate(&self) -> Result<(), NetworkErrorCode> {
         if self.protocol_version != TUNNEL_BROKER_PROTOCOL_VERSION
             || self.generation == 0
             || self.generation > i64::MAX as u64

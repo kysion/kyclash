@@ -11,12 +11,15 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use zeroize::{Zeroize as _, Zeroizing};
 
+#[cfg(unix)]
+use super::{
+    BoundSidecarLaunch, ControllerStartReceipt, LocalProcessLauncher, SidecarRuntime as _, StdioSidecarLauncher,
+    StdioSidecarRuntime, TunnelBrokerSessionReference,
+};
 use super::{
     IpcRequest, IpcResponse, NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode, SidecarHandshake, SidecarLaunchContext,
     SidecarLifecycleState, SidecarProcessStatus,
 };
-#[cfg(unix)]
-use super::{LocalProcessLauncher, SidecarRuntime as _, StdioSidecarLauncher, StdioSidecarRuntime};
 
 const COMMAND_CAPACITY: usize = 32;
 const DIAGNOSTIC_CAPACITY: usize = 128;
@@ -136,6 +139,10 @@ enum Command {
     Start {
         response: oneshot::Sender<Result<(), NetworkErrorCode>>,
     },
+    #[cfg(unix)]
+    StartBound {
+        response: oneshot::Sender<Result<ControllerStartReceipt, NetworkErrorCode>>,
+    },
     Request {
         operation_id: String,
         request: IpcRequest,
@@ -182,6 +189,22 @@ impl ProductionControllerHandle {
         let (send, receive) = oneshot::channel();
         self.commands
             .send(Command::Start { response: send })
+            .await
+            .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+        receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+    }
+
+    /// Starts a controller created from one broker-bound launch and returns
+    /// the receipt for that exact accepted handshake.
+    ///
+    /// The actor consumes the start right before entering the runtime start
+    /// boundary. A failed attempt cannot be retried with the same broker
+    /// reference, context, or authentication proof.
+    #[cfg(unix)]
+    pub async fn start_broker_bound(&self) -> Result<ControllerStartReceipt, NetworkErrorCode> {
+        let (send, receive) = oneshot::channel();
+        self.commands
+            .send(Command::StartBound { response: send })
             .await
             .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
         receive.await.map_err(|_| NetworkErrorCode::SidecarUnavailable)?
@@ -350,12 +373,54 @@ fn spawn_production_controller_with_stop_timeout<R: AsyncProductionRuntime>(
     expected_auth_proof: String,
     stop_timeout: Duration,
 ) -> ProductionControllerHandle {
+    spawn_controller_actor(
+        runtime,
+        context,
+        expected_auth_proof,
+        stop_timeout,
+        ControllerMode::Reusable,
+    )
+}
+
+/// Creates a controller whose launch context is permanently bound to one
+/// broker-assigned session reference.
+///
+/// Only [`ProductionControllerHandle::start_broker_bound`] can consume this
+/// controller's one start attempt. It intentionally has no automatic restart:
+/// a future production session provider must prepare fresh launch material and
+/// a fresh broker reference before constructing another controller.
+#[cfg(unix)]
+pub fn spawn_broker_bound_production_controller<R: AsyncProductionRuntime>(
+    runtime: R,
+    launch: BoundSidecarLaunch,
+) -> ProductionControllerHandle {
+    let (reference, context, expected_auth_proof) = launch.into_parts();
+    spawn_controller_actor(
+        runtime,
+        context,
+        expected_auth_proof,
+        STOP_TIMEOUT,
+        ControllerMode::BrokerBound {
+            reference,
+            start_consumed: false,
+        },
+    )
+}
+
+fn spawn_controller_actor<R: AsyncProductionRuntime>(
+    runtime: R,
+    context: SidecarLaunchContext,
+    expected_auth_proof: String,
+    stop_timeout: Duration,
+    mode: ControllerMode,
+) -> ProductionControllerHandle {
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
     let cancellations = Arc::new(Mutex::new(HashMap::new()));
     let actor = ProductionController {
         runtime,
         context: Some(context),
         expected_auth_proof: Zeroizing::new(expected_auth_proof),
+        mode,
         state: SidecarLifecycleState::Stopped,
         receiver,
         cancellations: Arc::clone(&cancellations),
@@ -375,10 +440,26 @@ fn spawn_production_controller_with_stop_timeout<R: AsyncProductionRuntime>(
     }
 }
 
+enum ControllerMode {
+    Reusable,
+    #[cfg(unix)]
+    BrokerBound {
+        reference: TunnelBrokerSessionReference,
+        start_consumed: bool,
+    },
+}
+
+enum ControllerStartOutcome {
+    Reusable,
+    #[cfg(unix)]
+    BrokerBound(ControllerStartReceipt),
+}
+
 struct ProductionController<R> {
     runtime: R,
     context: Option<SidecarLaunchContext>,
     expected_auth_proof: Zeroizing<String>,
+    mode: ControllerMode,
     state: SidecarLifecycleState,
     receiver: mpsc::Receiver<Command>,
     cancellations: Arc<Mutex<HashMap<String, CancellationRegistration>>>,
@@ -397,12 +478,33 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         while let Some(command) = self.receiver.recv().await {
             match command {
                 Command::Start { response } => {
+                    let result = if self.retired || !matches!(&self.mode, ControllerMode::Reusable) {
+                        Err(NetworkErrorCode::InvalidStateTransition)
+                    } else {
+                        self.start(true).await.and_then(|outcome| match outcome {
+                            ControllerStartOutcome::Reusable => Ok(()),
+                            #[cfg(unix)]
+                            ControllerStartOutcome::BrokerBound(_) => Err(NetworkErrorCode::InvalidStateTransition),
+                        })
+                    };
+                    let _ = response.send(result);
+                }
+                #[cfg(unix)]
+                Command::StartBound { response } => {
                     let result = if self.retired {
                         Err(NetworkErrorCode::InvalidStateTransition)
                     } else {
-                        self.start(true).await
+                        self.start_broker_bound().await
                     };
-                    let _ = response.send(result);
+                    if let Err(Ok(_unclaimed_receipt)) = response.send(result) {
+                        // A cancelled caller cannot leave an accepted broker
+                        // generation running without the only receipt that can
+                        // authorize its later route ownership. The one-shot
+                        // start remains consumed after this exact reap.
+                        if self.stop_runtime_bounded(None).await.is_ok() {
+                            self.record(ProductionEventKind::Stopped, None, None);
+                        }
+                    }
                 }
                 Command::Request {
                     operation_id,
@@ -466,7 +568,21 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         self.cancellations.lock().clear();
     }
 
-    async fn start(&mut self, reset_crash_history: bool) -> Result<(), NetworkErrorCode> {
+    #[cfg(unix)]
+    async fn start_broker_bound(&mut self) -> Result<ControllerStartReceipt, NetworkErrorCode> {
+        match &mut self.mode {
+            ControllerMode::BrokerBound { start_consumed, .. } if !*start_consumed => *start_consumed = true,
+            ControllerMode::Reusable | ControllerMode::BrokerBound { .. } => {
+                return Err(NetworkErrorCode::InvalidStateTransition);
+            }
+        }
+        match self.start(true).await? {
+            ControllerStartOutcome::BrokerBound(receipt) => Ok(receipt),
+            ControllerStartOutcome::Reusable => Err(NetworkErrorCode::InvalidStateTransition),
+        }
+    }
+
+    async fn start(&mut self, reset_crash_history: bool) -> Result<ControllerStartOutcome, NetworkErrorCode> {
         if self.state != SidecarLifecycleState::Stopped {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
@@ -514,13 +630,33 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             );
             return Err(NetworkErrorCode::AuthenticationFailed);
         }
+        let outcome = match &self.mode {
+            ControllerMode::Reusable => Ok(ControllerStartOutcome::Reusable),
+            #[cfg(unix)]
+            ControllerMode::BrokerBound { reference, .. } => ControllerStartReceipt::issue(
+                self.runtime_generation,
+                reference.clone(),
+                &handshake,
+                self.expected_auth_proof.as_str(),
+                None,
+            )
+            .map(ControllerStartOutcome::BrokerBound),
+        };
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let _ = self.stop_runtime_bounded(None).await;
+                self.record(ProductionEventKind::Failed, None, Some(error));
+                return Err(error);
+            }
+        };
         self.state = SidecarLifecycleState::Running;
         self.retry_at = None;
         if reset_crash_history {
             self.crashes = 0;
         }
         self.record(ProductionEventKind::Started, None, None);
-        Ok(())
+        Ok(outcome)
     }
 
     async fn execute(
@@ -609,6 +745,22 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                 // `Exited` is returned only after the runtime observes and
                 // reaps its exact owned child handle.
                 self.absence = Some(ControllerAbsenceKind::Reaped);
+                #[cfg(unix)]
+                if matches!(&self.mode, ControllerMode::BrokerBound { .. }) {
+                    // The reference, launch context, and proof were consumed
+                    // by the completed start attempt. Reusing any of them for
+                    // an automatic restart would alias a retired broker
+                    // generation, so recovery requires a newly prepared
+                    // controller instead.
+                    self.state = SidecarLifecycleState::CrashLoop;
+                    self.retry_at = None;
+                    self.record(
+                        ProductionEventKind::CrashLoop,
+                        None,
+                        Some(NetworkErrorCode::SidecarUnavailable),
+                    );
+                    return Err(NetworkErrorCode::SidecarUnavailable);
+                }
                 self.crashes = self.crashes.saturating_add(1);
                 if self.crashes > 3 {
                     self.state = SidecarLifecycleState::CrashLoop;
@@ -766,6 +918,52 @@ mod tests {
 
     struct QueueBlockingRuntime {
         request_entries: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    struct BrokerBoundRuntime {
+        starts: Arc<AtomicUsize>,
+        stopped: Arc<AtomicUsize>,
+        exited: Arc<AtomicBool>,
+        valid_handshake: bool,
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl AsyncProductionRuntime for BrokerBoundRuntime {
+        async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
+            self.starts.fetch_add(1, Ordering::AcqRel);
+            Ok(SidecarHandshake {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                instance_id: context.instance_id.clone(),
+                auth_proof: if self.valid_handshake {
+                    crate::networking::sidecar_auth_proof(context.auth_token(), &context.instance_id)
+                } else {
+                    "invalid-proof".into()
+                },
+            })
+        }
+
+        async fn request(
+            &mut self,
+            _request: IpcRequest,
+            _cancel: Arc<AtomicBool>,
+        ) -> Result<IpcResponse, NetworkErrorCode> {
+            Err(NetworkErrorCode::InvalidStateTransition)
+        }
+
+        async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
+            Ok(if self.exited.load(Ordering::Acquire) {
+                SidecarProcessStatus::Exited { success: false }
+            } else {
+                SidecarProcessStatus::Running
+            })
+        }
+
+        async fn stop(&mut self) -> Result<(), NetworkErrorCode> {
+            self.stopped.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
     }
 
     #[cfg(unix)]
@@ -1016,6 +1214,140 @@ mod tests {
             stopped,
             exited,
         )
+    }
+
+    #[cfg(unix)]
+    type BrokerBoundController = (
+        ProductionControllerHandle,
+        TunnelBrokerSessionReference,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        Arc<AtomicBool>,
+    );
+
+    #[cfg(unix)]
+    fn broker_bound_controller(valid_handshake: bool, exited: bool) -> Result<BrokerBoundController, NetworkErrorCode> {
+        let reference = TunnelBrokerSessionReference {
+            protocol_version: crate::networking::TUNNEL_BROKER_PROTOCOL_VERSION,
+            generation: 41,
+            sidecar_instance_id: "broker.controller.instance.41".into(),
+        };
+        let launch =
+            crate::networking::SidecarLaunchMaterial::new(vec![0x31; 32], vec![0x32; 32])?.bind(reference.clone())?;
+        let starts = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let exited = Arc::new(AtomicBool::new(exited));
+        let runtime = BrokerBoundRuntime {
+            starts: Arc::clone(&starts),
+            stopped: Arc::clone(&stopped),
+            exited: Arc::clone(&exited),
+            valid_handshake,
+        };
+        Ok((
+            spawn_broker_bound_production_controller(runtime, launch),
+            reference,
+            starts,
+            stopped,
+            exited,
+        ))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn broker_bound_controller_rejects_plain_start_and_issues_the_exact_one_shot_receipt()
+    -> Result<(), NetworkErrorCode> {
+        let (handle, reference, starts, stopped, _) = broker_bound_controller(true, false)?;
+
+        assert_eq!(handle.start().await, Err(NetworkErrorCode::InvalidStateTransition));
+        assert_eq!(starts.load(Ordering::Acquire), 0);
+
+        let receipt = handle.start_broker_bound().await?;
+        assert_eq!(receipt.runtime_generation(), 1);
+        assert_eq!(receipt.broker_reference(), &reference);
+        assert_eq!(starts.load(Ordering::Acquire), 1);
+
+        handle.shutdown().await?;
+        assert_eq!(stopped.load(Ordering::Acquire), 1);
+        assert_eq!(
+            handle.start_broker_bound().await,
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        assert_eq!(handle.start().await, Err(NetworkErrorCode::InvalidStateTransition));
+        assert_eq!(starts.load(Ordering::Acquire), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejected_broker_handshake_consumes_the_attempt_and_reaps_before_refusal() -> Result<(), NetworkErrorCode> {
+        let (handle, _, starts, stopped, _) = broker_bound_controller(false, false)?;
+
+        assert_eq!(
+            handle.start_broker_bound().await,
+            Err(NetworkErrorCode::AuthenticationFailed)
+        );
+        assert_eq!(starts.load(Ordering::Acquire), 1);
+        assert_eq!(stopped.load(Ordering::Acquire), 1);
+        assert_eq!(
+            handle.start_broker_bound().await,
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        assert_eq!(starts.load(Ordering::Acquire), 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropped_bound_start_receiver_reaps_the_unclaimed_generation() -> Result<(), NetworkErrorCode> {
+        let (handle, _, starts, stopped, _) = broker_bound_controller(true, false)?;
+        let (response, receive) = oneshot::channel();
+        drop(receive);
+        handle
+            .commands
+            .send(Command::StartBound { response })
+            .await
+            .map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while stopped.load(Ordering::Acquire) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| NetworkErrorCode::OperationTimedOut)?;
+        assert_eq!(starts.load(Ordering::Acquire), 1);
+        assert_eq!(stopped.load(Ordering::Acquire), 1);
+        assert_eq!(handle.poll().await?, SidecarLifecycleState::Stopped);
+        assert_eq!(
+            handle.start_broker_bound().await,
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn crashed_broker_bound_controller_never_reuses_its_reference_for_restart() -> Result<(), NetworkErrorCode> {
+        let (handle, _, starts, _, _) = broker_bound_controller(true, true)?;
+        let _receipt = handle.start_broker_bound().await?;
+
+        assert_eq!(handle.poll().await, Err(NetworkErrorCode::SidecarUnavailable));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(handle.poll().await?, SidecarLifecycleState::CrashLoop);
+        assert_eq!(starts.load(Ordering::Acquire), 1);
+        assert_eq!(
+            handle.start_broker_bound().await,
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        assert_eq!(starts.load(Ordering::Acquire), 1);
+        assert!(
+            handle
+                .diagnostics()
+                .await?
+                .iter()
+                .any(|event| event.kind == ProductionEventKind::CrashLoop)
+        );
+        handle.shutdown().await
     }
 
     #[tokio::test]

@@ -4,6 +4,8 @@ import Foundation
 import Security
 
 private let brokerProtocolVersion: UInt8 = 1
+private let routeHelperV3ProtocolVersion: UInt8 = 3
+private let routeBrokerProtocolVersion: UInt8 = 1
 private let brokerMachService = "net.kysion.kyclash.tunnel-broker"
 private let brokerExecutableName = "kyclash-tunnel-broker"
 private let sidecarExecutableName = "kyclash-network-sidecar"
@@ -115,6 +117,120 @@ final class TunnelRouteBinding: NSObject, NSSecureCoding {
     }
 }
 
+// Route-helper v3 binds the broker reference and both route identifiers in
+// one immutable NSSecureCoding value.  The old TunnelRouteBinding above is
+// retained for recovery/compatibility only and can never populate this type.
+@objc(KCTunnelRouteBindingV3)
+final class TunnelRouteBindingV3: NSObject, NSSecureCoding {
+    static var supportsSecureCoding: Bool { true }
+
+    let protocolVersion: UInt8
+    let brokerProtocolVersion: UInt8
+    let brokerGeneration: UInt64
+    let sidecarInstanceID: String
+    let routeLeaseID: String
+    let operationID: String
+
+    init(
+        protocolVersion: UInt8 = routeHelperV3ProtocolVersion,
+        brokerProtocolVersion: UInt8 = routeBrokerProtocolVersion,
+        brokerGeneration: UInt64,
+        sidecarInstanceID: String,
+        routeLeaseID: String,
+        operationID: String
+    ) {
+        self.protocolVersion = protocolVersion
+        self.brokerProtocolVersion = brokerProtocolVersion
+        self.brokerGeneration = brokerGeneration
+        self.sidecarInstanceID = sidecarInstanceID
+        self.routeLeaseID = routeLeaseID
+        self.operationID = operationID
+    }
+
+    required init?(coder: NSCoder) {
+        guard coder.containsValue(forKey: "protocolVersion"),
+              coder.containsValue(forKey: "brokerProtocolVersion"),
+              coder.containsValue(forKey: "brokerGeneration"),
+              let sidecar = coder.decodeObject(of: NSString.self, forKey: "sidecarInstanceID") as String?,
+              let lease = coder.decodeObject(of: NSString.self, forKey: "routeLeaseID") as String?,
+              let operation = coder.decodeObject(of: NSString.self, forKey: "operationID") as String?
+        else { return nil }
+        let rawProtocol = coder.decodeInteger(forKey: "protocolVersion")
+        let rawBrokerProtocol = coder.decodeInteger(forKey: "brokerProtocolVersion")
+        let rawGeneration = coder.decodeInt64(forKey: "brokerGeneration")
+        guard (0...Int(UInt8.max)).contains(rawProtocol),
+              (0...Int(UInt8.max)).contains(rawBrokerProtocol),
+              rawGeneration > 0
+        else { return nil }
+        self.protocolVersion = UInt8(rawProtocol)
+        self.brokerProtocolVersion = UInt8(rawBrokerProtocol)
+        self.brokerGeneration = UInt64(rawGeneration)
+        self.sidecarInstanceID = sidecar
+        self.routeLeaseID = lease
+        self.operationID = operation
+    }
+
+    func encode(with coder: NSCoder) {
+        coder.encode(Int(protocolVersion), forKey: "protocolVersion")
+        coder.encode(Int(brokerProtocolVersion), forKey: "brokerProtocolVersion")
+        coder.encode(Int64(brokerGeneration), forKey: "brokerGeneration")
+        coder.encode(sidecarInstanceID as NSString, forKey: "sidecarInstanceID")
+        coder.encode(routeLeaseID as NSString, forKey: "routeLeaseID")
+        coder.encode(operationID as NSString, forKey: "operationID")
+    }
+
+    func isValid() -> Bool {
+        protocolVersion == routeHelperV3ProtocolVersion
+            && brokerProtocolVersion == routeBrokerProtocolVersion
+            && brokerGeneration > 0
+            && brokerGeneration <= UInt64(Int64.max)
+            && validIdentifier(sidecarInstanceID)
+            && validIdentifier(routeLeaseID)
+            && validIdentifier(operationID)
+    }
+}
+
+private func sameRouteBindingV3(_ lhs: TunnelRouteBindingV3, _ rhs: TunnelRouteBindingV3) -> Bool {
+    lhs.protocolVersion == rhs.protocolVersion
+        && lhs.brokerProtocolVersion == rhs.brokerProtocolVersion
+        && lhs.brokerGeneration == rhs.brokerGeneration
+        && lhs.sidecarInstanceID == rhs.sidecarInstanceID
+        && lhs.routeLeaseID == rhs.routeLeaseID
+        && lhs.operationID == rhs.operationID
+}
+
+private func sameRouteSessionV3(_ lhs: TunnelRouteBindingV3, _ rhs: TunnelRouteBindingV3) -> Bool {
+    lhs.brokerProtocolVersion == rhs.brokerProtocolVersion
+        && lhs.brokerGeneration == rhs.brokerGeneration
+        && lhs.sidecarInstanceID == rhs.sidecarInstanceID
+}
+
+private enum RetiredRouteBindingMatch {
+    case exact
+    case sameSessionMismatch
+    case unrelated
+}
+
+private struct RetiredRouteBindingV3Tombstone {
+    private(set) var binding: TunnelRouteBindingV3?
+
+    mutating func record(_ binding: TunnelRouteBindingV3) {
+        self.binding = binding
+    }
+
+    func classify(_ candidate: TunnelRouteBindingV3) -> RetiredRouteBindingMatch {
+        guard let binding else { return .unrelated }
+        if sameRouteBindingV3(binding, candidate) { return .exact }
+        return sameRouteSessionV3(binding, candidate) ? .sameSessionMismatch : .unrelated
+    }
+}
+
+private func routeBindingV3MatchesReference(_ binding: TunnelRouteBindingV3, _ reference: TunnelReference) -> Bool {
+    binding.brokerProtocolVersion == reference.protocolVersion
+        && binding.brokerGeneration == reference.generation
+        && binding.sidecarInstanceID == reference.sidecarInstanceID
+}
+
 @objc(KCTunnelBrokerReply)
 final class TunnelBrokerReply: NSObject, NSSecureCoding {
     static var supportsSecureCoding: Bool { true }
@@ -144,6 +260,68 @@ final class TunnelBrokerReply: NSObject, NSSecureCoding {
         coder.encode(Int(protocolVersion), forKey: "protocolVersion")
         coder.encode(state as NSString, forKey: "state")
         if let errorCode { coder.encode(errorCode as NSString, forKey: "errorCode") }
+    }
+}
+
+@objc(KCTunnelBrokerRouteReplyV3)
+final class TunnelBrokerRouteReplyV3: NSObject, NSSecureCoding {
+    static var supportsSecureCoding: Bool { true }
+
+    let protocolVersion: UInt8
+    let brokerProtocolVersion: UInt8
+    let brokerGeneration: UInt64
+    let state: String
+    let errorCode: String?
+    let sidecarInstanceID: String
+    let routeLeaseID: String
+    let operationID: String
+
+    fileprivate init(binding: TunnelRouteBindingV3, state: BrokerState, errorCode: BrokerErrorCode? = nil) {
+        protocolVersion = binding.protocolVersion
+        brokerProtocolVersion = binding.brokerProtocolVersion
+        brokerGeneration = binding.brokerGeneration
+        self.state = state.rawValue
+        self.errorCode = errorCode?.rawValue
+        sidecarInstanceID = binding.sidecarInstanceID
+        routeLeaseID = binding.routeLeaseID
+        operationID = binding.operationID
+    }
+
+    required init?(coder: NSCoder) {
+        guard coder.containsValue(forKey: "protocolVersion"),
+              coder.containsValue(forKey: "brokerProtocolVersion"),
+              coder.containsValue(forKey: "brokerGeneration"),
+              let state = coder.decodeObject(of: NSString.self, forKey: "state") as String?,
+              let sidecar = coder.decodeObject(of: NSString.self, forKey: "sidecarInstanceID") as String?,
+              let lease = coder.decodeObject(of: NSString.self, forKey: "routeLeaseID") as String?,
+              let operation = coder.decodeObject(of: NSString.self, forKey: "operationID") as String?
+        else { return nil }
+        let rawProtocol = coder.decodeInteger(forKey: "protocolVersion")
+        let rawBrokerProtocol = coder.decodeInteger(forKey: "brokerProtocolVersion")
+        let rawGeneration = coder.decodeInt64(forKey: "brokerGeneration")
+        guard (0...Int(UInt8.max)).contains(rawProtocol),
+              (0...Int(UInt8.max)).contains(rawBrokerProtocol),
+              rawGeneration > 0
+        else { return nil }
+        protocolVersion = UInt8(rawProtocol)
+        brokerProtocolVersion = UInt8(rawBrokerProtocol)
+        brokerGeneration = UInt64(rawGeneration)
+        self.state = state
+        errorCode = coder.decodeObject(of: NSString.self, forKey: "errorCode") as String?
+        sidecarInstanceID = sidecar
+        routeLeaseID = lease
+        operationID = operation
+    }
+
+    func encode(with coder: NSCoder) {
+        coder.encode(Int(protocolVersion), forKey: "protocolVersion")
+        coder.encode(Int(brokerProtocolVersion), forKey: "brokerProtocolVersion")
+        coder.encode(Int64(brokerGeneration), forKey: "brokerGeneration")
+        coder.encode(state as NSString, forKey: "state")
+        if let errorCode { coder.encode(errorCode as NSString, forKey: "errorCode") }
+        coder.encode(sidecarInstanceID as NSString, forKey: "sidecarInstanceID")
+        coder.encode(routeLeaseID as NSString, forKey: "routeLeaseID")
+        coder.encode(operationID as NSString, forKey: "operationID")
     }
 }
 
@@ -221,6 +399,13 @@ protocol TunnelBrokerRouteProtocol {
     func status(_ binding: TunnelRouteBinding, reply: @escaping (TunnelBrokerReply) -> Void)
 }
 
+@objc(KCTunnelBrokerRouteV3Protocol)
+protocol TunnelBrokerRouteV3Protocol: TunnelBrokerRouteProtocol {
+    func holdV3(_ binding: TunnelRouteBindingV3, reply: @escaping (TunnelBrokerRouteReplyV3) -> Void)
+    func releaseV3(_ binding: TunnelRouteBindingV3, reply: @escaping (TunnelBrokerRouteReplyV3) -> Void)
+    func statusV3(_ binding: TunnelRouteBindingV3, reply: @escaping (TunnelBrokerRouteReplyV3) -> Void)
+}
+
 private func appXPCInterface() -> NSXPCInterface {
     let interface = NSXPCInterface(with: TunnelBrokerAppProtocol.self)
     let referenceClasses = NSSet(objects: TunnelReference.self, NSString.self) as! Set<AnyHashable>
@@ -245,7 +430,7 @@ private func appXPCInterface() -> NSXPCInterface {
 }
 
 private func routeXPCInterface() -> NSXPCInterface {
-    let interface = NSXPCInterface(with: TunnelBrokerRouteProtocol.self)
+    let interface = NSXPCInterface(with: TunnelBrokerRouteV3Protocol.self)
     let bindingClasses = NSSet(
         objects: TunnelRouteBinding.self, TunnelReference.self, NSString.self
     ) as! Set<AnyHashable>
@@ -257,6 +442,20 @@ private func routeXPCInterface() -> NSXPCInterface {
     ] {
         interface.setClasses(bindingClasses, for: selector, argumentIndex: 0, ofReply: false)
         interface.setClasses(replyClasses, for: selector, argumentIndex: 0, ofReply: true)
+    }
+    let bindingV3Classes = NSSet(
+        objects: TunnelRouteBindingV3.self, NSString.self
+    ) as! Set<AnyHashable>
+    let replyV3Classes = NSSet(
+        objects: TunnelBrokerRouteReplyV3.self, NSString.self
+    ) as! Set<AnyHashable>
+    for selector in [
+        #selector(TunnelBrokerRouteV3Protocol.holdV3(_:reply:)),
+        #selector(TunnelBrokerRouteV3Protocol.releaseV3(_:reply:)),
+        #selector(TunnelBrokerRouteV3Protocol.statusV3(_:reply:)),
+    ] {
+        interface.setClasses(bindingV3Classes, for: selector, argumentIndex: 0, ofReply: false)
+        interface.setClasses(replyV3Classes, for: selector, argumentIndex: 0, ofReply: true)
     }
     return interface
 }
@@ -432,11 +631,22 @@ private struct SessionLeaseState {
     let appConnectionID: UUID
     var appConnected = true
     var routeLeaseID: String?
+    var releasedLegacyRouteLeaseID: String?
+    var routeBindingV3: TunnelRouteBindingV3?
+    var releasedRouteBindingV3: TunnelRouteBindingV3?
+
+    var hasRouteHold: Bool { routeLeaseID != nil || routeBindingV3 != nil }
 
     mutating func hold(_ binding: TunnelRouteBinding) -> BrokerErrorCode? {
         guard binding.isValid(), sameReference(binding.reference, reference) else {
             return .staleGeneration
         }
+        // A legacy lease is recovery-only once a v3 hold exists. It may not
+        // become a second authority for the same broker generation.
+        guard releasedLegacyRouteLeaseID == nil,
+              routeBindingV3 == nil,
+              releasedRouteBindingV3 == nil
+        else { return .holdMismatch }
         guard routeLeaseID == nil || routeLeaseID == binding.routeLeaseID else {
             return .holdMismatch
         }
@@ -448,9 +658,56 @@ private struct SessionLeaseState {
         guard binding.isValid(), sameReference(binding.reference, reference) else {
             return .staleGeneration
         }
+        if let released = releasedLegacyRouteLeaseID {
+            return released == binding.routeLeaseID ? nil : .holdMismatch
+        }
         guard routeLeaseID == binding.routeLeaseID else { return .holdMismatch }
         routeLeaseID = nil
+        releasedLegacyRouteLeaseID = binding.routeLeaseID
         return nil
+    }
+
+    mutating func holdV3(_ binding: TunnelRouteBindingV3) -> BrokerErrorCode? {
+        guard binding.isValid(), routeBindingV3MatchesReference(binding, reference) else {
+            return .staleGeneration
+        }
+        guard routeLeaseID == nil, releasedLegacyRouteLeaseID == nil else { return .holdMismatch }
+        if let current = routeBindingV3 {
+            return sameRouteBindingV3(current, binding) ? nil : .holdMismatch
+        }
+        guard releasedRouteBindingV3 == nil else { return .holdMismatch }
+        routeBindingV3 = binding
+        return nil
+    }
+
+    mutating func releaseV3(_ binding: TunnelRouteBindingV3) -> BrokerErrorCode? {
+        guard binding.isValid(), routeBindingV3MatchesReference(binding, reference) else {
+            return .staleGeneration
+        }
+        guard routeLeaseID == nil, releasedLegacyRouteLeaseID == nil else { return .holdMismatch }
+        if let released = releasedRouteBindingV3 {
+            return sameRouteBindingV3(released, binding) ? nil : .holdMismatch
+        }
+        if let current = routeBindingV3 {
+            guard sameRouteBindingV3(current, binding) else { return .holdMismatch }
+            routeBindingV3 = nil
+        }
+        // Exact current session with no legacy/v3 hold or history is the
+        // safe no-op release for a durable hold_pending record whose hold
+        // request never reached the broker. Record the full tuple so a lost
+        // reply can be retried but a different tuple cannot claim absence.
+        releasedRouteBindingV3 = binding
+        return nil
+    }
+
+    func statusV3(_ binding: TunnelRouteBindingV3) -> BrokerErrorCode? {
+        guard binding.isValid(), routeBindingV3MatchesReference(binding, reference) else {
+            return .staleGeneration
+        }
+        guard routeLeaseID == nil, releasedLegacyRouteLeaseID == nil else { return .holdMismatch }
+        if let current = routeBindingV3, sameRouteBindingV3(current, binding) { return nil }
+        if let released = releasedRouteBindingV3, sameRouteBindingV3(released, binding) { return nil }
+        return .holdMismatch
     }
 }
 
@@ -465,6 +722,9 @@ private final class TunnelBrokerCoordinator {
     private let lock = NSLock()
     private var nextGeneration: UInt64 = 1
     private var active: ActiveSession?
+    // One bounded exact v3 tombstone lets a helper retry release/status after
+    // a reply loss without treating stale_generation as positive reap proof.
+    private var retiredRouteBindingV3 = RetiredRouteBindingV3Tombstone()
     private let planner = FixedSidecarLaunchPlanner(trustValidator: ManifestSidecarTrustValidator())
 
     func start(appConnectionID: UUID) -> TunnelSessionReply {
@@ -526,7 +786,7 @@ private final class TunnelBrokerCoordinator {
             lock.unlock()
             return TunnelBrokerReply(state: currentState(), errorCode: .staleGeneration)
         }
-        guard session.lease.routeLeaseID == nil else {
+        guard !session.lease.hasRouteHold else {
             lock.unlock()
             return TunnelBrokerReply(state: .routeHeld, errorCode: .routeHeld)
         }
@@ -540,7 +800,10 @@ private final class TunnelBrokerCoordinator {
         // A termination callback may already have removed this exact
         // unheld generation. Never clear a newer generation accidentally.
         if let current = active, sameReference(current.lease.reference, reference),
-           current.lease.routeLeaseID == nil {
+           !current.lease.hasRouteHold {
+            if let released = current.lease.releasedRouteBindingV3 {
+                retiredRouteBindingV3.record(released)
+            }
             active = nil
         }
         return .init(state: .idle)
@@ -564,7 +827,7 @@ private final class TunnelBrokerCoordinator {
         lock.lock()
         if var session = active, session.lease.appConnectionID == appConnectionID {
             session.lease.appConnected = false
-            if session.lease.routeLeaseID == nil {
+            if !session.lease.hasRouteHold {
                 child = session.child
                 reference = session.lease.reference
                 // Keep the exact session until stopAndReap proves absence.
@@ -577,7 +840,10 @@ private final class TunnelBrokerCoordinator {
         guard let child, let reference, child.stopAndReap() else { return }
         lock.lock()
         if let current = active, sameReference(current.lease.reference, reference),
-           current.lease.routeLeaseID == nil, !current.lease.appConnected {
+           !current.lease.hasRouteHold, !current.lease.appConnected {
+            if let released = current.lease.releasedRouteBindingV3 {
+                retiredRouteBindingV3.record(released)
+            }
             active = nil
         }
         lock.unlock()
@@ -625,7 +891,10 @@ private final class TunnelBrokerCoordinator {
         lock.lock()
         defer { lock.unlock() }
         if let current = active, sameReference(current.lease.reference, reference),
-           current.lease.routeLeaseID == nil, !current.lease.appConnected {
+           !current.lease.hasRouteHold, !current.lease.appConnected {
+            if let released = current.lease.releasedRouteBindingV3 {
+                retiredRouteBindingV3.record(released)
+            }
             active = nil
         }
         return .init(state: .idle)
@@ -643,13 +912,98 @@ private final class TunnelBrokerCoordinator {
         return TunnelBrokerReply(state: .routeHeld)
     }
 
+    func holdV3(_ binding: TunnelRouteBindingV3) -> TunnelBrokerRouteReplyV3 {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var session = active else {
+            return TunnelBrokerRouteReplyV3(binding: binding, state: .idle, errorCode: .staleGeneration)
+        }
+        if let error = session.lease.holdV3(binding) {
+            return TunnelBrokerRouteReplyV3(binding: binding, state: currentStateLocked(), errorCode: error)
+        }
+        active = session
+        return TunnelBrokerRouteReplyV3(binding: binding, state: .routeHeld)
+    }
+
+    func releaseV3(_ binding: TunnelRouteBindingV3) -> TunnelBrokerRouteReplyV3 {
+        var child: SidecarChild?
+        var reference: TunnelReference?
+        lock.lock()
+        let retiredMatch = retiredRouteBindingV3.classify(binding)
+        if retiredMatch == .exact {
+            lock.unlock()
+            return TunnelBrokerRouteReplyV3(binding: binding, state: .idle)
+        }
+        guard var session = active else {
+            lock.unlock()
+            let error: BrokerErrorCode = retiredMatch == .sameSessionMismatch ? .holdMismatch : .staleGeneration
+            return TunnelBrokerRouteReplyV3(binding: binding, state: .idle, errorCode: error)
+        }
+        guard routeBindingV3MatchesReference(binding, session.lease.reference) else {
+            let state = currentStateLocked()
+            lock.unlock()
+            let error: BrokerErrorCode = retiredMatch == .sameSessionMismatch ? .holdMismatch : .staleGeneration
+            return TunnelBrokerRouteReplyV3(binding: binding, state: state, errorCode: error)
+        }
+        if let error = session.lease.releaseV3(binding) {
+            lock.unlock()
+            return TunnelBrokerRouteReplyV3(binding: binding, state: currentState(), errorCode: error)
+        }
+        if session.lease.appConnected {
+            active = session
+            lock.unlock()
+            return TunnelBrokerRouteReplyV3(binding: binding, state: .running)
+        }
+        child = session.child
+        reference = session.lease.reference
+        active = session
+        lock.unlock()
+        guard child?.stopAndReap() ?? false, let reference else {
+            return TunnelBrokerRouteReplyV3(binding: binding, state: .running, errorCode: .unavailable)
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        if let current = active, sameReference(current.lease.reference, reference),
+           !current.lease.hasRouteHold, !current.lease.appConnected {
+            retiredRouteBindingV3.record(binding)
+            active = nil
+        }
+        return TunnelBrokerRouteReplyV3(binding: binding, state: .idle)
+    }
+
+    func routeStatusV3(_ binding: TunnelRouteBindingV3) -> TunnelBrokerRouteReplyV3 {
+        lock.lock()
+        defer { lock.unlock() }
+        let retiredMatch = retiredRouteBindingV3.classify(binding)
+        if retiredMatch == .exact {
+            return TunnelBrokerRouteReplyV3(binding: binding, state: .idle)
+        }
+        guard let session = active else {
+            let error: BrokerErrorCode = retiredMatch == .sameSessionMismatch ? .holdMismatch : .staleGeneration
+            return TunnelBrokerRouteReplyV3(binding: binding, state: .idle, errorCode: error)
+        }
+        guard routeBindingV3MatchesReference(binding, session.lease.reference) else {
+            let error: BrokerErrorCode = retiredMatch == .sameSessionMismatch ? .holdMismatch : .staleGeneration
+            return TunnelBrokerRouteReplyV3(binding: binding, state: currentStateLocked(), errorCode: error)
+        }
+        if let error = session.lease.statusV3(binding) {
+            return TunnelBrokerRouteReplyV3(binding: binding, state: currentStateLocked(), errorCode: error)
+        }
+        return TunnelBrokerRouteReplyV3(binding: binding, state: currentStateLocked())
+    }
+
     private func childExited(reference: TunnelReference) {
         lock.lock()
         defer { lock.unlock() }
         guard let session = active, sameReference(reference, session.lease.reference) else { return }
         // Keep a held generation as a tombstone until exact route rollback and
         // release; otherwise a new Connect could race stale private routes.
-        if session.lease.routeLeaseID == nil { active = nil }
+        if !session.lease.hasRouteHold {
+            if let released = session.lease.releasedRouteBindingV3 {
+                retiredRouteBindingV3.record(released)
+            }
+            active = nil
+        }
     }
 
     private func currentState() -> BrokerState {
@@ -660,7 +1014,7 @@ private final class TunnelBrokerCoordinator {
 
     private func currentStateLocked() -> BrokerState {
         guard let active else { return .idle }
-        return active.lease.routeLeaseID == nil ? .running : .routeHeld
+        return active.lease.hasRouteHold ? .routeHeld : .running
     }
 }
 
@@ -709,7 +1063,7 @@ private final class AppService: NSObject, TunnelBrokerAppProtocol {
     }
 }
 
-private final class RouteService: NSObject, TunnelBrokerRouteProtocol {
+private final class RouteService: NSObject, TunnelBrokerRouteV3Protocol {
     func hold(_ binding: TunnelRouteBinding, reply: @escaping (TunnelBrokerReply) -> Void) {
         reply(TunnelBrokerCoordinator.shared.hold(binding))
     }
@@ -720,6 +1074,18 @@ private final class RouteService: NSObject, TunnelBrokerRouteProtocol {
 
     func status(_ binding: TunnelRouteBinding, reply: @escaping (TunnelBrokerReply) -> Void) {
         reply(TunnelBrokerCoordinator.shared.routeStatus(binding))
+    }
+
+    func holdV3(_ binding: TunnelRouteBindingV3, reply: @escaping (TunnelBrokerRouteReplyV3) -> Void) {
+        reply(TunnelBrokerCoordinator.shared.holdV3(binding))
+    }
+
+    func releaseV3(_ binding: TunnelRouteBindingV3, reply: @escaping (TunnelBrokerRouteReplyV3) -> Void) {
+        reply(TunnelBrokerCoordinator.shared.releaseV3(binding))
+    }
+
+    func statusV3(_ binding: TunnelRouteBindingV3, reply: @escaping (TunnelBrokerRouteReplyV3) -> Void) {
+        reply(TunnelBrokerCoordinator.shared.routeStatusV3(binding))
     }
 }
 
@@ -830,6 +1196,132 @@ private func runSelfTest() -> Bool {
         try requireSelfTest(!lease.appConnected && lease.routeLeaseID == nil,
                             "exact release after App loss must become retireable")
 
+        let bindingV3 = TunnelRouteBindingV3(
+            brokerGeneration: reference.generation,
+            sidecarInstanceID: reference.sidecarInstanceID,
+            routeLeaseID: "route-lease-v3-0007",
+            operationID: "operation-v3-0007"
+        )
+        let wrongOperationV3 = TunnelRouteBindingV3(
+            brokerGeneration: reference.generation,
+            sidecarInstanceID: reference.sidecarInstanceID,
+            routeLeaseID: bindingV3.routeLeaseID,
+            operationID: "operation-v3-9999"
+        )
+        let staleV3 = TunnelRouteBindingV3(
+            brokerGeneration: stale.generation,
+            sidecarInstanceID: stale.sidecarInstanceID,
+            routeLeaseID: bindingV3.routeLeaseID,
+            operationID: bindingV3.operationID
+        )
+        try requireSelfTest(
+            lease.holdV3(bindingV3) == .holdMismatch,
+            "released legacy lease must never upgrade into a v3 authority"
+        )
+        var leaseV3 = SessionLeaseState(reference: reference, appConnectionID: connectionID)
+        try requireSelfTest(bindingV3.isValid(), "valid v3 binding must pass")
+        try requireSelfTest(leaseV3.holdV3(bindingV3) == nil, "exact v3 hold must pass")
+        try requireSelfTest(leaseV3.holdV3(bindingV3) == nil, "duplicate exact v3 hold must be idempotent")
+        try requireSelfTest(leaseV3.statusV3(bindingV3) == nil, "exact v3 status must pass")
+        try requireSelfTest(
+            leaseV3.hold(binding) == .holdMismatch,
+            "legacy hold must not mix with an active v3 tuple"
+        )
+        try requireSelfTest(
+            leaseV3.statusV3(wrongOperationV3) == .holdMismatch,
+            "wrong v3 operation must fail closed"
+        )
+        try requireSelfTest(
+            leaseV3.releaseV3(staleV3) == .staleGeneration,
+            "stale v3 generation must not release"
+        )
+        try requireSelfTest(
+            leaseV3.releaseV3(wrongOperationV3) == .holdMismatch,
+            "wrong v3 operation must not release"
+        )
+        try requireSelfTest(leaseV3.releaseV3(bindingV3) == nil, "exact v3 release must pass")
+        try requireSelfTest(
+            leaseV3.releaseV3(bindingV3) == nil,
+            "duplicate exact v3 release must be idempotent"
+        )
+        try requireSelfTest(!leaseV3.hasRouteHold, "released v3 tuple must not retain a hold")
+        try requireSelfTest(
+            leaseV3.hold(binding) == .holdMismatch,
+            "released v3 tuple must never downgrade into a legacy authority"
+        )
+        try requireSelfTest(
+            leaseV3.holdV3(bindingV3) == .holdMismatch,
+            "released v3 tuple must not replay into a new hold"
+        )
+        var noHoldLeaseV3 = SessionLeaseState(reference: reference, appConnectionID: connectionID)
+        try requireSelfTest(
+            noHoldLeaseV3.releaseV3(bindingV3) == nil,
+            "exact current session without a hold must accept a bounded no-op release"
+        )
+        try requireSelfTest(
+            noHoldLeaseV3.statusV3(bindingV3) == nil,
+            "no-op release must retain exact absence proof"
+        )
+        try requireSelfTest(
+            noHoldLeaseV3.releaseV3(wrongOperationV3) == .holdMismatch,
+            "no-op release must not authorize another operation"
+        )
+        var retiredV3 = RetiredRouteBindingV3Tombstone()
+        retiredV3.record(bindingV3)
+        try requireSelfTest(
+            retiredV3.classify(bindingV3) == .exact,
+            "lost exact release reply must be recoverable from the tombstone"
+        )
+        try requireSelfTest(
+            retiredV3.classify(wrongOperationV3) == .sameSessionMismatch,
+            "same-session wrong operation must remain a mismatch"
+        )
+        let newerV3 = TunnelRouteBindingV3(
+            brokerGeneration: reference.generation + 1,
+            sidecarInstanceID: "instance-00000008",
+            routeLeaseID: bindingV3.routeLeaseID,
+            operationID: bindingV3.operationID
+        )
+        try requireSelfTest(
+            retiredV3.classify(newerV3) == .unrelated,
+            "retired tuple must not affect a newer generation"
+        )
+        let replyV3 = TunnelBrokerRouteReplyV3(binding: bindingV3, state: .routeHeld)
+        try requireSelfTest(
+            replyV3.protocolVersion == routeHelperV3ProtocolVersion
+                && replyV3.brokerProtocolVersion == routeBrokerProtocolVersion
+                && replyV3.brokerGeneration == bindingV3.brokerGeneration
+                && replyV3.sidecarInstanceID == bindingV3.sidecarInstanceID
+                && replyV3.routeLeaseID == bindingV3.routeLeaseID
+                && replyV3.operationID == bindingV3.operationID,
+            "v3 reply must echo the complete exact tuple"
+        )
+        let bindingV3Archive = try NSKeyedArchiver.archivedData(
+            withRootObject: bindingV3,
+            requiringSecureCoding: true
+        )
+        let decodedBindingV3 = try NSKeyedUnarchiver.unarchivedObject(
+            ofClass: TunnelRouteBindingV3.self,
+            from: bindingV3Archive
+        )
+        try requireSelfTest(
+            decodedBindingV3.map { sameRouteBindingV3($0, bindingV3) } == true,
+            "v3 binding secure archive must preserve the complete tuple"
+        )
+        let replyV3Archive = try NSKeyedArchiver.archivedData(
+            withRootObject: replyV3,
+            requiringSecureCoding: true
+        )
+        let decodedReplyV3 = try NSKeyedUnarchiver.unarchivedObject(
+            ofClass: TunnelBrokerRouteReplyV3.self,
+            from: replyV3Archive
+        )
+        try requireSelfTest(
+            decodedReplyV3?.brokerGeneration == bindingV3.brokerGeneration
+                && decodedReplyV3?.operationID == bindingV3.operationID,
+            "v3 reply secure archive must preserve its exact echo"
+        )
+
         // The XPC reply duplicates both descriptors for the App.  Once the
         // reply block returns, only those duplicated descriptors may remain;
         // the broker's local copies must be closed so EOF/cleanup is not
@@ -853,8 +1345,16 @@ private func runSelfTest() -> Bool {
 
         let invalidGeneration = TunnelReference(generation: 0, sidecarInstanceID: "instance-00000000")
         let invalidID = TunnelReference(generation: 1, sidecarInstanceID: "bad/id")
+        let legacyShapedV3 = TunnelRouteBindingV3(
+            protocolVersion: 2,
+            brokerGeneration: reference.generation,
+            sidecarInstanceID: reference.sidecarInstanceID,
+            routeLeaseID: bindingV3.routeLeaseID,
+            operationID: bindingV3.operationID
+        )
         try requireSelfTest(!invalidGeneration.isValid(), "zero generation must fail")
         try requireSelfTest(!invalidID.isValid(), "invalid instance ID must fail")
+        try requireSelfTest(!legacyShapedV3.isValid(), "v2 input must remain recovery-only")
         print("tunnel_broker_self_test_ok")
         return true
     } catch {

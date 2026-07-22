@@ -1067,3 +1067,43 @@ commit, that the production UI can establish one-site encrypted private
 networking over QUIC with WSS/TCP fallback, apply only owned private routes,
 coexist with Mihomo TUN, recover from every tested failure, expose only redacted
 state, and leave no owned system state after disconnect or recovery.
+
+#### S1.13 source continuation — 2026-07-23 broker-bound route authority
+
+The next source slice is complete but does not close the S1.13 VM aggregate.
+The controller now exposes a one-shot broker-bound start path: a successful
+handshake issues a non-copyable receipt binding the runtime generation to the
+broker generation and exact sidecar instance. Plain starts cannot consume a
+broker-bound controller; failed handshakes, cancelled receipt delivery, and
+child exits are exact-reaped or recovery-only and never reuse the old broker
+session.
+
+That receipt can now be consumed once with verified `TunnelDeviceFacts` to
+create a sealed route authority. The pure-Rust v3 lifecycle contract and its
+fault-injection adapters enforce:
+
+`hold_pending (durable) -> exact broker hold -> held -> route apply -> applied`
+
+and, on teardown,
+
+`route rollback/prove absence -> retirement_pending (durable) -> exact broker
+release -> released`.
+
+An ambiguous hold can only retire without route mutation; rollback/release
+failure retains the original authority and full tuple. v2/v1 records are
+recovery-only and cannot be upgraded. The fixed broker now has a typed v3
+full-tuple route surface, legacy/v3 mixing refusal, exact no-op retirement for
+an unreceived hold, and a bounded retired tombstone for lost release replies.
+The route-helper has a separate v3 wire/journal schema and executable
+unprivileged contract self-test; its v3 interface is deliberately not installed
+or connected to the production coordinator yet.
+
+Focused Rust (341 library tests including one manual ignored test), Swift,
+Objective-C, Node contract, formatting, Clippy, and diff gates pass. The
+root-broker route client remains source-only and is not linked into the App; it
+must be linked into the signed route-helper in the next native interlock slice.
+The production factory/service remains default-off and unwired. The no-sign
+App therefore remains a userspace lab artifact and cannot claim real utun,
+private-route, or production-helper acceptance. The disposable VM's real-utun
+manual gate is prepared and waiting only for one visible local `sudo` entry;
+SSH itself uses the VM-only key and requires no password automation.

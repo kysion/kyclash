@@ -450,3 +450,32 @@ facts, route-helper v3 durably orders hold-pending/held/retirement-pending
 with exact broker release, and restart obtains fresh session material. The
 no-sign App remains a userspace lab candidate and no password automation,
 signing, route mutation, release, or production endpoint was used.
+
+## S1.13 broker-bound route authority and v3 wire continuation — 2026-07-23
+
+The source-only continuation now closes the next identity boundary without
+claiming a live production connection. A broker-bound controller start consumes
+one fresh launch material and returns a non-copyable receipt only after the
+exact sidecar handshake is accepted. Ordinary `start()` cannot bypass that
+boundary; cancellation, failed authentication, and broker-bound child exit
+remain exact-reap/recovery-only outcomes and cannot reuse a generation.
+
+The receipt-to-route seam is now sealed in pure Rust. It verifies the same
+sidecar instance in the tunnel facts, derives the complete broker/generation/
+lease/operation tuple, and drives a testable durable order of
+`hold_pending -> hold -> held -> apply -> applied` followed by
+`rollback/prove-absence -> retirement_pending -> release -> released`.
+Ambiguous hold and cleanup failures never authorize a new route or a new
+sidecar; v2/v1 state remains recovery-only. The broker v3 service and bridge
+now echo the complete tuple, reject legacy/v3 mixing, support exact no-op
+retirement, and retain one bounded retired tuple so a lost release reply can be
+retried after the child is reaped. The route-helper v3 wire/journal schema,
+strict version dispatch, and an unprivileged contract self-test are present but
+not installed on the listener or connected to the production coordinator.
+
+All focused Rust/Swift/Objective-C/Node and full Rust library/Clippy/format
+checks pass. This is not S1.13 completion: native helper linking, durable
+route-helper coordinator ordering, fresh production composition materialization,
+private reachability, abort/reboot cleanup, and VM real-utun authorization remain
+open. No password was automated or stored; the VM SSH path is key-based, while
+the local administrator prompt is intentionally visible.

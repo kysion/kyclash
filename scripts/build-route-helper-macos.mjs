@@ -27,6 +27,11 @@ execFileSync(
 )
 chmodSync(output, 0o755)
 
+// Keep the source-only v3 wire/journal contract executable in the same build
+// path as the helper binary.  This test is unprivileged and does not start the
+// listener, call the broker, or mutate the system route table.
+execFileSync(output, ['--route-v3-contract-self-test'], { stdio: 'inherit' })
+
 const identity = process.env.APPLE_SIGNING_IDENTITY
 const teamID = process.env.APPLE_TEAM_ID
 if (!identity || teamID !== 'RQUQ8Y3S9H')

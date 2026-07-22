@@ -289,8 +289,11 @@ impl RouteLeaseJournalRecord {
             // A route may be cleaned up before the first add completes, so
             // Held -> RetirementPending is a valid three-step path; the
             // ordinary Applied path reaches it at transition four.
-            RouteLeaseJournalState::RetirementPending => (3..=4).contains(&self.transition),
-            RouteLeaseJournalState::Released => (4..=5).contains(&self.transition),
+            // HoldPending -> RetirementPending is the crash-recovery path
+            // when no route mutation occurred and the exact broker tuple must
+            // only be released/reconciled.
+            RouteLeaseJournalState::RetirementPending => (2..=4).contains(&self.transition),
+            RouteLeaseJournalState::Released => (3..=5).contains(&self.transition),
             RouteLeaseJournalState::RecoveryOnly => false,
         };
         if !transition_shape_is_valid {
@@ -373,6 +376,10 @@ const fn valid_transition(current: RouteLeaseJournalState, next: RouteLeaseJourn
     matches!(
         (current, next),
         (RouteLeaseJournalState::HoldPending, RouteLeaseJournalState::Held)
+            | (
+                RouteLeaseJournalState::HoldPending,
+                RouteLeaseJournalState::RetirementPending
+            )
             | (RouteLeaseJournalState::Held, RouteLeaseJournalState::Applied)
             | (RouteLeaseJournalState::Held, RouteLeaseJournalState::RetirementPending)
             | (
@@ -384,6 +391,47 @@ const fn valid_transition(current: RouteLeaseJournalState, next: RouteLeaseJourn
                 RouteLeaseJournalState::Released
             )
     )
+}
+
+/// A hold-pending recovery observation after the complete tuple in the reply
+/// has already been authenticated. Raw `hold_mismatch` or transport errors
+/// are deliberately not sufficient evidence on their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteLeaseHoldRecoveryObservation {
+    /// The exact tuple is currently route-held.
+    ExactHeld,
+    /// The exact tuple has a broker retirement/release tombstone.
+    ExactReleased,
+    /// The exact broker session is running and the broker proves that no
+    /// route hold exists. This covers a hold request that never arrived.
+    ExactSessionNoHold,
+    /// A route is held, but not by this exact lease/operation tuple.
+    HeldByDifferentTuple,
+    /// Timeout, invalidation, stale generation, or an unauthenticated reply.
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteLeaseHoldRecoveryAction {
+    RecordHeld,
+    RetireWithoutRouteMutation,
+    FailClosed,
+}
+
+/// Decide recovery without ever converting an ambiguous/mismatched hold into
+/// absence. The caller may construct `ExactSessionNoHold` only after the full
+/// broker reference echo is equal and broker state is `running` with no hold.
+#[must_use]
+pub const fn recover_hold_pending(observation: RouteLeaseHoldRecoveryObservation) -> RouteLeaseHoldRecoveryAction {
+    match observation {
+        RouteLeaseHoldRecoveryObservation::ExactHeld => RouteLeaseHoldRecoveryAction::RecordHeld,
+        RouteLeaseHoldRecoveryObservation::ExactReleased | RouteLeaseHoldRecoveryObservation::ExactSessionNoHold => {
+            RouteLeaseHoldRecoveryAction::RetireWithoutRouteMutation
+        }
+        RouteLeaseHoldRecoveryObservation::HeldByDifferentTuple | RouteLeaseHoldRecoveryObservation::Ambiguous => {
+            RouteLeaseHoldRecoveryAction::FailClosed
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -499,6 +547,17 @@ mod tests {
             .transition(RouteLeaseJournalState::Held, &reference)
             .map_err(|error| anyhow::anyhow!("hold rejected: {error:?}"))?;
         assert!(held.state.permits_route_mutation());
+        let stale_hold = RouteLeaseTransition {
+            protocol_version: ROUTE_HELPER_V3_PROTOCOL_VERSION,
+            from_state: RouteLeaseJournalState::HoldPending,
+            to_state: RouteLeaseJournalState::Held,
+            transition: 2,
+            reference: reference.clone(),
+        };
+        assert_eq!(
+            held.apply_transition(&stale_hold),
+            Err(RouteLeaseContractError::ReplayDetected)
+        );
         let applied = held
             .transition(RouteLeaseJournalState::Applied, &reference)
             .map_err(|error| anyhow::anyhow!("route apply transition rejected: {error:?}"))?;
@@ -514,9 +573,50 @@ mod tests {
             Err(RouteLeaseContractError::ReplayDetected)
         );
         assert_eq!(
-            pending.transition(RouteLeaseJournalState::RetirementPending, &reference),
+            pending.transition(RouteLeaseJournalState::Applied, &reference),
             Err(RouteLeaseContractError::InvalidStateTransition)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn hold_pending_recovery_retires_without_ever_authorizing_routes() -> anyhow::Result<()> {
+        let owner = owner();
+        let reference = RouteLeaseReferenceV3::from_owner(&owner);
+        let pending = RouteLeaseJournalRecord::hold_pending(owner)
+            .map_err(|error| anyhow::anyhow!("valid owner rejected: {error:?}"))?;
+        assert_eq!(
+            recover_hold_pending(RouteLeaseHoldRecoveryObservation::ExactHeld),
+            RouteLeaseHoldRecoveryAction::RecordHeld
+        );
+        for observation in [
+            RouteLeaseHoldRecoveryObservation::ExactReleased,
+            RouteLeaseHoldRecoveryObservation::ExactSessionNoHold,
+        ] {
+            assert_eq!(
+                recover_hold_pending(observation),
+                RouteLeaseHoldRecoveryAction::RetireWithoutRouteMutation
+            );
+        }
+        for observation in [
+            RouteLeaseHoldRecoveryObservation::HeldByDifferentTuple,
+            RouteLeaseHoldRecoveryObservation::Ambiguous,
+        ] {
+            assert_eq!(
+                recover_hold_pending(observation),
+                RouteLeaseHoldRecoveryAction::FailClosed
+            );
+        }
+        let retirement = pending
+            .transition(RouteLeaseJournalState::RetirementPending, &reference)
+            .map_err(|error| anyhow::anyhow!("hold-pending retirement rejected: {error:?}"))?;
+        assert_eq!(retirement.transition, 2);
+        assert!(!retirement.state.permits_route_mutation());
+        let released = retirement
+            .transition(RouteLeaseJournalState::Released, &reference)
+            .map_err(|error| anyhow::anyhow!("release transition rejected: {error:?}"))?;
+        assert_eq!(released.transition, 3);
+        assert!(!released.state.permits_route_mutation());
         Ok(())
     }
 

@@ -4,6 +4,12 @@ import OSLog
 
 private let protocolVersion: UInt8 = 2
 private let legacyProtocolVersion: UInt8 = 1
+// v3 is kept beside the shipped v2 surface during the source-only contract
+// slice.  The coordinator below still serves v2; these values are consumed by
+// the typed wire/journal self-test until the durable interlock is wired in a
+// later batch.
+private let routeHelperV3ProtocolVersion: UInt8 = 3
+private let routeBrokerProtocolVersion: UInt8 = 1
 private let maximumMihomoInterfaces = 1
 private let maximumDarwinInterfaceBytes = 15
 private let coordinatorSelfTestConnectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
@@ -228,6 +234,323 @@ final class HelperReply: NSObject, NSSecureCoding {
         coder.encode(state as NSString, forKey: "state")
         if let errorCode { coder.encode(errorCode as NSString, forKey: "errorCode") }
     }
+}
+
+// MARK: - Route-helper v3 wire contract (source-only until the coordinator
+// interlock is enabled)
+
+/// The v3 reference is the complete, non-derivable ownership tuple.  In
+/// particular, the broker generation is deliberately distinct from any Rust
+/// runtime generation and must be copied from the broker start receipt.
+@objc(KCRLeaseReferenceV3)
+final class LeaseReferenceV3: NSObject, NSSecureCoding {
+    static var supportsSecureCoding: Bool { true }
+
+    let protocolVersion: UInt8
+    let brokerProtocolVersion: UInt8
+    let brokerGeneration: UInt64
+    let sidecarInstanceID: String
+    let leaseID: String
+    let operationID: String
+
+    init(
+        protocolVersion: UInt8 = routeHelperV3ProtocolVersion,
+        brokerProtocolVersion: UInt8 = routeBrokerProtocolVersion,
+        brokerGeneration: UInt64,
+        sidecarInstanceID: String,
+        leaseID: String,
+        operationID: String
+    ) {
+        self.protocolVersion = protocolVersion
+        self.brokerProtocolVersion = brokerProtocolVersion
+        self.brokerGeneration = brokerGeneration
+        self.sidecarInstanceID = sidecarInstanceID
+        self.leaseID = leaseID
+        self.operationID = operationID
+    }
+
+    required init?(coder: NSCoder) {
+        guard coder.containsValue(forKey: "protocolVersion"),
+              coder.containsValue(forKey: "brokerProtocolVersion"),
+              coder.containsValue(forKey: "brokerGeneration"),
+              let sidecar = coder.decodeObject(of: NSString.self, forKey: "sidecarInstanceID") as String?,
+              let lease = coder.decodeObject(of: NSString.self, forKey: "leaseID") as String?,
+              let operation = coder.decodeObject(of: NSString.self, forKey: "operationID") as String?
+        else { return nil }
+        let rawProtocol = coder.decodeInteger(forKey: "protocolVersion")
+        let rawBrokerProtocol = coder.decodeInteger(forKey: "brokerProtocolVersion")
+        let rawGeneration = coder.decodeInt64(forKey: "brokerGeneration")
+        guard (0...Int(UInt8.max)).contains(rawProtocol),
+              (0...Int(UInt8.max)).contains(rawBrokerProtocol),
+              rawGeneration > 0
+        else { return nil }
+        protocolVersion = UInt8(rawProtocol)
+        brokerProtocolVersion = UInt8(rawBrokerProtocol)
+        brokerGeneration = UInt64(rawGeneration)
+        sidecarInstanceID = sidecar
+        leaseID = lease
+        operationID = operation
+    }
+
+    func encode(with coder: NSCoder) {
+        coder.encode(Int(protocolVersion), forKey: "protocolVersion")
+        coder.encode(Int(brokerProtocolVersion), forKey: "brokerProtocolVersion")
+        coder.encode(Int64(brokerGeneration), forKey: "brokerGeneration")
+        coder.encode(sidecarInstanceID as NSString, forKey: "sidecarInstanceID")
+        coder.encode(leaseID as NSString, forKey: "leaseID")
+        coder.encode(operationID as NSString, forKey: "operationID")
+    }
+
+    func isValid() -> Bool {
+        protocolVersion == routeHelperV3ProtocolVersion
+            && brokerProtocolVersion == routeBrokerProtocolVersion
+            && brokerGeneration > 0
+            && brokerGeneration <= UInt64(Int64.max)
+            && validIdentifier(sidecarInstanceID)
+            && validIdentifier(leaseID)
+            && validIdentifier(operationID)
+    }
+}
+
+private func referencesEqualV3(_ lhs: LeaseReferenceV3, _ rhs: LeaseReferenceV3) -> Bool {
+    lhs.protocolVersion == rhs.protocolVersion
+        && lhs.brokerProtocolVersion == rhs.brokerProtocolVersion
+        && lhs.brokerGeneration == rhs.brokerGeneration
+        && lhs.sidecarInstanceID == rhs.sidecarInstanceID
+        && lhs.leaseID == rhs.leaseID
+        && lhs.operationID == rhs.operationID
+}
+
+/// v3 keeps route facts explicit and binds the duplicated sidecar identity to
+/// the broker reference.  No command/path/dictionary is accepted on this
+/// wire; only normalized route facts cross the XPC boundary.
+@objc(KCRLeaseOwnerV3)
+final class LeaseOwnerV3: NSObject, NSSecureCoding {
+    static var supportsSecureCoding: Bool { true }
+
+    let reference: LeaseReferenceV3
+    let sidecarInstanceID: String
+    let interfaceName: String
+    let tunnelOperationID: String
+    let mtu: UInt16
+    let profileRevision: UInt64
+    let hasIPv4: Bool
+    let hasIPv6: Bool
+    let activeMihomoTunInterfaces: [String]
+    let privateCIDRs: [String]
+
+    init(
+        reference: LeaseReferenceV3,
+        sidecarInstanceID: String,
+        interfaceName: String,
+        tunnelOperationID: String,
+        mtu: UInt16,
+        profileRevision: UInt64,
+        hasIPv4: Bool = true,
+        hasIPv6: Bool = true,
+        activeMihomoTunInterfaces: [String] = [],
+        privateCIDRs: [String]
+    ) {
+        self.reference = reference
+        self.sidecarInstanceID = sidecarInstanceID
+        self.interfaceName = interfaceName
+        self.tunnelOperationID = tunnelOperationID
+        self.mtu = mtu
+        self.profileRevision = profileRevision
+        self.hasIPv4 = hasIPv4
+        self.hasIPv6 = hasIPv6
+        self.activeMihomoTunInterfaces = activeMihomoTunInterfaces
+        self.privateCIDRs = privateCIDRs
+    }
+
+    required init?(coder: NSCoder) {
+        guard let reference = coder.decodeObject(of: LeaseReferenceV3.self, forKey: "reference"),
+              let instance = coder.decodeObject(of: NSString.self, forKey: "sidecarInstanceID") as String?,
+              let interfaceName = coder.decodeObject(of: NSString.self, forKey: "interfaceName") as String?,
+              let tunnelOperation = coder.decodeObject(of: NSString.self, forKey: "tunnelOperationID") as String?,
+              coder.containsValue(forKey: "mtu"),
+              coder.containsValue(forKey: "profileRevision"),
+              coder.containsValue(forKey: "hasIPv4"),
+              coder.containsValue(forKey: "hasIPv6"),
+              let mihomoInterfaces = coder.decodeObject(
+                  of: [NSArray.self, NSString.self], forKey: "activeMihomoTunInterfaces"
+              ) as? [String],
+              let cidrs = coder.decodeObject(
+                  of: [NSArray.self, NSString.self], forKey: "privateCIDRs"
+              ) as? [String]
+        else { return nil }
+        let rawMTU = coder.decodeInteger(forKey: "mtu")
+        let rawRevision = coder.decodeInt64(forKey: "profileRevision")
+        let rawHasIPv4 = coder.decodeInteger(forKey: "hasIPv4")
+        let rawHasIPv6 = coder.decodeInteger(forKey: "hasIPv6")
+        guard (0...Int(UInt16.max)).contains(rawMTU),
+              rawRevision > 0,
+              rawHasIPv4 == 0 || rawHasIPv4 == 1,
+              rawHasIPv6 == 0 || rawHasIPv6 == 1
+        else { return nil }
+        self.reference = reference
+        sidecarInstanceID = instance
+        self.interfaceName = interfaceName
+        tunnelOperationID = tunnelOperation
+        mtu = UInt16(rawMTU)
+        profileRevision = UInt64(rawRevision)
+        hasIPv4 = rawHasIPv4 == 1
+        hasIPv6 = rawHasIPv6 == 1
+        activeMihomoTunInterfaces = mihomoInterfaces
+        privateCIDRs = cidrs
+    }
+
+    func encode(with coder: NSCoder) {
+        coder.encode(reference, forKey: "reference")
+        coder.encode(sidecarInstanceID as NSString, forKey: "sidecarInstanceID")
+        coder.encode(interfaceName as NSString, forKey: "interfaceName")
+        coder.encode(tunnelOperationID as NSString, forKey: "tunnelOperationID")
+        coder.encode(Int(mtu), forKey: "mtu")
+        coder.encode(Int64(profileRevision), forKey: "profileRevision")
+        // Keep BOOLs as bounded integer primitives for ObjC/Swift keyed
+        // archive compatibility (decodeInteger must return 0 or 1).
+        coder.encode(hasIPv4 ? 1 : 0, forKey: "hasIPv4")
+        coder.encode(hasIPv6 ? 1 : 0, forKey: "hasIPv6")
+        coder.encode(activeMihomoTunInterfaces as NSArray, forKey: "activeMihomoTunInterfaces")
+        coder.encode(privateCIDRs as NSArray, forKey: "privateCIDRs")
+    }
+
+    func isValid() -> Bool {
+        reference.isValid()
+            && sidecarInstanceID == reference.sidecarInstanceID
+            && validUtunInterface(interfaceName)
+            && tunnelOperationID == "\(reference.operationID).prepare"
+            && mtu == 1420
+            && profileRevision > 0
+            && profileRevision <= UInt64(Int64.max)
+            && activeMihomoTunInterfaces.count <= maximumMihomoInterfaces
+            && Set(activeMihomoTunInterfaces).count == activeMihomoTunInterfaces.count
+            && activeMihomoTunInterfaces.sorted() == activeMihomoTunInterfaces
+            && activeMihomoTunInterfaces.allSatisfy(validUtunInterface)
+            && !activeMihomoTunInterfaces.contains(interfaceName)
+            && !privateCIDRs.isEmpty
+            && privateCIDRs.count <= 64
+            && Set(privateCIDRs).count == privateCIDRs.count
+            && privateCIDRs.allSatisfy(validCIDR)
+            && privateCIDRs.allSatisfy { cidr in
+                guard let network = parseRouteNetwork(cidr) else { return false }
+                return network.ipv4 ? hasIPv4 : hasIPv6
+            }
+            && privateCIDRsAreDisjoint(privateCIDRs)
+    }
+}
+
+/// Every v3 mutation reply echoes the complete reference and macro transition
+/// number.  A discovery reply may omit the reference and uses transition 0.
+@objc(KCRReplyV3)
+final class HelperReplyV3: NSObject, NSSecureCoding {
+    static var supportsSecureCoding: Bool { true }
+
+    let protocolVersion: UInt8
+    let state: String
+    let errorCode: String?
+    let reference: LeaseReferenceV3?
+    let transition: UInt64
+
+    private static let validStates: Set<String> = [
+        "idle", "hold_pending", "held", "applied", "retirement_pending",
+        "released", "recovery_only", "failed_closed"
+    ]
+
+    init(
+        protocolVersion: UInt8 = routeHelperV3ProtocolVersion,
+        state: String,
+        errorCode: String? = nil,
+        reference: LeaseReferenceV3? = nil,
+        transition: UInt64 = 0
+    ) {
+        self.protocolVersion = protocolVersion
+        self.state = state
+        self.errorCode = errorCode
+        self.reference = reference
+        self.transition = transition
+    }
+
+    required init?(coder: NSCoder) {
+        guard coder.containsValue(forKey: "protocolVersion"),
+              coder.containsValue(forKey: "transition"),
+              let state = coder.decodeObject(of: NSString.self, forKey: "state") as String?
+        else { return nil }
+        let rawProtocol = coder.decodeInteger(forKey: "protocolVersion")
+        let rawTransition = coder.decodeInt64(forKey: "transition")
+        guard (0...Int(UInt8.max)).contains(rawProtocol), rawTransition >= 0 else { return nil }
+        protocolVersion = UInt8(rawProtocol)
+        self.state = state
+        errorCode = coder.decodeObject(of: NSString.self, forKey: "errorCode") as String?
+        reference = coder.decodeObject(of: LeaseReferenceV3.self, forKey: "reference")
+        transition = UInt64(rawTransition)
+    }
+
+    func encode(with coder: NSCoder) {
+        coder.encode(Int(protocolVersion), forKey: "protocolVersion")
+        coder.encode(state as NSString, forKey: "state")
+        if let errorCode { coder.encode(errorCode as NSString, forKey: "errorCode") }
+        if let reference { coder.encode(reference, forKey: "reference") }
+        coder.encode(Int64(transition), forKey: "transition")
+    }
+
+    func isValid() -> Bool {
+        guard protocolVersion == routeHelperV3ProtocolVersion,
+              Self.validStates.contains(state)
+        else { return false }
+        if let reference {
+            return reference.isValid() && transition > 0
+        }
+        return transition == 0
+            && (state == "idle" || state == "recovery_only" || state == "failed_closed")
+    }
+
+    func matches(_ expected: LeaseReferenceV3, transition expectedTransition: UInt64? = nil) -> Bool {
+        guard isValid(), let reference, referencesEqualV3(reference, expected) else { return false }
+        return expectedTransition.map { transition == $0 } ?? true
+    }
+}
+
+@objc(KCRRouteHelperV3Protocol)
+protocol RouteHelperV3Protocol {
+    func discoverV3(reply: @escaping (HelperReplyV3) -> Void)
+    func beginV3(_ owner: LeaseOwnerV3, reply: @escaping (HelperReplyV3) -> Void)
+    func applyV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void)
+    func rollbackV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void)
+    func recoverV3(_ owner: LeaseOwnerV3, reply: @escaping (HelperReplyV3) -> Void)
+    func heartbeatV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void)
+    func statusV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void)
+}
+
+/// Builds the v3 interface but is intentionally not installed on the current
+/// listener in this source-only slice.  This keeps v2 clients recovery-only
+/// until the coordinator and root broker bridge land together.
+private func routeHelperV3Interface() -> NSXPCInterface {
+    let interface = NSXPCInterface(with: RouteHelperV3Protocol.self)
+    let replyClasses = NSSet(objects: HelperReplyV3.self, LeaseReferenceV3.self, NSString.self) as! Set<AnyHashable>
+    let ownerClasses = NSSet(
+        objects: LeaseOwnerV3.self, LeaseReferenceV3.self, NSArray.self, NSString.self
+    ) as! Set<AnyHashable>
+    let referenceClasses = NSSet(objects: LeaseReferenceV3.self, NSString.self) as! Set<AnyHashable>
+
+    interface.setClasses(replyClasses, for: #selector(RouteHelperV3Protocol.discoverV3(reply:)), argumentIndex: 0, ofReply: true)
+    for selector in [
+        #selector(RouteHelperV3Protocol.beginV3(_:reply:)),
+        #selector(RouteHelperV3Protocol.recoverV3(_:reply:)),
+    ] {
+        interface.setClasses(ownerClasses, for: selector, argumentIndex: 0, ofReply: false)
+        interface.setClasses(replyClasses, for: selector, argumentIndex: 0, ofReply: true)
+    }
+    for selector in [
+        #selector(RouteHelperV3Protocol.applyV3(_:reply:)),
+        #selector(RouteHelperV3Protocol.rollbackV3(_:reply:)),
+        #selector(RouteHelperV3Protocol.heartbeatV3(_:reply:)),
+        #selector(RouteHelperV3Protocol.statusV3(_:reply:)),
+    ] {
+        interface.setClasses(referenceClasses, for: selector, argumentIndex: 0, ofReply: false)
+        interface.setClasses(replyClasses, for: selector, argumentIndex: 0, ofReply: true)
+    }
+    return interface
 }
 
 @objc(KCRRouteHelperProtocol)
@@ -559,6 +882,355 @@ private struct RouteJournal: Codable {
               pendingCIDR.map({ !appliedCIDRs.contains($0) }) ?? true
         else { return false }
         return true
+    }
+}
+
+// v3 journal records are deliberately a separate Codable schema.  A v2/v1
+// record can therefore be classified for rollback-only recovery without ever
+// being coerced into a broker-held v3 lease.
+private enum RouteJournalStateV3: String, Codable {
+    case holdPending = "hold_pending"
+    case held
+    case applied
+    case retirementPending = "retirement_pending"
+    case released
+
+    var permitsFirstRouteMutation: Bool { self == .held }
+}
+
+private struct JournalOwnerV3: Codable, Equatable {
+    let protocolVersion: UInt8
+    let brokerProtocolVersion: UInt8
+    let brokerGeneration: UInt64
+    let sidecarInstanceID: String
+    let leaseID: String
+    let operationID: String
+    let interfaceName: String
+    let tunnelOperationID: String
+    let mtu: UInt16
+    let profileRevision: UInt64
+    let hasIPv4: Bool
+    let hasIPv6: Bool
+    let activeMihomoTunInterfaces: [String]
+    let privateCIDRs: [String]
+
+    init(_ owner: LeaseOwnerV3) {
+        protocolVersion = owner.reference.protocolVersion
+        brokerProtocolVersion = owner.reference.brokerProtocolVersion
+        brokerGeneration = owner.reference.brokerGeneration
+        sidecarInstanceID = owner.sidecarInstanceID
+        leaseID = owner.reference.leaseID
+        operationID = owner.reference.operationID
+        interfaceName = owner.interfaceName
+        tunnelOperationID = owner.tunnelOperationID
+        mtu = owner.mtu
+        profileRevision = owner.profileRevision
+        hasIPv4 = owner.hasIPv4
+        hasIPv6 = owner.hasIPv6
+        activeMihomoTunInterfaces = owner.activeMihomoTunInterfaces
+        privateCIDRs = owner.privateCIDRs
+    }
+
+    private static let allowedKeys: Set<String> = [
+        "protocolVersion", "brokerProtocolVersion", "brokerGeneration",
+        "sidecarInstanceID", "leaseID", "operationID", "interfaceName",
+        "tunnelOperationID", "mtu", "profileRevision", "hasIPv4", "hasIPv6",
+        "activeMihomoTunInterfaces", "privateCIDRs"
+    ]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: StrictCodingKey.self)
+        try rejectUnknownJournalKeys(container, allowed: Self.allowedKeys, decoder: decoder)
+        protocolVersion = try container.decode(UInt8.self, forKey: StrictCodingKey("protocolVersion"))
+        brokerProtocolVersion = try container.decode(UInt8.self, forKey: StrictCodingKey("brokerProtocolVersion"))
+        brokerGeneration = try container.decode(UInt64.self, forKey: StrictCodingKey("brokerGeneration"))
+        sidecarInstanceID = try container.decode(String.self, forKey: StrictCodingKey("sidecarInstanceID"))
+        leaseID = try container.decode(String.self, forKey: StrictCodingKey("leaseID"))
+        operationID = try container.decode(String.self, forKey: StrictCodingKey("operationID"))
+        interfaceName = try container.decode(String.self, forKey: StrictCodingKey("interfaceName"))
+        tunnelOperationID = try container.decode(String.self, forKey: StrictCodingKey("tunnelOperationID"))
+        mtu = try container.decode(UInt16.self, forKey: StrictCodingKey("mtu"))
+        profileRevision = try container.decode(UInt64.self, forKey: StrictCodingKey("profileRevision"))
+        hasIPv4 = try container.decode(Bool.self, forKey: StrictCodingKey("hasIPv4"))
+        hasIPv6 = try container.decode(Bool.self, forKey: StrictCodingKey("hasIPv6"))
+        activeMihomoTunInterfaces = try container.decode(
+            [String].self, forKey: StrictCodingKey("activeMihomoTunInterfaces")
+        )
+        privateCIDRs = try container.decode([String].self, forKey: StrictCodingKey("privateCIDRs"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: StrictCodingKey.self)
+        try container.encode(protocolVersion, forKey: StrictCodingKey("protocolVersion"))
+        try container.encode(brokerProtocolVersion, forKey: StrictCodingKey("brokerProtocolVersion"))
+        try container.encode(brokerGeneration, forKey: StrictCodingKey("brokerGeneration"))
+        try container.encode(sidecarInstanceID, forKey: StrictCodingKey("sidecarInstanceID"))
+        try container.encode(leaseID, forKey: StrictCodingKey("leaseID"))
+        try container.encode(operationID, forKey: StrictCodingKey("operationID"))
+        try container.encode(interfaceName, forKey: StrictCodingKey("interfaceName"))
+        try container.encode(tunnelOperationID, forKey: StrictCodingKey("tunnelOperationID"))
+        try container.encode(mtu, forKey: StrictCodingKey("mtu"))
+        try container.encode(profileRevision, forKey: StrictCodingKey("profileRevision"))
+        try container.encode(hasIPv4, forKey: StrictCodingKey("hasIPv4"))
+        try container.encode(hasIPv6, forKey: StrictCodingKey("hasIPv6"))
+        try container.encode(activeMihomoTunInterfaces, forKey: StrictCodingKey("activeMihomoTunInterfaces"))
+        try container.encode(privateCIDRs, forKey: StrictCodingKey("privateCIDRs"))
+    }
+
+    func asOwner() -> LeaseOwnerV3 {
+        LeaseOwnerV3(
+            reference: LeaseReferenceV3(
+                protocolVersion: protocolVersion,
+                brokerProtocolVersion: brokerProtocolVersion,
+                brokerGeneration: brokerGeneration,
+                sidecarInstanceID: sidecarInstanceID,
+                leaseID: leaseID,
+                operationID: operationID
+            ),
+            sidecarInstanceID: sidecarInstanceID,
+            interfaceName: interfaceName,
+            tunnelOperationID: tunnelOperationID,
+            mtu: mtu,
+            profileRevision: profileRevision,
+            hasIPv4: hasIPv4,
+            hasIPv6: hasIPv6,
+            activeMihomoTunInterfaces: activeMihomoTunInterfaces,
+            privateCIDRs: privateCIDRs
+        )
+    }
+
+    func isValid() -> Bool {
+        asOwner().isValid()
+    }
+}
+
+private struct RouteJournalV3: Codable, Equatable {
+    let version: UInt8
+    var state: RouteJournalStateV3
+    var transition: UInt64
+    var owner: JournalOwnerV3
+    var pendingCIDR: String?
+    var appliedCIDRs: [String]
+
+    init(
+        version: UInt8 = routeHelperV3ProtocolVersion,
+        state: RouteJournalStateV3,
+        transition: UInt64,
+        owner: JournalOwnerV3,
+        pendingCIDR: String?,
+        appliedCIDRs: [String]
+    ) {
+        self.version = version
+        self.state = state
+        self.transition = transition
+        self.owner = owner
+        self.pendingCIDR = pendingCIDR
+        self.appliedCIDRs = appliedCIDRs
+    }
+
+    private static let allowedKeys: Set<String> = [
+        "version", "state", "transition", "owner", "pendingCIDR", "appliedCIDRs"
+    ]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: StrictCodingKey.self)
+        try rejectUnknownJournalKeys(
+            container,
+            allowed: Self.allowedKeys,
+            optional: ["pendingCIDR"],
+            decoder: decoder
+        )
+        version = try container.decode(UInt8.self, forKey: StrictCodingKey("version"))
+        state = try container.decode(RouteJournalStateV3.self, forKey: StrictCodingKey("state"))
+        transition = try container.decode(UInt64.self, forKey: StrictCodingKey("transition"))
+        owner = try container.decode(JournalOwnerV3.self, forKey: StrictCodingKey("owner"))
+        pendingCIDR = try container.decodeIfPresent(String.self, forKey: StrictCodingKey("pendingCIDR"))
+        appliedCIDRs = try container.decode([String].self, forKey: StrictCodingKey("appliedCIDRs"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: StrictCodingKey.self)
+        try container.encode(version, forKey: StrictCodingKey("version"))
+        try container.encode(state, forKey: StrictCodingKey("state"))
+        try container.encode(transition, forKey: StrictCodingKey("transition"))
+        try container.encode(owner, forKey: StrictCodingKey("owner"))
+        try container.encodeIfPresent(pendingCIDR, forKey: StrictCodingKey("pendingCIDR"))
+        try container.encode(appliedCIDRs, forKey: StrictCodingKey("appliedCIDRs"))
+    }
+
+    static func holdPending(owner: LeaseOwnerV3) -> RouteJournalV3 {
+        RouteJournalV3(
+            state: .holdPending,
+            transition: 1,
+            owner: JournalOwnerV3(owner),
+            pendingCIDR: nil,
+            appliedCIDRs: []
+        )
+    }
+
+    func isValid() -> Bool {
+        guard version == routeHelperV3ProtocolVersion,
+              transition > 0,
+              owner.isValid(),
+              Set(appliedCIDRs).count == appliedCIDRs.count,
+              appliedCIDRs.count <= owner.privateCIDRs.count,
+              appliedCIDRs.allSatisfy(validCIDR),
+              appliedCIDRs.allSatisfy({ owner.privateCIDRs.contains($0) }),
+              pendingCIDR.map({ validCIDR($0) && owner.privateCIDRs.contains($0) }) ?? true,
+              pendingCIDR.map({ !appliedCIDRs.contains($0) }) ?? true
+        else { return false }
+
+        switch state {
+        case .holdPending:
+            return transition == 1 && pendingCIDR == nil && appliedCIDRs.isEmpty
+        case .held:
+            // A partial add or a cleanup retry can retain a CIDR marker while
+            // the broker hold is still authoritative. Only this state permits
+            // a first route mutation.
+            return transition == 2
+        case .applied:
+            // During rollback, Applied may retain a shrinking exact-owned set;
+            // it is never treated as permission to add a new route.
+            return transition == 3
+        case .retirementPending:
+            return (2...4).contains(transition)
+                && pendingCIDR == nil
+                && appliedCIDRs.isEmpty
+        case .released:
+            return (3...5).contains(transition)
+                && pendingCIDR == nil
+                && appliedCIDRs.isEmpty
+        }
+    }
+
+    func reference() -> LeaseReferenceV3 {
+        LeaseReferenceV3(
+            protocolVersion: owner.protocolVersion,
+            brokerProtocolVersion: owner.brokerProtocolVersion,
+            brokerGeneration: owner.brokerGeneration,
+            sidecarInstanceID: owner.sidecarInstanceID,
+            leaseID: owner.leaseID,
+            operationID: owner.operationID
+        )
+    }
+
+    func requireReference(_ reference: LeaseReferenceV3) throws {
+        guard isValid(), reference.isValid(), referencesEqualV3(reference, self.reference())
+        else { throw RouteJournalTransitionError.ownershipMismatch }
+    }
+
+    func transitioned(
+        to next: RouteJournalStateV3,
+        reference: LeaseReferenceV3
+    ) throws -> RouteJournalV3 {
+        try requireReference(reference)
+        let nextTransition = transition.addingReportingOverflow(1)
+        guard !nextTransition.overflow,
+              isValidTransitionV3(state, next),
+              state != .released
+        else { throw RouteJournalTransitionError.invalidStateTransition }
+
+        var result = self
+        result.state = next
+        result.transition = nextTransition.partialValue
+        if next == .retirementPending || next == .released {
+            result.pendingCIDR = nil
+            result.appliedCIDRs = []
+        }
+        guard result.isValid() else { throw RouteJournalTransitionError.invalidStateTransition }
+        return result
+    }
+
+    func applying(_ event: RouteJournalTransitionV3) throws -> RouteJournalV3 {
+        try requireReference(event.reference)
+        let expectedTransition = transition.addingReportingOverflow(1)
+        guard !expectedTransition.overflow,
+              event.protocolVersion == routeHelperV3ProtocolVersion,
+              event.fromState == state,
+              event.transition == expectedTransition.partialValue,
+              isValidTransitionV3(state, event.toState)
+        else { throw RouteJournalTransitionError.replayDetected }
+        return try transitioned(to: event.toState, reference: event.reference)
+    }
+}
+
+private struct RouteJournalTransitionV3 {
+    let protocolVersion: UInt8
+    let fromState: RouteJournalStateV3
+    let toState: RouteJournalStateV3
+    let transition: UInt64
+    let reference: LeaseReferenceV3
+}
+
+private enum RouteJournalTransitionError: Error, Equatable {
+    case ownershipMismatch
+    case invalidStateTransition
+    case replayDetected
+}
+
+private func isValidTransitionV3(
+    _ current: RouteJournalStateV3,
+    _ next: RouteJournalStateV3
+) -> Bool {
+    switch (current, next) {
+    case (.holdPending, .held),
+         (.holdPending, .retirementPending),
+         (.held, .applied),
+         (.held, .retirementPending),
+         (.applied, .retirementPending),
+         (.retirementPending, .released):
+        return true
+    default:
+        return false
+    }
+}
+
+private enum RouteJournalEnvelope {
+    case currentV3(RouteJournalV3)
+    case recoveryOnlyV2(RouteJournal)
+    case recoveryOnlyV1(LegacyRouteJournal)
+}
+
+private enum RouteJournalDecodeError: Error, Equatable {
+    case corrupt
+}
+
+private struct RouteJournalVersionProbe: Decodable {
+    let version: UInt8
+}
+
+/// Select exactly one schema from the top-level version.  This is deliberately
+/// separate from `RouteCoordinator` until the v3 broker interlock is enabled;
+/// the first slice proves that v2/v1 cannot be silently upgraded or cross-decoded.
+private func decodeRouteJournalEnvelope(_ data: Data) throws -> RouteJournalEnvelope {
+    let decoder = PropertyListDecoder()
+    let version: UInt8
+    do {
+        version = try decoder.decode(RouteJournalVersionProbe.self, from: data).version
+    } catch {
+        throw RouteJournalDecodeError.corrupt
+    }
+    do {
+        switch version {
+        case routeHelperV3ProtocolVersion:
+            let journal = try decoder.decode(RouteJournalV3.self, from: data)
+            guard journal.isValid() else { throw RouteJournalDecodeError.corrupt }
+            return .currentV3(journal)
+        case protocolVersion:
+            let journal = try decoder.decode(RouteJournal.self, from: data)
+            guard journal.isValid() else { throw RouteJournalDecodeError.corrupt }
+            return .recoveryOnlyV2(journal)
+        case legacyProtocolVersion:
+            let journal = try decoder.decode(LegacyRouteJournal.self, from: data)
+            guard journal.isValid() else { throw RouteJournalDecodeError.corrupt }
+            return .recoveryOnlyV1(journal)
+        default:
+            throw RouteJournalDecodeError.corrupt
+        }
+    } catch let error as RouteJournalDecodeError {
+        throw error
+    } catch {
+        throw RouteJournalDecodeError.corrupt
     }
 }
 
@@ -2003,6 +2675,264 @@ private func selfTestOwner(
     )
 }
 
+private func selfTestOwnerV3(_ cidrs: [String]) -> LeaseOwnerV3 {
+    let reference = LeaseReferenceV3(
+        brokerGeneration: 17,
+        sidecarInstanceID: "instance.selftest.v3",
+        leaseID: "lease.selftest.v3",
+        operationID: "operation.selftest.v3"
+    )
+    return LeaseOwnerV3(
+        reference: reference,
+        sidecarInstanceID: reference.sidecarInstanceID,
+        interfaceName: "utun42",
+        tunnelOperationID: "operation.selftest.v3.prepare",
+        mtu: 1420,
+        profileRevision: 7,
+        activeMihomoTunInterfaces: ["utun1024"],
+        privateCIDRs: cidrs
+    )
+}
+
+private func runRouteV3WireJournalSelfTest() -> Bool {
+    do {
+        let owner = selfTestOwnerV3(["10.64.0.0/16", "fd00:64::/48"])
+        let reference = owner.reference
+        try requireSelfTest(reference.isValid(), "v3 reference tuple must validate")
+        try requireSelfTest(owner.isValid(), "v3 owner tuple must validate")
+
+        let archivedOwner = try NSKeyedArchiver.archivedData(
+            withRootObject: owner,
+            requiringSecureCoding: true
+        )
+        let decodedOwner = try NSKeyedUnarchiver.unarchivedObject(
+            ofClass: LeaseOwnerV3.self,
+            from: archivedOwner
+        )
+        try requireSelfTest(
+            decodedOwner?.isValid() == true
+                && decodedOwner?.reference.brokerGeneration == 17,
+            "v3 owner NSSecureCoding must preserve the complete broker tuple"
+        )
+
+        let reply = HelperReplyV3(state: "held", reference: reference, transition: 2)
+        try requireSelfTest(reply.isValid(), "v3 exact reply must validate")
+        let archivedReply = try NSKeyedArchiver.archivedData(
+            withRootObject: reply,
+            requiringSecureCoding: true
+        )
+        let decodedReply = try NSKeyedUnarchiver.unarchivedObject(
+            ofClass: HelperReplyV3.self,
+            from: archivedReply
+        )
+        try requireSelfTest(
+            decodedReply?.matches(reference, transition: 2) == true,
+            "v3 reply decode must echo reference and transition"
+        )
+        let wrongReplyReference = LeaseReferenceV3(
+            brokerGeneration: 18,
+            sidecarInstanceID: reference.sidecarInstanceID,
+            leaseID: reference.leaseID,
+            operationID: reference.operationID
+        )
+        try requireSelfTest(
+            decodedReply?.matches(wrongReplyReference, transition: 2) == false,
+            "wrong broker generation in a reply must fail closed"
+        )
+
+        let pending = RouteJournalV3.holdPending(owner: owner)
+        try requireSelfTest(
+            pending.isValid()
+                && pending.state == .holdPending
+                && pending.transition == 1
+                && pending.appliedCIDRs.isEmpty
+                && pending.pendingCIDR == nil
+                && !pending.state.permitsFirstRouteMutation,
+            "HoldPending must be durable and must not authorize routes"
+        )
+        let pendingRoundTrip = try PropertyListDecoder().decode(
+            RouteJournalV3.self,
+            from: PropertyListEncoder().encode(pending)
+        )
+        try requireSelfTest(pendingRoundTrip == pending, "v3 journal must round-trip strictly")
+
+        let held = try pending.transitioned(to: .held, reference: reference)
+        try requireSelfTest(
+            held.isValid()
+                && held.state == .held
+                && held.transition == 2
+                && held.state.permitsFirstRouteMutation,
+            "Held must be the only state that permits a first route mutation"
+        )
+
+        // An Applied record may retain a shrinking exact-owned set while a
+        // later cleanup pass is removing routes. It never authorizes a new add.
+        var fullyApplied = held
+        fullyApplied.appliedCIDRs = owner.privateCIDRs
+        let applied = try fullyApplied.transitioned(to: .applied, reference: reference)
+        try requireSelfTest(
+            applied.isValid()
+                && applied.state == .applied
+                && applied.transition == 3
+                && !applied.state.permitsFirstRouteMutation,
+            "Applied must record a held route set without authorizing a new add"
+        )
+
+        let retirementFromHold = try held.transitioned(to: .retirementPending, reference: reference)
+        try requireSelfTest(
+            retirementFromHold.isValid()
+                && retirementFromHold.transition == 3
+                && retirementFromHold.appliedCIDRs.isEmpty,
+            "Held cleanup must support transition-3 RetirementPending"
+        )
+        let retirementFromApplied = try applied.transitioned(to: .retirementPending, reference: reference)
+        try requireSelfTest(
+            retirementFromApplied.isValid()
+                && retirementFromApplied.transition == 4
+                && retirementFromApplied.appliedCIDRs.isEmpty,
+            "Applied cleanup must support transition-4 RetirementPending"
+        )
+        let released = try retirementFromApplied.transitioned(to: .released, reference: reference)
+        try requireSelfTest(
+            released.isValid()
+                && released.transition == 5
+                && !released.state.permitsFirstRouteMutation,
+            "Released must be terminal and non-mutating"
+        )
+
+        let retirementFromPending = try pending.transitioned(to: .retirementPending, reference: reference)
+        try requireSelfTest(
+            retirementFromPending.transition == 2,
+            "ambiguous HoldPending recovery must support transition-2 retirement"
+        )
+        try requireSelfTest(
+            (try? pending.transitioned(to: .applied, reference: reference)) == nil,
+            "HoldPending must never jump directly to Applied"
+        )
+        let replay = RouteJournalTransitionV3(
+            protocolVersion: routeHelperV3ProtocolVersion,
+            fromState: .holdPending,
+            toState: .held,
+            transition: 2,
+            reference: reference
+        )
+        try requireSelfTest(
+            (try? held.applying(replay)) == nil,
+            "a delayed HoldPending reply must be rejected as replay"
+        )
+        let invalidReleasedReplay = RouteJournalTransitionV3(
+            protocolVersion: routeHelperV3ProtocolVersion,
+            fromState: .released,
+            toState: .released,
+            transition: 6,
+            reference: reference
+        )
+        try requireSelfTest(
+            (try? released.applying(invalidReleasedReplay)) == nil,
+            "Released must reject every replay or transition"
+        )
+
+        let v3Data = try PropertyListEncoder().encode(pending)
+        switch try decodeRouteJournalEnvelope(v3Data) {
+        case .currentV3(let decoded):
+            try requireSelfTest(decoded == pending, "version 3 must select the v3 schema")
+        case .recoveryOnlyV1, .recoveryOnlyV2:
+            throw RouteCoordinatorSelfTestError.failed("v3 journal was classified as legacy")
+        }
+
+        let v2Owner = selfTestOwner(["10.64.0.0/16"])
+        let v2 = RouteJournal(
+            version: protocolVersion,
+            owner: JournalOwner(v2Owner),
+            pendingCIDR: nil,
+            appliedCIDRs: []
+        )
+        switch try decodeRouteJournalEnvelope(PropertyListEncoder().encode(v2)) {
+        case .recoveryOnlyV2:
+            break
+        case .currentV3, .recoveryOnlyV1:
+            throw RouteCoordinatorSelfTestError.failed("v2 journal was not recovery-only")
+        }
+        let v1 = LegacyRouteJournal(
+            version: legacyProtocolVersion,
+            owner: LegacyJournalOwner(JournalOwner(v2Owner)),
+            pendingCIDR: nil,
+            appliedCIDRs: []
+        )
+        switch try decodeRouteJournalEnvelope(PropertyListEncoder().encode(v1)) {
+        case .recoveryOnlyV1:
+            break
+        case .currentV3, .recoveryOnlyV2:
+            throw RouteCoordinatorSelfTestError.failed("v1 journal was not recovery-only")
+        }
+
+        func isCorrupt(_ data: Data) -> Bool {
+            do {
+                _ = try decodeRouteJournalEnvelope(data)
+                return false
+            } catch RouteJournalDecodeError.corrupt {
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        func propertyListDictionary(_ data: Data) throws -> [String: Any] {
+            var format = PropertyListSerialization.PropertyListFormat.binary
+            let object = try PropertyListSerialization.propertyList(
+                from: data, options: [], format: &format
+            )
+            guard let dictionary = object as? [String: Any] else {
+                throw RouteCoordinatorSelfTestError.failed("journal plist root was not a dictionary")
+            }
+            return dictionary
+        }
+
+        var unknownTopLevel = try propertyListDictionary(v3Data)
+        unknownTopLevel["unexpectedField"] = "reject-me"
+        let unknownTopLevelData = try PropertyListSerialization.data(
+            fromPropertyList: unknownTopLevel, format: .binary, options: 0
+        )
+        try requireSelfTest(isCorrupt(unknownTopLevelData), "unknown v3 top-level key must be corrupt")
+
+        var unknownOwner = try propertyListDictionary(v3Data)
+        var ownerDictionary = try requireDictionary(unknownOwner["owner"])
+        ownerDictionary["command"] = "/sbin/route delete default"
+        unknownOwner["owner"] = ownerDictionary
+        let unknownOwnerData = try PropertyListSerialization.data(
+            fromPropertyList: unknownOwner, format: .binary, options: 0
+        )
+        try requireSelfTest(isCorrupt(unknownOwnerData), "unknown v3 owner key must be corrupt")
+
+        var crossSchema = try propertyListDictionary(v3Data)
+        crossSchema["version"] = 2
+        let crossSchemaData = try PropertyListSerialization.data(
+            fromPropertyList: crossSchema, format: .binary, options: 0
+        )
+        try requireSelfTest(isCorrupt(crossSchemaData), "v3 payload under v2 version must be corrupt")
+
+        var unknownVersion = try propertyListDictionary(v3Data)
+        unknownVersion["version"] = 99
+        let unknownVersionData = try PropertyListSerialization.data(
+            fromPropertyList: unknownVersion, format: .binary, options: 0
+        )
+        try requireSelfTest(isCorrupt(unknownVersionData), "unknown journal version must be corrupt")
+
+        print("route_v3_wire_journal_self_test_ok")
+        return true
+    } catch {
+        fputs("route_v3_wire_journal_self_test_failed: \(error)\n", stderr)
+        return false
+    }
+}
+
+private func requireDictionary(_ value: Any?) throws -> [String: Any] {
+    guard let dictionary = value as? [String: Any] else {
+        throw RouteCoordinatorSelfTestError.failed("journal owner was not a dictionary")
+    }
+    return dictionary
+}
+
 private func selfTestCoordinator(
     executor: RouteExecuting,
     journalURL: URL,
@@ -2687,6 +3617,10 @@ private enum RouteHelperMain {
                 cidrs: ["fd00:127::/48"], interfaceName: "utun999", trustedMihomoInterfaces: []
             )
             print("route_readonly_self_test_ok")
+            return
+        }
+        if CommandLine.arguments.contains("--route-v3-contract-self-test") {
+            if !runRouteV3WireJournalSelfTest() { exit(1) }
             return
         }
         if CommandLine.arguments.contains("--route-coordinator-self-test") {

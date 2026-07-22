@@ -14,6 +14,10 @@ const clientSource = fs.readFileSync(
   path.join(root, 'macos', 'tunnel-broker', 'client.m'),
   'utf8',
 )
+const routeClientSource = fs.readFileSync(
+  path.join(root, 'macos', 'tunnel-broker', 'route-client.m'),
+  'utf8',
+)
 const plistPath = path.join(
   root,
   'macos',
@@ -28,7 +32,7 @@ const buildScript = fs.readFileSync(
 
 function protocolBody(name) {
   const match = source.match(
-    new RegExp(`protocol ${name} \\{([\\s\\S]*?)\\n\\}`, 'u'),
+    new RegExp(`protocol ${name}(?:\\s*:[^{]+)? \\{([\\s\\S]*?)\\n\\}`, 'u'),
   )
   assert.ok(match, `${name} must exist`)
   return match[1]
@@ -131,6 +135,70 @@ test('root interlock surface is exact typed hold release status only', () => {
   assert.match(body, /func release\(_ binding: TunnelRouteBinding, reply:/u)
   assert.match(body, /func status\(_ binding: TunnelRouteBinding, reply:/u)
   assert.equal((body.match(/\bfunc\b/gu) ?? []).length, 3)
+  assert.doesNotMatch(
+    body,
+    /String|URL|Data|Dictionary|\[|path|argv|argument|environment|cidr|dns|secret|profile|shell|file/iu,
+  )
+})
+
+test('v3 route bridge carries and echoes the complete broker lease tuple', () => {
+  assert.match(
+    routeClientSource,
+    /KCTBRMachService =\s*@"net\.kysion\.kyclash\.tunnel-broker"/u,
+  )
+  for (const field of [
+    'protocolVersion',
+    'brokerProtocolVersion',
+    'brokerGeneration',
+    'sidecarInstanceID',
+    'routeLeaseID',
+    'operationID',
+  ]) {
+    assert.match(routeClientSource, new RegExp(`_${field}`, 'u'))
+  }
+  for (const call of [
+    'kyclash_tunnel_broker_route_client_hold',
+    'kyclash_tunnel_broker_route_client_release',
+    'kyclash_tunnel_broker_route_client_status',
+  ]) {
+    assert.match(routeClientSource, new RegExp(call, 'u'))
+  }
+  assert.match(routeClientSource, /reply\.brokerGeneration == expected\.brokerGeneration/u)
+  assert.match(routeClientSource, /reply\.routeLeaseID isEqualToString:expected\.routeLeaseID/u)
+  assert.match(routeClientSource, /reply\.operationID isEqualToString:expected\.operationID/u)
+  assert.match(routeClientSource, /holdV3:reply:/u)
+  assert.match(routeClientSource, /releaseV3:reply:/u)
+  assert.match(routeClientSource, /statusV3:reply:/u)
+  assert.doesNotMatch(routeClientSource, /NSTask|\/bin\/(?:ba)?sh|EnvironmentVariables|route delete default/u)
+})
+
+test('Swift v3 route service matches the bridge and cannot mix legacy ownership', () => {
+  const body = protocolBody('TunnelBrokerRouteV3Protocol')
+  assert.match(body, /func holdV3\(_ binding: TunnelRouteBindingV3, reply:/u)
+  assert.match(body, /func releaseV3\(_ binding: TunnelRouteBindingV3, reply:/u)
+  assert.match(body, /func statusV3\(_ binding: TunnelRouteBindingV3, reply:/u)
+  assert.equal((body.match(/\bfunc\b/gu) ?? []).length, 3)
+  assert.match(source, /@objc\(KCTunnelRouteBindingV3\)/u)
+  assert.match(source, /@objc\(KCTunnelBrokerRouteReplyV3\)/u)
+  assert.match(source, /@objc\(KCTunnelBrokerRouteV3Protocol\)/u)
+  assert.match(
+    source,
+    /NSXPCInterface\(with: TunnelBrokerRouteV3Protocol\.self\)/u,
+  )
+  for (const field of [
+    'protocolVersion',
+    'brokerProtocolVersion',
+    'brokerGeneration',
+    'sidecarInstanceID',
+    'routeLeaseID',
+    'operationID',
+  ]) {
+    assert.match(source, new RegExp(`let ${field}:`, 'u'))
+  }
+  assert.match(source, /releasedLegacyRouteLeaseID/u)
+  assert.match(source, /releasedRouteBindingV3/u)
+  assert.match(source, /retiredRouteBindingV3/u)
+  assert.match(source, /retiredRouteBindingV3\.classify\(binding\)/u)
   assert.doesNotMatch(
     body,
     /String|URL|Data|Dictionary|\[|path|argv|argument|environment|cidr|dns|secret|profile|shell|file/iu,

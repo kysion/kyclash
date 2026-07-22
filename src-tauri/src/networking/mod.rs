@@ -17,8 +17,12 @@ mod process_runtime;
 mod production_composition;
 #[cfg(feature = "networking-production")]
 mod production_controller;
+#[cfg(all(feature = "networking-production", unix))]
+mod production_route_v3;
 #[cfg(feature = "networking-production")]
 mod production_service;
+#[cfg(all(feature = "networking-production", unix))]
+mod production_session;
 mod route;
 mod route_helper;
 #[cfg(feature = "networking-production")]
@@ -41,8 +45,12 @@ pub use self::process_runtime::*;
 pub use self::production_composition::*;
 #[cfg(feature = "networking-production")]
 pub use self::production_controller::*;
+#[cfg(all(feature = "networking-production", unix))]
+pub use self::production_route_v3::*;
 #[cfg(feature = "networking-production")]
 pub use self::production_service::*;
+#[cfg(all(feature = "networking-production", unix))]
+pub use self::production_session::*;
 #[cfg(feature = "networking-production")]
 pub use self::route_helper_client::*;
 #[cfg(feature = "networking-production")]
