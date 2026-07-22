@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 private let protocolVersion: UInt8 = 1
 private let appRequirement = "anchor apple generic and identifier \"net.kysion.kyclash\" and certificate leaf[subject.OU] = \"RQUQ8Y3S9H\""
@@ -169,6 +170,33 @@ private func routeHelperInterface() -> NSXPCInterface {
     return interface
 }
 
+private struct StrictCodingKey: CodingKey, Hashable {
+    let stringValue: String
+    let intValue: Int? = nil
+
+    init(_ stringValue: String) { self.stringValue = stringValue }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+private func rejectUnknownJournalKeys(
+    _ container: KeyedDecodingContainer<StrictCodingKey>,
+    allowed: Set<String>,
+    optional: Set<String> = [],
+    decoder: Decoder
+) throws {
+    let keys = Set(container.allKeys.map(\.stringValue))
+    let required = allowed.subtracting(optional)
+    guard keys.isSuperset(of: required), keys.isSubset(of: allowed) else {
+        throw DecodingError.dataCorruptedError(
+            forKey: container.allKeys.first ?? StrictCodingKey("journal"),
+            in: container,
+            debugDescription: "journal contains an unknown or missing field"
+        )
+    }
+    _ = decoder
+}
+
 private struct JournalOwner: Codable, Equatable {
     let leaseID: String
     let operationID: String
@@ -189,6 +217,52 @@ private struct JournalOwner: Codable, Equatable {
         profileRevision = owner.profileRevision
         privateCIDRs = owner.privateCIDRs
     }
+
+    private static let allowedKeys: Set<String> = [
+        "leaseID", "operationID", "sidecarInstanceID", "interfaceName",
+        "tunnelOperationID", "mtu", "profileRevision", "privateCIDRs"
+    ]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: StrictCodingKey.self)
+        try rejectUnknownJournalKeys(container, allowed: Self.allowedKeys, decoder: decoder)
+        leaseID = try container.decode(String.self, forKey: StrictCodingKey("leaseID"))
+        operationID = try container.decode(String.self, forKey: StrictCodingKey("operationID"))
+        sidecarInstanceID = try container.decode(String.self, forKey: StrictCodingKey("sidecarInstanceID"))
+        interfaceName = try container.decode(String.self, forKey: StrictCodingKey("interfaceName"))
+        tunnelOperationID = try container.decode(String.self, forKey: StrictCodingKey("tunnelOperationID"))
+        mtu = try container.decode(UInt16.self, forKey: StrictCodingKey("mtu"))
+        profileRevision = try container.decode(UInt64.self, forKey: StrictCodingKey("profileRevision"))
+        privateCIDRs = try container.decode([String].self, forKey: StrictCodingKey("privateCIDRs"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: StrictCodingKey.self)
+        try container.encode(leaseID, forKey: StrictCodingKey("leaseID"))
+        try container.encode(operationID, forKey: StrictCodingKey("operationID"))
+        try container.encode(sidecarInstanceID, forKey: StrictCodingKey("sidecarInstanceID"))
+        try container.encode(interfaceName, forKey: StrictCodingKey("interfaceName"))
+        try container.encode(tunnelOperationID, forKey: StrictCodingKey("tunnelOperationID"))
+        try container.encode(mtu, forKey: StrictCodingKey("mtu"))
+        try container.encode(profileRevision, forKey: StrictCodingKey("profileRevision"))
+        try container.encode(privateCIDRs, forKey: StrictCodingKey("privateCIDRs"))
+    }
+
+    func isValid() -> Bool {
+        LeaseOwner(
+            reference: LeaseReference(
+                version: protocolVersion,
+                leaseID: leaseID,
+                operationID: operationID
+            ),
+            sidecarInstanceID: sidecarInstanceID,
+            interfaceName: interfaceName,
+            tunnelOperationID: tunnelOperationID,
+            mtu: mtu,
+            profileRevision: profileRevision,
+            privateCIDRs: privateCIDRs
+        ).isValid()
+    }
 }
 
 private struct RouteJournal: Codable {
@@ -196,6 +270,50 @@ private struct RouteJournal: Codable {
     var owner: JournalOwner
     var pendingCIDR: String?
     var appliedCIDRs: [String]
+
+    init(version: UInt8, owner: JournalOwner, pendingCIDR: String?, appliedCIDRs: [String]) {
+        self.version = version
+        self.owner = owner
+        self.pendingCIDR = pendingCIDR
+        self.appliedCIDRs = appliedCIDRs
+    }
+
+    private static let allowedKeys: Set<String> = ["version", "owner", "pendingCIDR", "appliedCIDRs"]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: StrictCodingKey.self)
+        try rejectUnknownJournalKeys(
+            container,
+            allowed: Self.allowedKeys,
+            optional: ["pendingCIDR"],
+            decoder: decoder
+        )
+        version = try container.decode(UInt8.self, forKey: StrictCodingKey("version"))
+        owner = try container.decode(JournalOwner.self, forKey: StrictCodingKey("owner"))
+        pendingCIDR = try container.decodeIfPresent(String.self, forKey: StrictCodingKey("pendingCIDR"))
+        appliedCIDRs = try container.decode([String].self, forKey: StrictCodingKey("appliedCIDRs"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: StrictCodingKey.self)
+        try container.encode(version, forKey: StrictCodingKey("version"))
+        try container.encode(owner, forKey: StrictCodingKey("owner"))
+        try container.encodeIfPresent(pendingCIDR, forKey: StrictCodingKey("pendingCIDR"))
+        try container.encode(appliedCIDRs, forKey: StrictCodingKey("appliedCIDRs"))
+    }
+
+    func isValid() -> Bool {
+        guard version == 1,
+              owner.isValid(),
+              Set(appliedCIDRs).count == appliedCIDRs.count,
+              appliedCIDRs.count <= owner.privateCIDRs.count,
+              appliedCIDRs.allSatisfy(validCIDR),
+              appliedCIDRs.allSatisfy({ owner.privateCIDRs.contains($0) }),
+              pendingCIDR.map({ validCIDR($0) && owner.privateCIDRs.contains($0) }) ?? true,
+              pendingCIDR.map({ !appliedCIDRs.contains($0) }) ?? true
+        else { return false }
+        return true
+    }
 }
 
 private struct RouteInspection {
@@ -530,20 +648,130 @@ private func routeLookupSelfTest() -> Bool {
         && !routeConflicts(target: target6, existing: disjoint6)
 }
 
-private func removeJournalFile(_ url: URL) -> Bool {
-    do {
-        try FileManager.default.removeItem(at: url)
-        return true
-    } catch {
-        return (error as NSError).code == NSFileNoSuchFileError
+private let productionJournalURL = URL(fileURLWithPath: "/Library/Application Support/KyClash/route-lease-v1.plist")
+private let maximumJournalBytes = 64 * 1024
+private let journalDirectoryPermissions: mode_t = 0o700
+private let journalFilePermissions: mode_t = 0o600
+
+private enum JournalReadResult {
+    case absent
+    case data(Data)
+    case invalid
+}
+
+private func isProductionJournalURL(_ url: URL) -> Bool {
+    url.standardizedFileURL.path == productionJournalURL.path
+}
+
+private func lstatResult(_ url: URL) -> (info: stat?, error: Int32) {
+    var info = stat()
+    guard lstat(url.path, &info) == 0 else { return (nil, errno) }
+    return (info, 0)
+}
+
+private func lstatInfo(_ url: URL) -> stat? {
+    lstatResult(url).info
+}
+
+private func isRegularFile(_ info: stat) -> Bool {
+    (info.st_mode & S_IFMT) == S_IFREG
+}
+
+private func isDirectory(_ info: stat) -> Bool {
+    (info.st_mode & S_IFMT) == S_IFDIR
+}
+
+private func hasExactPermissions(_ info: stat, _ permissions: mode_t) -> Bool {
+    (info.st_mode & 0o777) == permissions
+}
+
+private func validateJournalDirectory(_ directory: URL, createIfMissing: Bool) -> Bool {
+    if lstatInfo(directory) == nil {
+        guard createIfMissing, mkdir(directory.path, journalDirectoryPermissions) == 0 || errno == EEXIST else {
+            return false
+        }
     }
+    guard let info = lstatInfo(directory),
+          isDirectory(info),
+          hasExactPermissions(info, journalDirectoryPermissions),
+          info.st_nlink >= 2
+    else { return false }
+    if isProductionJournalURL(directory.appendingPathComponent("route-lease-v1.plist")) {
+        guard info.st_uid == 0 else { return false }
+    }
+    return true
+}
+
+private func readAll(_ descriptor: Int32, expectedSize: Int) -> Data? {
+    var result = Data(capacity: expectedSize)
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+        }
+        if count == 0 { break }
+        if count < 0 {
+            if errno == EINTR { continue }
+            return nil
+        }
+        result.append(buffer, count: count)
+        guard result.count <= maximumJournalBytes else { return nil }
+    }
+    return result.count == expectedSize ? result : nil
+}
+
+private func readJournalData(_ url: URL) -> JournalReadResult {
+    let result = lstatResult(url)
+    guard let info = result.info else {
+        return result.error == ENOENT ? .absent : .invalid
+    }
+    guard isRegularFile(info),
+          info.st_nlink == 1,
+          hasExactPermissions(info, journalFilePermissions),
+          info.st_size >= 0,
+          info.st_size <= off_t(maximumJournalBytes)
+    else { return .invalid }
+    if isProductionJournalURL(url) {
+        guard info.st_uid == 0 else { return .invalid }
+    }
+    let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { return .invalid }
+    defer { _ = close(descriptor) }
+    var openedInfo = stat()
+    guard fstat(descriptor, &openedInfo) == 0,
+          isRegularFile(openedInfo),
+          openedInfo.st_nlink == 1,
+          openedInfo.st_size == info.st_size,
+          hasExactPermissions(openedInfo, journalFilePermissions)
+    else { return .invalid }
+    guard let data = readAll(descriptor, expectedSize: Int(openedInfo.st_size)) else { return .invalid }
+    var finalInfo = stat()
+    guard fstat(descriptor, &finalInfo) == 0, finalInfo.st_size == openedInfo.st_size else { return .invalid }
+    return .data(data)
+}
+
+private func fsyncDirectory(_ directory: URL) -> Bool {
+    let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    guard descriptor >= 0 else { return false }
+    defer { _ = close(descriptor) }
+    return fsync(descriptor) == 0
+}
+
+private func removeJournalFile(_ url: URL) -> Bool {
+    let result = lstatResult(url)
+    guard let info = result.info else { return result.error == ENOENT }
+    guard isRegularFile(info),
+          info.st_nlink == 1,
+          hasExactPermissions(info, journalFilePermissions),
+          (!isProductionJournalURL(url) || info.st_uid == 0)
+    else { return false }
+    guard unlink(url.path) == 0 else { return errno == ENOENT }
+    return fsyncDirectory(url.deletingLastPathComponent())
 }
 
 private func isSymbolicLink(_ url: URL) -> Bool {
-    // `destinationOfSymbolicLink` uses lstat semantics and also detects a
-    // broken link.  The helper must never read or atomically replace a journal
-    // path supplied as a symlink, even when its destination is absent.
-    (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
+    guard let info = lstatInfo(url) else { return false }
+    return (info.st_mode & S_IFMT) == S_IFLNK
 }
 
 private final class RouteCoordinator {
@@ -566,19 +794,26 @@ private final class RouteCoordinator {
         self.executor = executor
         self.journalURL = journalURL
         self.removeJournal = removeJournal
-        if isSymbolicLink(journalURL) {
-            journalCorrupt = true
-        } else if FileManager.default.fileExists(atPath: journalURL.path) {
+        switch readJournalData(journalURL) {
+        case .absent:
+            break
+        case .data(let data):
             do {
-                let data = try Data(contentsOf: journalURL)
                 let decoded = try PropertyListDecoder().decode(RouteJournal.self, from: data)
-                guard decoded.version == 1 else { throw CocoaError(.fileReadCorruptFile) }
+                guard decoded.isValid() else { throw CocoaError(.fileReadCorruptFile) }
                 journal = decoded
             } catch {
                 journalCorrupt = true
                 journal = nil
             }
+        case .invalid:
+            journalCorrupt = true
+            journal = nil
         }
+        // Reconcile a durable transaction before the first XPC request.  The
+        // singleton is also eagerly constructed by `main`, so a restart does
+        // not leave owned routes behind until a client happens to call
+        // `discover`.
         if journal != nil { _ = rollbackLocked() }
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + 5, repeating: 5)
@@ -673,9 +908,16 @@ private final class RouteCoordinator {
 
     func recover(_ owner: LeaseOwner) -> HelperReply {
         lock.withLock {
-            guard owner.isValid(), journal?.owner == JournalOwner(owner) else { return HelperReply(state: "failed_closed", errorCode: "ownership_mismatch") }
+            guard !journalCorrupt,
+                  owner.isValid(),
+                  let journal,
+                  journal.owner == JournalOwner(owner),
+                  journal.isValid()
+            else { return HelperReply(state: "failed_closed", errorCode: "ownership_mismatch") }
+            let live = statusLocked()
+            guard live.errorCode == nil else { return live }
             heartbeatDeadline = Date().addingTimeInterval(15)
-            return HelperReply(state: journal?.appliedCIDRs.count == journal?.owner.privateCIDRs.count ? "applied" : "prepared")
+            return live
         }
     }
 
@@ -708,7 +950,28 @@ private final class RouteCoordinator {
 
     private func statusLocked() -> HelperReply {
         guard let journal else { return HelperReply(state: "idle") }
-        return HelperReply(state: journal.appliedCIDRs.count == journal.owner.privateCIDRs.count ? "applied" : "prepared")
+        guard journal.isValid(),
+              let inspections = executor.inspect(
+                  cidrs: journal.owner.privateCIDRs,
+                  interfaceName: journal.owner.interfaceName
+              )
+        else {
+            return HelperReply(state: "failed_closed", errorCode: "recovery_required")
+        }
+
+        let applied = Set(journal.appliedCIDRs)
+        let allRoutesOwned = journal.owner.privateCIDRs.allSatisfy { cidr in
+            guard let inspection = inspections[cidr], !inspection.foreignConflict else { return false }
+            if applied.contains(cidr) {
+                return inspection.ownedExact
+            }
+            return !inspection.ownedExact
+        }
+        guard allRoutesOwned else {
+            return HelperReply(state: "failed_closed", errorCode: "recovery_required")
+        }
+        let complete = journal.pendingCIDR == nil && applied.count == journal.owner.privateCIDRs.count
+        return HelperReply(state: complete ? "applied" : "prepared")
     }
 
     private func valid(_ reference: LeaseReference) -> Bool {
@@ -723,6 +986,10 @@ private final class RouteCoordinator {
 
     private func rollbackLocked() -> Bool {
         guard var current = journal else { return true }
+        guard current.isValid() else {
+            journalCorrupt = true
+            return false
+        }
         var owned = current.appliedCIDRs
         if let pending = current.pendingCIDR, !owned.contains(pending) { owned.append(pending) }
         guard let inspections = executor.inspect(cidrs: owned, interfaceName: current.owner.interfaceName),
@@ -731,14 +998,22 @@ private final class RouteCoordinator {
             return false
         }
         for cidr in owned.reversed() {
-            current.pendingCIDR = cidr
-            guard persist(current) else {
+            // Keep pending disjoint from applied.  The durable state below
+            // means "this CIDR is the one being deleted"; a crash can safely
+            // recover it through the pending list without pretending the
+            // deletion has already committed.
+            var pendingState = current
+            pendingState.appliedCIDRs.removeAll { $0 == cidr }
+            pendingState.pendingCIDR = cidr
+            guard pendingState.isValid(), persist(pendingState) else {
                 // Keep the unresolved pending marker in memory and stop.  A
                 // later route must not overwrite it when the durable write
                 // itself failed.
                 journal = current
                 return false
             }
+            current = pendingState
+            journal = current
             // Re-read immediately after the durable pending marker.  The
             // initial batch snapshot is only a preflight; another route owner
             // may have changed the table while the journal was being written.
@@ -767,8 +1042,6 @@ private final class RouteCoordinator {
                 journal = current
                 return false
             }
-            let pendingState = current
-            current.appliedCIDRs.removeAll { $0 == cidr }
             current.pendingCIDR = nil
             guard persist(current) else {
                 // Keep the pre-delete durable state, including the pending
@@ -808,19 +1081,58 @@ private final class RouteCoordinator {
 
     private func persist(_ value: RouteJournal) -> Bool {
         let directory = journalURL.deletingLastPathComponent()
-        do {
-            guard !isSymbolicLink(journalURL) else { return false }
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory) {
-                guard isDirectory.boolValue, (try directory.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { return false }
-            } else {
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        guard value.isValid(),
+              validateJournalDirectory(directory, createIfMissing: true),
+              !isSymbolicLink(journalURL)
+        else { return false }
+        guard let data = try? PropertyListEncoder().encode(value), data.count <= maximumJournalBytes else {
+            return false
+        }
+
+        // Create the replacement in the same directory with O_EXCL and
+        // O_NOFOLLOW, write it completely, and fsync both file and directory
+        // before accepting the journal as durable.  UUID names avoid a
+        // caller-controlled temporary path and the final rename is atomic.
+        let temporary = directory.appendingPathComponent(
+            ".route-lease-v1.\(UUID().uuidString).tmp"
+        )
+        let descriptor = open(
+            temporary.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            journalFilePermissions
+        )
+        guard descriptor >= 0 else { return false }
+        var committed = false
+        defer {
+            _ = close(descriptor)
+            if !committed { _ = unlink(temporary.path) }
+        }
+        guard fchmod(descriptor, journalFilePermissions) == 0 else { return false }
+        var offset = 0
+        let writeSucceeded = data.withUnsafeBytes { bytes -> Bool in
+            guard let base = bytes.baseAddress else { return data.isEmpty }
+            while offset < data.count {
+                let count = Darwin.write(descriptor, base.advanced(by: offset), data.count - offset)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                guard count > 0 else { return false }
+                offset += count
             }
-            let data = try PropertyListEncoder().encode(value)
-            try data.write(to: journalURL, options: [.atomic])
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalURL.path)
             return true
-        } catch { return false }
+        }
+        guard writeSucceeded, offset == data.count, fsync(descriptor) == 0 else { return false }
+        guard rename(temporary.path, journalURL.path) == 0,
+              fsyncDirectory(directory),
+              let info = lstatInfo(journalURL),
+              isRegularFile(info),
+              info.st_nlink == 1,
+              hasExactPermissions(info, journalFilePermissions),
+              (!isProductionJournalURL(journalURL) || info.st_uid == 0)
+        else { return false }
+        committed = true
+        return true
     }
 }
 
@@ -1220,6 +1532,82 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         try requireSelfTest(corrupt.discover().errorCode == "journal_corrupt", "corrupt journal must fail closed")
         try requireSelfTest(corruptExecutor.added.isEmpty, "corrupt journal must not mutate routes")
 
+        let unknownPath = root.appendingPathComponent("unknown-field-corrupt.plist")
+        let validJournal = RouteJournal(version: 1, owner: JournalOwner(owner), pendingCIDR: nil, appliedCIDRs: [])
+        let validData = try PropertyListEncoder().encode(validJournal)
+        var propertyList = try PropertyListSerialization.propertyList(
+            from: validData,
+            options: .mutableContainersAndLeaves,
+            format: nil
+        ) as! [String: Any]
+        propertyList["unexpected"] = "reject-me"
+        let unknownData = try PropertyListSerialization.data(
+            fromPropertyList: propertyList,
+            format: .binary,
+            options: 0
+        )
+        try unknownData.write(to: unknownPath, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: journalFilePermissions], ofItemAtPath: unknownPath.path)
+        let unknown = RouteCoordinator(executor: InjectedRouteExecutor(), journalURL: unknownPath)
+        try requireSelfTest(unknown.discover().errorCode == "journal_corrupt",
+                            "unknown journal fields must fail closed")
+
+        // A syntactically valid plist with an owner/applied mismatch is still
+        // corrupt.  It must never reach the route executor, because otherwise
+        // a forged applied CIDR could be interpreted as an owned delete.
+        let semanticPath = root.appendingPathComponent("semantic-corrupt.plist")
+        let semanticJournal = RouteJournal(
+            version: 1,
+            owner: JournalOwner(owner),
+            pendingCIDR: "10.65.0.0/16",
+            appliedCIDRs: ["10.65.0.0/16"]
+        )
+        try PropertyListEncoder().encode(semanticJournal).write(to: semanticPath, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: journalFilePermissions], ofItemAtPath: semanticPath.path)
+        let semanticExecutor = InjectedRouteExecutor()
+        let semantic = RouteCoordinator(executor: semanticExecutor, journalURL: semanticPath)
+        try requireSelfTest(semantic.discover().errorCode == "journal_corrupt",
+                            "semantic journal corruption must fail closed")
+        try requireSelfTest(semanticExecutor.added.isEmpty,
+                            "semantic journal corruption must not mutate routes")
+
+        let overlappingPendingPath = root.appendingPathComponent("pending-overlap-corrupt.plist")
+        let overlappingPendingJournal = RouteJournal(
+            version: 1,
+            owner: JournalOwner(owner),
+            pendingCIDR: cidrs[0],
+            appliedCIDRs: [cidrs[0]]
+        )
+        try PropertyListEncoder().encode(overlappingPendingJournal)
+            .write(to: overlappingPendingPath, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: journalFilePermissions],
+            ofItemAtPath: overlappingPendingPath.path
+        )
+        let overlappingPending = RouteCoordinator(
+            executor: InjectedRouteExecutor(),
+            journalURL: overlappingPendingPath
+        )
+        try requireSelfTest(overlappingPending.discover().errorCode == "journal_corrupt",
+                            "pending/applied overlap must fail closed")
+
+        // Status and recover must inspect live route ownership instead of
+        // trusting only the applied-CIDR count in the journal.
+        let livePath = root.appendingPathComponent("live-status.plist")
+        let liveExecutor = InjectedRouteExecutor()
+        let live = RouteCoordinator(executor: liveExecutor, journalURL: livePath)
+        try requireSelfTest(live.begin(owner).state == "prepared", "live status begin must prepare")
+        try requireSelfTest(live.status(owner.reference).state == "prepared",
+                            "prepared status must inspect absent owned routes")
+        try requireSelfTest(live.recover(owner).state == "prepared",
+                            "prepared recover must inspect absent owned routes")
+        try requireSelfTest(live.apply(owner.reference).state == "applied", "live status apply must apply")
+        liveExecutor.existing.insert(cidrs[0])
+        try requireSelfTest(live.status(owner.reference).errorCode == "recovery_required",
+                            "foreign overlap must invalidate applied status")
+        try requireSelfTest(live.recover(owner).errorCode == "recovery_required",
+                            "foreign overlap must reject applied recovery")
+
         print("route_coordinator_self_test_ok")
         return true
     } catch {
@@ -1251,6 +1639,11 @@ private enum RouteHelperMain {
             if !runRouteCoordinatorSelfTest() { exit(1) }
             return
         }
+        // Force construction before the listener accepts its first request.
+        // RouteCoordinator's initializer loads and reconciles any durable
+        // journal, so a helper restart cannot leave owned routes pending on a
+        // later client discovery call.
+        _ = RouteCoordinator.shared
         let delegate = ListenerDelegate()
         let listener = NSXPCListener(machServiceName: "net.kysion.kyclash.route-helper")
         listener.delegate = delegate
