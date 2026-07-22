@@ -679,18 +679,31 @@ Merge unit: `feat(macos): lease transactional private routes`.
 
 Status (2026-07-22): in progress. The signed VM helper/XPC client and v2 typed
 boundary pass the synthetic-Mihomo matrix: a less-specific covering route is
-accepted only for the exact frozen synthetic `utun5`, while empty/wrong,
+accepted only for the exact frozen synthetic interface, while empty/wrong,
 unknown-interface, exact, and more-specific cases fail closed. The complete
-run also passed helper restart and journal-corruption recovery. This is
-source-level and fixture-level evidence only. A separate fail-closed executor
-now pins the installed package receipt, app seal, nested Team ID/identifiers,
-byte-identical packaged helper, DIRECT-only packaged Mihomo configuration,
-root-private Unix control socket, explicit TUN name, live `/configs` fields,
-and a signed-client `if_nametoindex` probe. Its Bash/source/Mihomo-config static
-checks pass and are wired into macOS CI, but its mutating disposable-VM
-`live-run` has not yet been executed. Private-service reachability, guest
-reboot, app abort, and full foreign-route/credential cleanup also remain
-required; source readiness is not packaged-Mihomo acceptance evidence.
+run also passed helper restart and journal-corruption recovery.
+
+The separate installed-package executor has now passed both static validation
+and `live-run` in the authorized `VirtualMac2,1` guest. It pinned the 2.5.3
+receipt, intact app seal, Team ID/identifiers, byte-identical packaged helper,
+packaged Mihomo SHA-256
+`31e2e5a15c0e1df760f98525de6fc0e92e0112c475fb5c1fdc91c9100d76ef9b`,
+root-private control socket, live `/configs` values, and signed-client
+`if_nametoindex` evidence for `utun4094`. The matrix passed matching IPv4/IPv6
+less-specific coverage, empty/wrong/unknown/exact/more-specific refusal,
+Mihomo stop/restart with a changed PID and live resampling, default-route
+refusal, and final process/socket/utun/route/journal/lease absence. The
+redacted 69-line guest log has SHA-256
+`a504fbe6c017b0719bca258b21a6f1a05fce1268d9c487d85245c8873b2fa317`.
+The first run also exposed that Mihomo leaves an unbound Unix socket path after
+exit; the harness now removes only that exact root-owned, single-link socket
+after proving the launchd job, exact process, utun, routes, and socket holders
+are absent. The complete matrix then passed from a clean preflight.
+
+This advances but does not close S1.13. Production Rust live-source execution,
+private-service reachability, app/sidecar/helper abort, guest reboot/retry, and
+complete synthetic-credential/foreign-state cleanup remain required; the
+packaged lab-client path is not production-controller evidence.
 
 Scenarios:
 
@@ -791,6 +804,17 @@ fresh-install/rollback/uninstall/reboot evidence, and the latest exact-byte VM
 lifecycle matrix remain open. The latest candidate passed the host package
 audit and visible LaunchServices smoke. Notarization was intentionally not
 required for either internal candidate.
+
+The subsequently rebuilt internal candidate after `04c4e4d9` is the exact
+installed package used by the packaged-Mihomo VM matrix. Its PKG SHA-256 is
+`ff6aa01b005550a78869ee7a94b63b8acc1840da553290e63901760605f98bac`;
+the app executable, sidecar, and helper SHA-256 values are respectively
+`d1e02264ef21a1ad94bcdf2f653ccbd8fbb21a7c5960b999ca8d96e424416a8f`,
+`f50e402be47f3c15196807784b46f6ec141234a929b401613f07fe3e59dbe557`,
+and `aa6816decd845e167747adf953fd4406da12674860383b3b4d3573057e3d8280`.
+It is Developer ID signed with a trusted Installer timestamp and intentionally
+unnotarized. It remains an internal subsystem candidate, not the final
+production-feature S1 candidate.
 
 The retained historical notarized package was then exercised as a rollback
 artifact. Its installer transaction succeeded, but its application did not

@@ -235,12 +235,12 @@ Completed in the current workspace:
   pre-created `/var/tmp` link from redirecting journal writes or permission
   changes. A Unix regression test proves the linked target remains untouched.
 
-Remaining authorization-dependent validation:
+Remaining system validation:
 
-- After the typed active-Mihomo-interface ownership amendment, execute Mihomo
-  coexistence scenarios in the local disposable macOS VM. The production
-  adapter remains read-only and Iteration 3 is not release-closed until that
-  separate integration evidence exists.
+- The installed packaged-Mihomo coexistence matrix now passes in the local
+  disposable macOS VM. Iteration 3 is not release-closed until the production
+  Rust live-source/app path, private-service reachability, abort/reboot, and
+  complete final-absence cases pass with the production-feature candidate.
 
 Exit criteria:
 

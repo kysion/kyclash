@@ -463,10 +463,15 @@ reboot, or physical coexistence evidence.
 
 ## Packaged Mihomo live-control matrix
 
-The next S1.13 gate is implemented as the separate `live-*` modes of
-`scripts/macos-vm-route-helper-v2-matrix.sh`. Source and static checks are
-complete; the mutating `live-run` has not yet been executed and is not
-acceptance evidence until its root-owned VM log is copied and hashed.
+The installed-package portion of S1.13 is implemented as the separate `live-*`
+modes of `scripts/macos-vm-route-helper-v2-matrix.sh`. Static checks and the
+mutating `live-run` passed in the authorized `VirtualMac2,1` work guest on
+2026-07-22. The exact script used for the passing run had SHA-256
+`f8ebda542ea98720b46eb35e18f48f4ece7ce5b1571c84507e6dd4c100859061`.
+The root-owned log was copied to
+`target/macos-vm-lab/evidence/packaged-mihomo-v2-790b3e50/packaged-mihomo-v2-matrix.log`;
+its SHA-256 is
+`a504fbe6c017b0719bca258b21a6f1a05fce1268d9c487d85245c8873b2fa317`.
 
 The live boundary accepts only the installed `/Applications/KyClash.app` with
 the `net.kysion.kyclash` package receipt, an intact Developer ID app seal, Team
@@ -524,6 +529,16 @@ route refusal, and final absence of its process, socket, utun, fixed routes,
 journal, and lease. It deliberately does not claim the independent private-
 service reachability, guest-reboot, app-abort, synthetic-credential, or physical
 Mac portions of S1.13.
+
+The first mutating run failed closed after launchd stopped Mihomo because the
+process left its Unix socket pathname behind even though the exact PID,
+`utun4094`, and covering routes were already gone. The cleanup trap validated
+and removed the owned path. The executor was hardened to remove that exact
+socket only after confirming its root ownership, single link, root-private
+parent, absent job/process/utun/routes, and no open file holder. A clean
+preflight followed by a full rerun then passed. Observed Mihomo PIDs changed
+from 8086 to 9079 across restart; final process, socket, `utun4094`, fixed
+routes, journal, and lease were all absent.
 
 ## Disposable test cycle
 

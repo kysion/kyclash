@@ -125,3 +125,28 @@ signature with a trusted timestamp. Host LaunchServices then started the same
 bundle with a visible `KyClash` window; the Mihomo control socket returned
 `v1.19.29`. Gatekeeper/notarization remains a public-distribution enhancement,
 not a current no-Store/GitHub internal-test stop condition.
+
+## Latest installed S1.13 subsystem candidate after `04c4e4d9`
+
+The package used for the installed packaged-Mihomo coexistence matrix was
+rebuilt after `04c4e4d9`, Developer ID signed, and intentionally not submitted
+for notarization. It passed the host package audit and upgrade installation in
+the disposable `VirtualMac2,1` guest. The guest independently verified receipt
+version 2.5.3, arm64 architecture, deep strict bundle signature, and the exact
+main/helper bytes before running the system matrix.
+
+Artifacts and hashes:
+
+- App executable: `d1e02264ef21a1ad94bcdf2f653ccbd8fbb21a7c5960b999ca8d96e424416a8f`
+- Packaged Mihomo: `31e2e5a15c0e1df760f98525de6fc0e92e0112c475fb5c1fdc91c9100d76ef9b`
+- Nested network sidecar: `f50e402be47f3c15196807784b46f6ec141234a929b401613f07fe3e59dbe557`
+- Nested route helper: `aa6816decd845e167747adf953fd4406da12674860383b3b4d3573057e3d8280`
+- PKG (`68,499,934` bytes): `ff6aa01b005550a78869ee7a94b63b8acc1840da553290e63901760605f98bac`
+
+The Installer signature has a trusted timestamp. The installed App was also
+launched through guest LaunchServices: its guest process used the exact
+`/Applications/KyClash.app/Contents/MacOS/clash-verge` path, was frontmost with
+one window, and its managed Mihomo socket returned version `v1.19.29`. This is
+VM GUI and packaged-subsystem evidence; the candidate does not enable the
+default-off `networking-production` feature and is not the final S1 release
+candidate.

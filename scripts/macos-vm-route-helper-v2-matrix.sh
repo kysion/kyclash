@@ -1501,6 +1501,42 @@ assert_live_mihomo_socket() {
   fi
 }
 
+remove_stale_live_mihomo_socket() {
+  local owner_group links
+  if ! /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_SOCKET}" &&
+    ! /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_SOCKET}"; then
+    return 0
+  fi
+  if [[ "${LIVE_MIHOMO_ROOT_CREATED}" -ne 1 ]] ||
+    ! assert_root_path "${LIVE_MIHOMO_ROOT}" 700 directory ||
+    /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_SOCKET}" ||
+    ! /usr/bin/sudo /bin/test -S "${LIVE_MIHOMO_SOCKET}"; then
+    printf 'refusing unsafe stale packaged Mihomo socket cleanup\n' >&2
+    return 1
+  fi
+  owner_group="$(/usr/bin/sudo /usr/bin/stat -f '%Su:%Sg' \
+    "${LIVE_MIHOMO_SOCKET}")"
+  links="$(/usr/bin/sudo /usr/bin/stat -f '%l' "${LIVE_MIHOMO_SOCKET}")"
+  if [[ "${owner_group}" != root:wheel || "${links}" != 1 ]] ||
+    /usr/bin/sudo /bin/launchctl print "system/${LIVE_MIHOMO_LABEL}" \
+      >/dev/null 2>&1 ||
+    [[ -n "$(packaged_mihomo_processes)" ]]; then
+    printf 'refusing owned packaged Mihomo socket with active or changed identity\n' >&2
+    return 1
+  fi
+  if /usr/bin/sudo /usr/sbin/lsof -n -a -U "${LIVE_MIHOMO_SOCKET}" \
+    2>/dev/null | /usr/bin/awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }'; then
+    printf 'refusing packaged Mihomo socket still held by a process\n' >&2
+    return 1
+  fi
+  /usr/bin/sudo /bin/rm -f "${LIVE_MIHOMO_SOCKET}"
+  if /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_SOCKET}" ||
+    /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_SOCKET}"; then
+    printf 'packaged Mihomo stale socket remained after exact cleanup\n' >&2
+    return 1
+  fi
+}
+
 live_mihomo_api_snapshot() {
   local response enable device index_line index
   assert_live_mihomo_socket
@@ -1656,16 +1692,15 @@ stop_live_mihomo() {
   while [[ "${attempt}" -lt 100 ]]; do
     if ! /sbin/ifconfig "${LIVE_MIHOMO_UTUN}" >/dev/null 2>&1 && \
       [[ "$(route_count covering4 "${LIVE_MIHOMO_UTUN}")" -eq 0 ]] && \
-      [[ "$(route_count covering6 "${LIVE_MIHOMO_UTUN}")" -eq 0 ]] && \
-      ! /usr/bin/sudo /bin/test -e "${LIVE_MIHOMO_SOCKET}" && \
-      ! /usr/bin/sudo /bin/test -L "${LIVE_MIHOMO_SOCKET}"; then
+      [[ "$(route_count covering6 "${LIVE_MIHOMO_UTUN}")" -eq 0 ]]; then
+      remove_stale_live_mihomo_socket
       LIVE_MIHOMO_INDEX=""
       return 0
     fi
     /bin/sleep 0.1
     attempt=$((attempt + 1))
   done
-  printf 'packaged Mihomo interface, covering route, or API socket remained after stop\n' >&2
+  printf 'packaged Mihomo interface or covering route remained after stop\n' >&2
   return 1
 }
 
