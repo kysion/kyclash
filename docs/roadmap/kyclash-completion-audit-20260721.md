@@ -23,9 +23,16 @@ production-feature live-source and typed service-lifecycle path required by the
 incomplete S1.13 VM aggregate. Its controller-absence prerequisite is locally
 closed: only a never-spawned or exact stop/reap generation can retire, retained
 handles become mutation-inert, and launch secrets are destroyed immediately.
-The route-boundary terminal receipt remains the next source criterion. This
-audit is not a terminal completion or permission to stop continuous delivery
-while safe work remains.
+The route-boundary terminal receipt is now locally closed: a receipt requires
+an idle reconciled generation, no owner/reference or in-flight native call, and
+synchronous destruction of that exact native client; busy and recovery-only
+boundaries cannot retire, `Drop` cannot mint proof, and retained retired
+boundaries reject mutation. The receipt binds a process-unique boundary
+incarnation as well as its native generation, but remains route-local evidence:
+it does not prove absence of queued service tasks or make an old service `Arc`
+inert. The service mutation gate and generation-bound Connect reservation are
+the next source criterion. This audit is not a terminal completion or
+permission to stop continuous delivery while safe work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
 route and lifecycle gates still require disposable hosts, and impaired-network
@@ -47,6 +54,12 @@ public-distribution enhancement rather than a current development blocker.
   absence, stop timeout/CrashLoop cannot produce it, retained handles reject
   every later mutation, diagnostics remain read-only, and launch context plus
   authentication proof are destroyed before the receipt is returned.
+- The production route boundary now distinguishes reusable, busy,
+  recovery-only, and retired generations. Its one sealed retirement receipt is
+  issued only after exact idle ownership and native-call absence are proved and
+  the exact boundary incarnation/native generation is synchronously destroyed;
+  retained retired boundaries cannot reconnect or mutate routes. This is one
+  required service-retirement fact, not standalone replacement authority.
 - Production initialization now persists only revision, exact signed-envelope
   SHA-256, and key ID under a bounded cross-process transaction. Exact restart
   is zero-write; v1 migration, expiry, same-revision identity changes,

@@ -13,6 +13,7 @@ use futures::task::noop_waker_ref;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use super::route_helper_client::RouteRetirementIssuer;
 use super::{
     ActiveMihomoTunSource, IpcRequest, IpcRequestPayload, IpcResponsePayload, MihomoTunSnapshot,
     NETWORK_IPC_PROTOCOL_VERSION, NetworkErrorCode, NetworkHealth, NetworkProfile, NetworkState, NetworkStatus,
@@ -20,7 +21,67 @@ use super::{
     TunnelDeviceFacts, valid_ipc_id,
 };
 
+/// Read-only route-boundary state.  This is an observation only: callers must
+/// use `try_retire` for the atomic close decision and may never manufacture a
+/// retirement receipt from a prior disposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductionRouteDisposition {
+    Reusable,
+    Busy,
+    RecoveryOnly,
+    Retired,
+}
+
+/// Positive route-local proof that one exact boundary incarnation and native
+/// route-client generation were closed while they owned no route lease and had
+/// no unresolved reconciliation state.
+///
+/// The fields and issuer are deliberately private outside the networking
+/// implementation.  The receipt is not `Clone` or `Copy`, so a later service
+/// gate can consume the one authority returned by `try_retire`. This receipt
+/// alone never proves that service-level queued tasks, reservations, controller
+/// children, or retained service handles are absent.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ProductionRouteRetirementReceipt {
+    boundary_incarnation: u64,
+    native_generation: u64,
+    _sealed: (),
+}
+
+impl ProductionRouteRetirementReceipt {
+    pub(super) const fn issued(issuer: &RouteRetirementIssuer, native_generation: u64) -> Self {
+        Self {
+            boundary_incarnation: issuer.boundary_incarnation(),
+            native_generation,
+            _sealed: (),
+        }
+    }
+
+    #[must_use]
+    pub const fn boundary_incarnation(&self) -> u64 {
+        self.boundary_incarnation
+    }
+
+    #[must_use]
+    pub const fn native_generation(&self) -> u64 {
+        self.native_generation
+    }
+}
+
+/// Atomic route-boundary retirement outcome.  `AlreadyRetired` never carries
+/// a second receipt, and observational `Reusable` alone is not authority to
+/// remove or replace a service.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProductionRouteRetirementResult {
+    Retired(ProductionRouteRetirementReceipt),
+    Busy,
+    RecoveryOnly,
+    AlreadyRetired,
+}
+
 pub trait ProductionRouteBoundary: Send {
+    fn disposition(&self) -> ProductionRouteDisposition;
+    fn try_retire(&mut self) -> ProductionRouteRetirementResult;
     fn apply(
         &mut self,
         profile: &NetworkProfile,
@@ -1840,6 +1901,14 @@ mod tests {
     struct Routes(Arc<Mutex<Vec<String>>>);
 
     impl ProductionRouteBoundary for Routes {
+        fn disposition(&self) -> ProductionRouteDisposition {
+            ProductionRouteDisposition::RecoveryOnly
+        }
+
+        fn try_retire(&mut self) -> ProductionRouteRetirementResult {
+            ProductionRouteRetirementResult::RecoveryOnly
+        }
+
         fn apply(
             &mut self,
             _: &NetworkProfile,
@@ -1869,6 +1938,14 @@ mod tests {
     struct FailingHeartbeatRoutes(Arc<Mutex<Vec<String>>>);
 
     impl ProductionRouteBoundary for FailingHeartbeatRoutes {
+        fn disposition(&self) -> ProductionRouteDisposition {
+            ProductionRouteDisposition::RecoveryOnly
+        }
+
+        fn try_retire(&mut self) -> ProductionRouteRetirementResult {
+            ProductionRouteRetirementResult::RecoveryOnly
+        }
+
         fn apply(
             &mut self,
             _: &NetworkProfile,
@@ -1925,6 +2002,14 @@ mod tests {
     }
 
     impl ProductionRouteBoundary for BlockingHeartbeatRoutes {
+        fn disposition(&self) -> ProductionRouteDisposition {
+            ProductionRouteDisposition::RecoveryOnly
+        }
+
+        fn try_retire(&mut self) -> ProductionRouteRetirementResult {
+            ProductionRouteRetirementResult::RecoveryOnly
+        }
+
         fn apply(
             &mut self,
             _: &NetworkProfile,
@@ -1957,6 +2042,14 @@ mod tests {
     }
 
     impl ProductionRouteBoundary for BlockingRollbackRoutes {
+        fn disposition(&self) -> ProductionRouteDisposition {
+            ProductionRouteDisposition::RecoveryOnly
+        }
+
+        fn try_retire(&mut self) -> ProductionRouteRetirementResult {
+            ProductionRouteRetirementResult::RecoveryOnly
+        }
+
         fn apply(
             &mut self,
             _: &NetworkProfile,
@@ -1988,6 +2081,14 @@ mod tests {
     }
 
     impl ProductionRouteBoundary for FailFirstRollbackRoutes {
+        fn disposition(&self) -> ProductionRouteDisposition {
+            ProductionRouteDisposition::RecoveryOnly
+        }
+
+        fn try_retire(&mut self) -> ProductionRouteRetirementResult {
+            ProductionRouteRetirementResult::RecoveryOnly
+        }
+
         fn apply(
             &mut self,
             _: &NetworkProfile,

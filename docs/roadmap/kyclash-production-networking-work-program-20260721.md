@@ -84,9 +84,18 @@ checks pass. The first typed-service cleanup slice is also locally closed: the
 controller now issues an unforgeable generation-bound receipt only for a
 never-spawned or exactly reaped child, permanently rejects mutations through
 retained handles after retirement, and destroys retained launch secrets at the
-retirement boundary. The first incomplete source criterion is the route-boundary
-terminal receipt, followed by the service mutation gate and command-layer CAS
-rematerialization. The first incomplete aggregate criterion remains S1.13.
+retirement boundary. The route-boundary retirement slice is now locally closed
+as well: only an idle, reconciled native generation with no route owner or
+in-flight call may be synchronously destroyed, and its sealed generation-bound
+receipt cannot be copied or issued by `Drop`; recovery-only, busy, and retained
+old boundaries fail closed. Each receipt also binds a process-unique boundary
+incarnation, so equal native generation counters on separate boundaries cannot
+alias. This remains a route-local proof only: it cannot authorize replacement
+until the service gate separately proves no queued/unjoined route task or
+retained mutable service handle. The first incomplete source criterion is now
+that service mutation gate and generation-bound Connect reservation, followed
+by command-layer CAS rematerialization. The first incomplete aggregate
+criterion remains S1.13.
 Overall S1 status: in progress.
 
 ### Work-package dependency chain

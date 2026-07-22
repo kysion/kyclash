@@ -1,13 +1,17 @@
 use std::{
     ffi::CString,
-    sync::Mutex,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 use super::{
-    MihomoTunSnapshot, NetworkErrorCode, NetworkProfile, ProductionRouteBoundary, ROUTE_HELPER_PROTOCOL_VERSION,
-    RouteHelperState, RouteHelperStatus, RouteLeaseOwner, RouteLeaseReference, TunnelDeviceFacts,
+    MihomoTunSnapshot, NetworkErrorCode, NetworkProfile, ProductionRouteBoundary, ProductionRouteDisposition,
+    ProductionRouteRetirementReceipt, ProductionRouteRetirementResult, ROUTE_HELPER_PROTOCOL_VERSION, RouteHelperState,
+    RouteHelperStatus, RouteLeaseOwner, RouteLeaseReference, TunnelDeviceFacts,
 };
 
 #[repr(C)]
@@ -49,6 +53,101 @@ trait RouteHelperGeneration: Send {
     fn apply(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError>;
     fn rollback(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError>;
     fn heartbeat(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError>;
+}
+
+static NEXT_ROUTE_BOUNDARY_INCARNATION: AtomicU64 = AtomicU64::new(1);
+
+/// Private construction capability for a route-boundary retirement receipt.
+/// Sibling networking modules may name this type only so the receipt issuer
+/// can accept it; they cannot construct a value or obtain the boundary's
+/// retained capability.
+pub(super) struct RouteRetirementIssuer {
+    boundary_incarnation: u64,
+}
+
+impl RouteRetirementIssuer {
+    fn allocate() -> Result<Self, NetworkErrorCode> {
+        NEXT_ROUTE_BOUNDARY_INCARNATION
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| next.checked_add(1))
+            .map(|boundary_incarnation| Self { boundary_incarnation })
+            .map_err(|_| NetworkErrorCode::InvalidStateTransition)
+    }
+
+    pub(super) const fn boundary_incarnation(&self) -> u64 {
+        self.boundary_incarnation
+    }
+}
+
+#[derive(Default)]
+struct RouteHelperCallTracker {
+    in_flight: AtomicUsize,
+}
+
+impl RouteHelperCallTracker {
+    fn enter(&self) -> Result<RouteHelperCallGuard<'_>, RouteHelperCallError> {
+        self.in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| current.checked_add(1))
+            .map_err(|_| RouteHelperCallError::Local(NetworkErrorCode::InvalidStateTransition))?;
+        Ok(RouteHelperCallGuard { tracker: self })
+    }
+
+    fn is_idle(&self) -> bool {
+        self.in_flight.load(Ordering::Acquire) == 0
+    }
+}
+
+struct RouteHelperCallGuard<'a> {
+    tracker: &'a RouteHelperCallTracker,
+}
+
+impl Drop for RouteHelperCallGuard<'_> {
+    fn drop(&mut self) {
+        let previous = self.tracker.in_flight.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0);
+    }
+}
+
+struct TrackedRouteHelperGeneration {
+    inner: Box<dyn RouteHelperGeneration>,
+    calls: Arc<RouteHelperCallTracker>,
+}
+
+impl TrackedRouteHelperGeneration {
+    fn new(inner: Box<dyn RouteHelperGeneration>, calls: Arc<RouteHelperCallTracker>) -> Self {
+        Self { inner, calls }
+    }
+}
+
+impl RouteHelperGeneration for TrackedRouteHelperGeneration {
+    fn discover(&self) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        let _call = self.calls.enter()?;
+        self.inner.discover()
+    }
+
+    fn begin(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        let _call = self.calls.enter()?;
+        self.inner.begin(owner)
+    }
+
+    fn recover(&self, owner: &RouteLeaseOwner) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        let _call = self.calls.enter()?;
+        self.inner.recover(owner)
+    }
+
+    fn apply(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        let _call = self.calls.enter()?;
+        self.inner.apply(reference)
+    }
+
+    fn rollback(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        let _call = self.calls.enter()?;
+        self.inner.rollback(reference)
+    }
+
+    fn heartbeat(&self, reference: &RouteLeaseReference) -> Result<RouteHelperStatus, RouteHelperCallError> {
+        let _call = self.calls.enter()?;
+        self.inner.heartbeat(reference)
+    }
 }
 
 trait RouteHelperGenerationFactory: Send {
@@ -451,12 +550,16 @@ fn discover_authoritative_idle_with_timer(
 pub struct XpcProductionRouteBoundary {
     client: Option<Box<dyn RouteHelperGeneration>>,
     factory: Box<dyn RouteHelperGenerationFactory>,
+    calls: Arc<RouteHelperCallTracker>,
+    native_generation: u64,
+    retirement_issuer: RouteRetirementIssuer,
     discovery_policy: DiscoveryPolicy,
     active: Option<RouteLeaseReference>,
     active_owner: Option<RouteLeaseOwner>,
     recovery_required: bool,
     mutations_blocked: bool,
     reconciliation_error: Option<NetworkErrorCode>,
+    retired: bool,
 }
 
 impl XpcProductionRouteBoundary {
@@ -471,24 +574,34 @@ impl XpcProductionRouteBoundary {
         mut factory: Box<dyn RouteHelperGenerationFactory>,
         discovery_policy: DiscoveryPolicy,
     ) -> Result<Self, NetworkErrorCode> {
-        let client = factory.create()?;
+        let calls = Arc::new(RouteHelperCallTracker::default());
+        let client: Box<dyn RouteHelperGeneration> =
+            Box::new(TrackedRouteHelperGeneration::new(factory.create()?, Arc::clone(&calls)));
         // A fresh process does not possess the frozen owner envelope needed to
         // prove ownership of a durable journal left by an older process. It
         // must fail closed instead of synthesising an owner from new input.
         discover_authoritative_idle(client.as_ref(), discovery_policy).map_err(ReconciliationError::code)?;
+        let retirement_issuer = RouteRetirementIssuer::allocate()?;
         Ok(Self {
             client: Some(client),
             factory,
+            calls,
+            native_generation: 1,
+            retirement_issuer,
             discovery_policy,
             active: None,
             active_owner: None,
             recovery_required: false,
             mutations_blocked: false,
             reconciliation_error: None,
+            retired: false,
         })
     }
 
     fn live_client(&self) -> Result<&dyn RouteHelperGeneration, NetworkErrorCode> {
+        if self.retired {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
         if self.mutations_blocked {
             return Err(self
                 .reconciliation_error
@@ -527,7 +640,15 @@ impl XpcProductionRouteBoundary {
                 return primary;
             }
         };
-        self.client = Some(fresh);
+        let Some(native_generation) = self.native_generation.checked_add(1) else {
+            self.reconciliation_error = Some(NetworkErrorCode::InvalidStateTransition);
+            return primary;
+        };
+        self.native_generation = native_generation;
+        self.client = Some(Box::new(TrackedRouteHelperGeneration::new(
+            fresh,
+            Arc::clone(&self.calls),
+        )));
         let reconciliation = match self.client.as_deref() {
             Some(client) => discover_authoritative_idle(client, self.discovery_policy),
             None => Err(ReconciliationError::Call(RouteHelperCallError::Terminal(
@@ -626,6 +747,50 @@ impl XpcProductionRouteBoundary {
 }
 
 impl ProductionRouteBoundary for XpcProductionRouteBoundary {
+    fn disposition(&self) -> ProductionRouteDisposition {
+        if self.retired {
+            return ProductionRouteDisposition::Retired;
+        }
+        if !self.calls.is_idle() {
+            return ProductionRouteDisposition::Busy;
+        }
+        if self.recovery_required
+            || self.mutations_blocked
+            || self.reconciliation_error.is_some()
+            || self.client.is_none()
+        {
+            return ProductionRouteDisposition::RecoveryOnly;
+        }
+        match (&self.active, &self.active_owner) {
+            (None, None) => ProductionRouteDisposition::Reusable,
+            (Some(_), Some(_)) => ProductionRouteDisposition::Busy,
+            _ => ProductionRouteDisposition::RecoveryOnly,
+        }
+    }
+
+    fn try_retire(&mut self) -> ProductionRouteRetirementResult {
+        match self.disposition() {
+            ProductionRouteDisposition::Busy => ProductionRouteRetirementResult::Busy,
+            ProductionRouteDisposition::RecoveryOnly => ProductionRouteRetirementResult::RecoveryOnly,
+            ProductionRouteDisposition::Retired => ProductionRouteRetirementResult::AlreadyRetired,
+            ProductionRouteDisposition::Reusable => {
+                let Some(client) = self.client.take() else {
+                    return ProductionRouteRetirementResult::RecoveryOnly;
+                };
+                // XPC-B makes destroy terminalize the native generation, wake
+                // every waiter exactly once, and render every late callback
+                // inert. The call tracker and empty owner/ref state above are
+                // the positive Rust-side prerequisites for that close.
+                drop(client);
+                self.retired = true;
+                ProductionRouteRetirementResult::Retired(ProductionRouteRetirementReceipt::issued(
+                    &self.retirement_issuer,
+                    self.native_generation,
+                ))
+            }
+        }
+    }
+
     fn apply(
         &mut self,
         profile: &NetworkProfile,
@@ -770,7 +935,11 @@ impl ProductionRouteBoundary for XpcProductionRouteBoundary {
 
 impl Drop for XpcProductionRouteBoundary {
     fn drop(&mut self) {
+        // Drop remains best-effort emergency cleanup only. It deliberately
+        // cannot mint a retirement receipt and therefore is not positive
+        // absence evidence for service replacement.
         if !self.mutations_blocked
+            && !self.retired
             && let (Some(client), Some(reference)) = (self.client.as_deref(), self.active.as_ref())
         {
             let _ = client.rollback(reference);
@@ -1034,6 +1203,10 @@ mod tests {
         status(RouteHelperState::Prepared, Some(operation_id), None)
     }
 
+    fn applied(operation_id: &str) -> RouteHelperStatus {
+        status(RouteHelperState::Applied, Some(operation_id), None)
+    }
+
     fn test_policy(maximum_attempts: u16) -> DiscoveryPolicy {
         DiscoveryPolicy {
             total_timeout: Duration::from_secs(1),
@@ -1224,6 +1397,185 @@ mod tests {
     }
 
     #[test]
+    fn idle_generation_retires_once_and_every_old_boundary_mutation_fails_closed() {
+        let generation = MockGenerationState::scripted(vec![Ok(idle())], vec![], vec![]);
+        let creates = Arc::new(AtomicUsize::new(0));
+        let result = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(vec![Arc::clone(&generation)], Arc::clone(&creates))),
+            test_policy(1),
+        );
+        assert!(result.is_ok());
+        let Ok(mut boundary) = result else {
+            return;
+        };
+        assert_eq!(boundary.disposition(), ProductionRouteDisposition::Reusable);
+        let receipt = boundary.try_retire();
+        assert!(
+            matches!(&receipt, ProductionRouteRetirementResult::Retired(_)),
+            "idle native generation did not produce a retirement receipt"
+        );
+        let ProductionRouteRetirementResult::Retired(receipt) = receipt else {
+            return;
+        };
+        assert_eq!(receipt.native_generation(), 1);
+        assert_eq!(generation.counts.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(boundary.disposition(), ProductionRouteDisposition::Retired);
+        assert_eq!(boundary.try_retire(), ProductionRouteRetirementResult::AlreadyRetired);
+
+        let Some(profile) = test_profile() else {
+            return;
+        };
+        let operation = "operation.retired";
+        assert_eq!(
+            boundary.apply(
+                &profile,
+                operation,
+                &test_tunnel(operation),
+                42,
+                &MihomoTunSnapshot::inactive(),
+            ),
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        assert_eq!(
+            boundary.heartbeat(operation),
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        assert_eq!(
+            boundary.rollback(operation),
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        assert_eq!(creates.load(Ordering::SeqCst), 1);
+        assert_no_mutation_calls(&generation);
+    }
+
+    #[test]
+    fn separate_boundaries_issue_distinct_incarnations_even_at_the_same_native_generation() {
+        let first_generation = MockGenerationState::scripted(vec![Ok(idle())], vec![], vec![]);
+        let second_generation = MockGenerationState::scripted(vec![Ok(idle())], vec![], vec![]);
+        let first_creates = Arc::new(AtomicUsize::new(0));
+        let second_creates = Arc::new(AtomicUsize::new(0));
+        let first = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(
+                vec![Arc::clone(&first_generation)],
+                Arc::clone(&first_creates),
+            )),
+            test_policy(1),
+        );
+        let second = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(
+                vec![Arc::clone(&second_generation)],
+                Arc::clone(&second_creates),
+            )),
+            test_policy(1),
+        );
+        assert!(first.is_ok());
+        assert!(second.is_ok());
+        let Ok(mut first) = first else {
+            return;
+        };
+        let Ok(mut second) = second else {
+            return;
+        };
+        let first_receipt = first.try_retire();
+        let second_receipt = second.try_retire();
+        assert!(matches!(&first_receipt, ProductionRouteRetirementResult::Retired(_)));
+        assert!(matches!(&second_receipt, ProductionRouteRetirementResult::Retired(_)));
+        let ProductionRouteRetirementResult::Retired(first_receipt) = first_receipt else {
+            return;
+        };
+        let ProductionRouteRetirementResult::Retired(second_receipt) = second_receipt else {
+            return;
+        };
+        assert_ne!(
+            first_receipt.boundary_incarnation(),
+            second_receipt.boundary_incarnation()
+        );
+        assert_eq!(first_receipt.native_generation(), 1);
+        assert_eq!(second_receipt.native_generation(), 1);
+        assert_eq!(first_creates.load(Ordering::SeqCst), 1);
+        assert_eq!(second_creates.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn in_flight_generation_call_makes_retirement_busy_until_the_call_drains() {
+        let generation = MockGenerationState::scripted(vec![Ok(idle())], vec![], vec![]);
+        let creates = Arc::new(AtomicUsize::new(0));
+        let result = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(vec![Arc::clone(&generation)], Arc::clone(&creates))),
+            test_policy(1),
+        );
+        assert!(result.is_ok());
+        let Ok(mut boundary) = result else {
+            return;
+        };
+        let calls = Arc::clone(&boundary.calls);
+        let call = calls.enter();
+        assert!(call.is_ok());
+        let Ok(call) = call else {
+            return;
+        };
+        assert_eq!(boundary.disposition(), ProductionRouteDisposition::Busy);
+        assert_eq!(boundary.try_retire(), ProductionRouteRetirementResult::Busy);
+        assert_eq!(generation.counts.drops.load(Ordering::SeqCst), 0);
+        drop(call);
+        assert_eq!(boundary.disposition(), ProductionRouteDisposition::Reusable);
+        assert!(matches!(
+            boundary.try_retire(),
+            ProductionRouteRetirementResult::Retired(_)
+        ));
+        assert_eq!(generation.counts.drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn active_owner_is_busy_and_unresolved_or_mismatched_state_is_recovery_only() {
+        let operation = "operation.active";
+        let generation = MockGenerationState::scripted(
+            vec![Ok(idle())],
+            vec![Ok(prepared(operation))],
+            vec![Ok(applied(operation))],
+        );
+        let creates = Arc::new(AtomicUsize::new(0));
+        let result = XpcProductionRouteBoundary::connect_with_factory(
+            Box::new(MockFactory::new(vec![Arc::clone(&generation)], Arc::clone(&creates))),
+            test_policy(1),
+        );
+        assert!(result.is_ok());
+        let Ok(mut boundary) = result else {
+            return;
+        };
+        let Some(profile) = test_profile() else {
+            return;
+        };
+        assert_eq!(
+            boundary.apply(
+                &profile,
+                operation,
+                &test_tunnel(operation),
+                42,
+                &MihomoTunSnapshot::inactive(),
+            ),
+            Ok(())
+        );
+        assert_eq!(boundary.disposition(), ProductionRouteDisposition::Busy);
+        assert_eq!(boundary.try_retire(), ProductionRouteRetirementResult::Busy);
+        assert_eq!(generation.counts.drops.load(Ordering::SeqCst), 0);
+
+        boundary.recovery_required = true;
+        boundary.mutations_blocked = true;
+        boundary.reconciliation_error = Some(NetworkErrorCode::RouteRollbackFailed);
+        assert_eq!(boundary.disposition(), ProductionRouteDisposition::RecoveryOnly);
+        assert_eq!(boundary.try_retire(), ProductionRouteRetirementResult::RecoveryOnly);
+        assert_eq!(generation.counts.drops.load(Ordering::SeqCst), 0);
+
+        boundary.recovery_required = false;
+        boundary.mutations_blocked = false;
+        boundary.reconciliation_error = None;
+        boundary.active_owner = None;
+        assert_eq!(boundary.disposition(), ProductionRouteDisposition::RecoveryOnly);
+        assert_eq!(boundary.try_retire(), ProductionRouteRetirementResult::RecoveryOnly);
+    }
+
+    #[test]
     fn discovery_backoff_and_attempt_count_are_bounded() {
         let generation =
             MockGenerationState::scripted(vec![Ok(not_ready()), Ok(not_ready()), Ok(not_ready())], vec![], vec![]);
@@ -1314,6 +1666,17 @@ mod tests {
         assert!(boundary.active_owner.is_none());
         assert!(!boundary.recovery_required);
         assert!(!boundary.mutations_blocked);
+        assert_eq!(boundary.disposition(), ProductionRouteDisposition::Reusable);
+        let retirement = boundary.try_retire();
+        assert!(
+            matches!(&retirement, ProductionRouteRetirementResult::Retired(_)),
+            "reconciled fresh generation did not retire"
+        );
+        let ProductionRouteRetirementResult::Retired(receipt) = retirement else {
+            return;
+        };
+        assert_eq!(receipt.native_generation(), 2);
+        assert_eq!(fresh.counts.drops.load(Ordering::SeqCst), 1);
     }
 
     #[test]

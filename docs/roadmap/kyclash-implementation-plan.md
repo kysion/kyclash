@@ -505,8 +505,15 @@ same generation, retains frozen ownership on failed recovery, and never
 replays route mutations on a fresh generation. The first typed service-lifecycle
 slice is also closed at the controller boundary: positive never-spawned/exact-
 reap receipts, permanent old-handle mutation refusal, and immediate secret
-destruction are enforced. The next source gate is the route-boundary terminal
-receipt, followed by service/command rematerialization.
+destruction are enforced. The route-boundary retirement slice is now locally
+closed as well: exact idle ownership, native-call absence, synchronous
+generation destruction, a sealed non-copyable receipt bound to a process-unique
+boundary incarnation, and retained-old-boundary mutation refusal are covered
+by focused and full-library tests. This route-local receipt is insufficient to
+replace a service until queued/unjoined tasks and retained mutable service
+handles are closed by the service gate. The next source gate is that service
+mutation gate with a generation-bound Connect reservation, followed by command
+CAS rematerialization.
 
 The plan then advances through a stateful userspace sidecar and compatible lab
 server, the production Rust/Keychain controller, signed sidecar bundling and
@@ -536,8 +543,9 @@ barrier, Objective-C XPC-B terminal-generation/transport-status boundary, and
 Rust XPC-C replacement/reconciliation boundary are now closed source units.
 XPC-C has local focused and full-library test, Clippy, formatting, and diff
 evidence; it does not claim a live production endpoint. The controller's exact
-child-absence retirement receipt is now also implemented and locally tested;
-route-boundary retirement, the service mutation gate, and command CAS remain.
+child-absence retirement receipt and the route boundary's exact native-
+generation retirement receipt are now implemented and locally tested. The
+service mutation gate, generation-bound reservation, and command CAS remain.
 The sidecar cancellation amendment is committed as `8811dda9` with local
 full-race and 20-round soak
 evidence. Hosted run `29923178571` still has a red macOS race verification
