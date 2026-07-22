@@ -6,7 +6,7 @@ import fs from 'node:fs'
  * searching a linker/tool output) lets the package verifier inspect the
  * signed executable itself.
  */
-export const PRODUCTION_MARKER_SEGMENT = '__TEXT'
+const PRODUCTION_MARKER_SEGMENT = '__TEXT'
 export const PRODUCTION_MARKER_SECTION = '__kyclash_prod'
 export const PRODUCTION_MARKER_BYTES = Buffer.from('KYCLASH-PROD-V1\0', 'ascii')
 

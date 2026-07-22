@@ -1,6 +1,10 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/polyfills/*.js!", "src/types/networking-fixture.ts"],
+  "entry": [
+    "src/polyfills/*.js!",
+    "src/types/networking-fixture.ts",
+    "scripts/networking-production-policy-rust-fixture.mjs"
+  ],
   "project": ["src/**/*.{js,jsx,ts,tsx}!", "scripts/**/*.{js,mjs}!"],
   "include": [
     "files",
