@@ -27,6 +27,8 @@
     "release:ownership-check": "node scripts/assert-updater-disabled.mjs --check",
     "network-sidecar:macos": "node scripts/build-network-sidecar-macos.mjs",
     "route-helper:macos": "node scripts/build-route-helper-macos.mjs",
+    "tunnel-broker:macos": "node scripts/build-tunnel-broker-macos.mjs",
+    "tunnel-broker:self-test": "node scripts/build-tunnel-broker-macos.mjs --self-test && node --test scripts/tunnel-broker-contract.test.mjs",
     "portable": "node scripts/portable.mjs",
     "portable-fixed-webview2": "node scripts/portable-fixed-webview2.mjs",
     "macos:pkg": "node scripts/package-macos-pkg.mjs",
