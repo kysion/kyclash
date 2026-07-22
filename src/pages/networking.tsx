@@ -22,12 +22,15 @@ import {
   getNetworkingStatus,
   getRouteHelperRegistrationStatus,
   initializeNetworking,
+  listNetworkingSites,
   openRouteHelperSystemSettings,
   registerRouteHelperService,
   unregisterRouteHelperService,
 } from '@/services/cmds'
 import type {
+  NetworkErrorCode,
   ProductionNetworkStatus,
+  ProductionSiteSummary,
   RouteHelperRegistrationStatus,
 } from '@/types/networking'
 
@@ -64,8 +67,54 @@ const stateLabel: Record<ProductionNetworkStatus['state'], string> = {
   error: 'Connection failed',
 }
 
+const networkErrorLabel: Record<NetworkErrorCode, string> = {
+  unsupported_schema_version: 'The network policy schema is not supported.',
+  unsupported_protocol_version:
+    'The bundled network sidecar protocol is not supported.',
+  invalid_configuration:
+    'Production networking is not initialized with a valid signed policy.',
+  authentication_failed: 'Network authentication failed.',
+  permission_denied:
+    'macOS denied the narrowly scoped networking service; no route was changed.',
+  policy_signature_invalid: 'The signed network policy could not be verified.',
+  route_discovery_failed: 'Private-route discovery failed.',
+  route_conflict:
+    'A private route is already owned by another interface; KyClash refused to replace it.',
+  route_journal_corrupted:
+    'The private-route recovery journal is corrupted; KyClash failed closed.',
+  route_journal_unavailable:
+    'The private-route recovery journal is unavailable; KyClash failed closed.',
+  route_rollback_failed:
+    'Private-route rollback did not complete; reconnect remains disabled.',
+  tunnel_start_failed: 'The encrypted tunnel could not be created.',
+  primary_transport_unavailable: 'The QUIC transport is unavailable.',
+  fallback_transport_unavailable:
+    'The WSS and TCP fallback transports are unavailable.',
+  operation_cancelled: 'The networking operation was cancelled.',
+  operation_timed_out: 'The networking operation timed out.',
+  sidecar_unavailable:
+    'The trusted production sidecar could not be started; no real utun or private route is active.',
+  invalid_state_transition:
+    'The requested action is not valid in the current networking state.',
+}
+
+const formatNetworkError = (reason: unknown) => {
+  const raw = reason instanceof Error ? reason.message : String(reason)
+  let code = raw
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed === 'string') code = parsed
+  } catch {
+    // Non-JSON command errors are displayed without inventing a typed cause.
+  }
+  return Object.hasOwn(networkErrorLabel, code)
+    ? networkErrorLabel[code as NetworkErrorCode]
+    : raw
+}
+
 const NetworkingPage = () => {
   const [status, setStatus] = useState<ProductionNetworkStatus>()
+  const [sites, setSites] = useState<ProductionSiteSummary[]>([])
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [diagnosticCount, setDiagnosticCount] = useState(0)
@@ -79,7 +128,7 @@ const NetworkingPage = () => {
       try {
         setStatus(await action())
       } catch (reason) {
-        setError(String(reason))
+        setError(formatNetworkError(reason))
         try {
           setStatus(await getNetworkingStatus())
         } catch {
@@ -97,14 +146,22 @@ const NetworkingPage = () => {
     try {
       setHelperStatus(await getRouteHelperRegistrationStatus())
     } catch (reason) {
-      setError(String(reason))
+      setError(formatNetworkError(reason))
       setHelperStatus('unknown')
     }
   }, [])
   // Initialization verifies only the signed app-owned policy and registers a
   // deferred factory. It does not start the sidecar or touch Keychain/XPC;
   // those remain behind the explicit Connect action.
-  useEffect(() => void run(initializeNetworking), [run])
+  useEffect(
+    () =>
+      void run(async () => {
+        const initialized = await initializeNetworking()
+        setSites(await listNetworkingSites())
+        return initialized
+      }),
+    [run],
+  )
   useEffect(() => void refreshHelper(), [refreshHelper])
 
   useEffect(() => {
@@ -112,7 +169,7 @@ const NetworkingPage = () => {
     const timer = window.setInterval(() => {
       void getNetworkingStatus()
         .then(setStatus)
-        .catch((reason: unknown) => setError(String(reason)))
+        .catch((reason: unknown) => setError(formatNetworkError(reason)))
     }, 500)
     return () => window.clearInterval(timer)
   }, [status])
@@ -134,7 +191,7 @@ const NetworkingPage = () => {
       <Stack spacing={2}>
         {error && <Alert severity="error">{error}</Alert>}
         {status?.last_error && (
-          <Alert severity="error">{status.last_error}</Alert>
+          <Alert severity="error">{networkErrorLabel[status.last_error]}</Alert>
         )}
         <Card variant="outlined">
           <CardContent>
@@ -154,7 +211,9 @@ const NetworkingPage = () => {
                     setBusy(true)
                     void registerRouteHelperService()
                       .then(setHelperStatus)
-                      .catch((reason: unknown) => setError(String(reason)))
+                      .catch((reason: unknown) =>
+                        setError(formatNetworkError(reason)),
+                      )
                       .finally(() => setBusy(false))
                   }}
                 >
@@ -166,7 +225,9 @@ const NetworkingPage = () => {
                     setBusy(true)
                     void unregisterRouteHelperService()
                       .then(setHelperStatus)
-                      .catch((reason: unknown) => setError(String(reason)))
+                      .catch((reason: unknown) =>
+                        setError(formatNetworkError(reason)),
+                      )
                       .finally(() => setBusy(false))
                   }}
                 >
@@ -181,6 +242,13 @@ const NetworkingPage = () => {
                   Refresh permission
                 </Button>
               </Stack>
+              {helperStatus === 'not_found' && (
+                <Alert severity="warning">
+                  The signed route helper is not available in this App. Connect
+                  remains disabled; this build cannot claim a real utun or
+                  private routes.
+                </Alert>
+              )}
             </Stack>
           </CardContent>
         </Card>
@@ -221,6 +289,9 @@ const NetworkingPage = () => {
                 and credential details are hidden.
               </Typography>
               <Typography color="text.secondary">
+                {`${sites.length} configured ${sites.length === 1 ? 'site' : 'sites'}; v1 permits one active site.`}
+              </Typography>
+              <Typography color="text.secondary">
                 {diagnosticCount} redacted diagnostic events loaded.
               </Typography>
               <Stack direction="row" spacing={1}>
@@ -251,7 +322,7 @@ const NetworkingPage = () => {
                     void cancelNetworkingOperation(status.operation_id)
                       .then(refresh)
                       .catch((reason: unknown) => {
-                        setError(String(reason))
+                        setError(formatNetworkError(reason))
                       })
                   }}
                   startIcon={<StopCircleRounded />}
@@ -263,7 +334,9 @@ const NetworkingPage = () => {
                   onClick={() => {
                     void getNetworkingDiagnostics()
                       .then((events) => setDiagnosticCount(events.length))
-                      .catch((reason: unknown) => setError(String(reason)))
+                      .catch((reason: unknown) =>
+                        setError(formatNetworkError(reason)),
+                      )
                   }}
                 >
                   Refresh diagnostics

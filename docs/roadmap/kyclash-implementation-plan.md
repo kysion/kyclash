@@ -583,6 +583,23 @@ Construction is authorized only in
 `kyclash-macos-lab-work`; runtime acceptance remains pending. Ordinary builds
 remain default-off and no release/updater publication is authorized.
 
+### 2026-07-23 broker session binding continuation
+
+The first implementation slice of the locked broker-session amendment is now
+source-complete: a fixed Mach-service bridge, typed descriptor ownership,
+broker/runtime generation separation, exact stop/reap handling, and
+recovery-only quarantine for stale or ambiguous broker replies. Swift closes
+late XPC pipe descriptors before returning from an obsolete callback. These
+changes are covered by focused Rust tests, Objective-C contract checks, and
+the Swift broker self-test.
+
+The next implementation unit is deliberately still gated: route-helper v3
+must carry the broker protocol/generation/instance tuple and durably order
+`hold_pending -> held -> routes -> retirement_pending -> release` before the
+production factory can replace the local launcher. Until that unit and fresh
+restart materialization are complete, the no-sign VM App remains the visible
+userspace lab artifact and cannot claim real utun or private routes.
+
 ## Later platform order
 
 1. macOS x64

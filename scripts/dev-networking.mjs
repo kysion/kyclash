@@ -11,6 +11,8 @@ const env = {
   ...process.env,
   RUST_BACKTRACE: process.env.RUST_BACKTRACE ?? 'full',
   VITE_NETWORKING_DEV: 'true',
+  VITE_NETWORKING_SYSTEM_LAB: 'false',
+  VITE_NETWORKING_PRODUCTION: 'false',
 }
 
 // Windows uses the named-pipe path and deliberately ignores this Unix-only

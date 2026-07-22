@@ -41,6 +41,7 @@ try {
     PATH: `${shim}${path.delimiter}${process.env.PATH ?? ''}`,
     VITE_NETWORKING_DEV: 'true',
     VITE_NETWORKING_SYSTEM_LAB: 'true',
+    VITE_NETWORKING_PRODUCTION: 'false',
   }
   const tauri = path.join(root, 'node_modules', '.bin', 'tauri')
   execFileSync(

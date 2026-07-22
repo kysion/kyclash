@@ -428,3 +428,22 @@ TOCTOU validation, and create-only private host publication. The candidate
 design is locked and construction in `kyclash-macos-lab-work` is authorized;
 runtime acceptance remains the first incomplete S1.13 gate. Ordinary builds
 remain default-off, and no release/updater publication is authorized.
+
+## S1.13 broker/session safety continuation — 2026-07-23
+
+The first source construction slice after the design lock is now present. The
+fixed tunnel-broker Mach-service client transfers only typed stdin/stdout
+descriptors and a broker-assigned session reference; the Rust runtime keeps
+that broker generation distinct from its own runtime generation. Exact idle
+stop/reap is the only positive child-absence result. A stale generation,
+transport failure, interruption, or invalidation is quarantined as
+recovery-only and can never be converted into a `Reaped` receipt. Swift closes
+late XPC pipe replies explicitly. Focused Rust, Objective-C, Swift self-test,
+and contract gates pass.
+
+This does not close S1.13. The production composition remains intentionally
+unwired until the broker reference is bound into bootstrap/handshake/tunnel
+facts, route-helper v3 durably orders hold-pending/held/retirement-pending
+with exact broker release, and restart obtains fresh session material. The
+no-sign App remains a userspace lab candidate and no password automation,
+signing, route mutation, release, or production endpoint was used.

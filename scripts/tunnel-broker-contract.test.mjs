@@ -10,6 +10,10 @@ const source = fs.readFileSync(
   path.join(root, 'macos', 'tunnel-broker', 'main.swift'),
   'utf8',
 )
+const clientSource = fs.readFileSync(
+  path.join(root, 'macos', 'tunnel-broker', 'client.m'),
+  'utf8',
+)
 const plistPath = path.join(
   root,
   'macos',
@@ -62,6 +66,62 @@ test('App XPC surface cannot select a command, path, environment, route, or secr
   assert.doesNotMatch(
     body,
     /String|URL|Data|Dictionary|\[|path|argv|argument|environment|route|cidr|dns|secret|profile|shell|file/iu,
+  )
+})
+
+test('Rust bridge connects only to the fixed service and has no caller-selected launch fields', () => {
+  assert.match(
+    clientSource,
+    /KCTBMachService = @"net\.kysion\.kyclash\.tunnel-broker"/u,
+  )
+  const exportedCalls = [
+    'kyclash_tunnel_broker_client_start',
+    'kyclash_tunnel_broker_client_status',
+    'kyclash_tunnel_broker_client_stop',
+  ]
+  for (const call of exportedCalls) {
+    assert.match(
+      clientSource,
+      new RegExp(`KCTBClientReply ${call}\\(void \\*raw\\)`, 'u'),
+    )
+  }
+  assert.equal(
+    (
+      clientSource.match(
+        /KCTBClientReply kyclash_tunnel_broker_client_(?:start|status|stop)\(/gu,
+      ) ?? []
+    ).length,
+    3,
+  )
+  assert.doesNotMatch(
+    clientSource,
+    /initWithMachServiceName:\s*(?!KCTBMachService)|NSTask|\/bin\/(?:ba)?sh/u,
+  )
+  const implementation = clientSource.slice(
+    clientSource.indexOf('@implementation KCTBClient'),
+  )
+  for (const method of ['finishSessionRequest:', 'finishBrokerRequest:']) {
+    const methodStart = implementation.indexOf(method)
+    const stateRead = implementation.indexOf(
+      'KCTBStateCode(reply.state)',
+      methodStart,
+    )
+    assert.ok(methodStart >= 0 && stateRead > methodStart)
+    assert.match(
+      implementation.slice(methodStart, stateRead),
+      /if \(reply == nil\) \{[\s\S]*?KCTBTransportProtocolFailure/u,
+      `${method} must reject nil before reading reply fields`,
+    )
+  }
+  const sessionMethodStart = implementation.indexOf('finishSessionRequest:')
+  const sessionTerminalBranch = implementation.slice(
+    sessionMethodStart,
+    implementation.indexOf('if (reply == nil)', sessionMethodStart),
+  )
+  assert.match(
+    sessionTerminalBranch,
+    /reply\.inputHandle[^\n]*closeFile[\s\S]*reply\.outputHandle[^\n]*closeFile/u,
+    'late session replies must close both transferred pipe descriptors',
   )
 })
 

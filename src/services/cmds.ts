@@ -471,6 +471,12 @@ export const initializeNetworking = async () => {
   )
 }
 
+export const listNetworkingSites = async () => {
+  return invoke<import('@/types/networking').ProductionSiteSummary[]>(
+    'list_networking_sites',
+  )
+}
+
 export const connectNetworking = async () => {
   return invoke<import('@/types/networking').ProductionNetworkStatus>(
     'connect_networking',

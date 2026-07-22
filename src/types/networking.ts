@@ -121,14 +121,16 @@ export interface NetworkingUserspaceLabStatus {
   last_error: NetworkErrorCode | null
 }
 
+export interface ProductionSiteSummary {
+  id: string
+  display_name: string
+  private_route_count: number
+}
+
 export interface ProductionNetworkStatus {
   state: NetworkState
   sidecar_state: 'stopped' | 'starting' | 'running' | 'backoff' | 'crash_loop'
-  site: {
-    id: string
-    display_name: string
-    private_route_count: number
-  }
+  site: ProductionSiteSummary
   active_transport: TransportKind | null
   health: {
     reachable: boolean

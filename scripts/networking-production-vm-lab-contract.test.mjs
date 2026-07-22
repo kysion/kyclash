@@ -93,6 +93,64 @@ test('production networking UI keeps polling connected and fallback states', () 
   assert.match(page, /cancellableStates\.has\(status\.state\)/u)
 })
 
+test('production UI command surface is complete and excluded from userspace builds', () => {
+  const appSource = fs.readFileSync(
+    path.join(root, 'src-tauri', 'src', 'lib.rs'),
+    'utf8',
+  )
+  const commands = fs.readFileSync(
+    path.join(root, 'src', 'services', 'cmds.ts'),
+    'utf8',
+  )
+  const page = fs.readFileSync(
+    path.join(root, 'src', 'pages', 'networking.tsx'),
+    'utf8',
+  )
+  const navigation = fs.readFileSync(
+    path.join(root, 'src', 'pages', '_navigation.tsx'),
+    'utf8',
+  )
+  const userspaceBuilder = fs.readFileSync(
+    path.join(root, 'scripts', 'build-macos-userspace-lab-app.mjs'),
+    'utf8',
+  )
+  const developmentLauncher = fs.readFileSync(
+    path.join(root, 'scripts', 'dev-networking.mjs'),
+    'utf8',
+  )
+  const productionCommands = [
+    'initialize_networking',
+    'list_networking_sites',
+    'get_networking_status',
+    'connect_networking',
+    'cancel_networking_operation',
+    'disconnect_networking',
+    'get_networking_diagnostics',
+    'get_route_helper_registration_status',
+    'register_route_helper_service',
+    'unregister_route_helper_service',
+    'open_route_helper_system_settings',
+  ]
+  for (const command of productionCommands) {
+    assert.match(
+      appSource,
+      new RegExp(
+        `#\\[cfg\\(feature = "networking-production"\\)\\]\\s*cmd::${command}`,
+        'u',
+      ),
+    )
+    assert.match(commands, new RegExp(`['"]${command}['"]`, 'u'))
+  }
+  assert.match(page, /listNetworkingSites\(\)/u)
+  assert.match(
+    navigation,
+    /VITE_NETWORKING_PRODUCTION === 'true' &&\s*import\.meta\.env\.VITE_NETWORKING_SYSTEM_LAB !== 'true'/u,
+  )
+  assert.match(userspaceBuilder, /VITE_NETWORKING_PRODUCTION: 'false'/u)
+  assert.match(developmentLauncher, /VITE_NETWORKING_PRODUCTION: 'false'/u)
+  assert.match(developmentLauncher, /VITE_NETWORKING_SYSTEM_LAB: 'false'/u)
+})
+
 test('userspace lab App is an explicit non-production resource profile', () => {
   const overlay = JSON.parse(
     fs.readFileSync(

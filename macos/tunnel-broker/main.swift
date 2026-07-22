@@ -397,7 +397,8 @@ private final class SidecarChild {
         outputPipe.fileHandleForWriting.closeFile()
     }
 
-    func stopAndReap() {
+    @discardableResult
+    func stopAndReap() -> Bool {
         closeBrokerPipeCopies()
         if process.isRunning, exited.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
             process.terminate()
@@ -407,6 +408,10 @@ private final class SidecarChild {
             if pid > 1 { _ = Darwin.kill(pid, SIGKILL) }
         }
         if process.isRunning { _ = exited.wait(timeout: .now() + .seconds(2)) }
+        // `Process.isRunning == false` is the broker's exact local reap
+        // boundary.  Callers must not clear the active generation before this
+        // proof; an unbounded/ambiguous stop remains recovery-only.
+        return !process.isRunning
     }
 
     func closeBrokerPipeCopies() {
@@ -526,10 +531,19 @@ private final class TunnelBrokerCoordinator {
             return TunnelBrokerReply(state: .routeHeld, errorCode: .routeHeld)
         }
         child = session.child
-        active = nil
         lock.unlock()
-        child?.stopAndReap()
-        return TunnelBrokerReply(state: .idle)
+        guard child?.stopAndReap() ?? false else {
+            return TunnelBrokerReply(state: .running, errorCode: .unavailable)
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        // A termination callback may already have removed this exact
+        // unheld generation. Never clear a newer generation accidentally.
+        if let current = active, sameReference(current.lease.reference, reference),
+           current.lease.routeLeaseID == nil {
+            active = nil
+        }
+        return .init(state: .idle)
     }
 
     func appStatus(_ reference: TunnelReference, appConnectionID: UUID) -> TunnelBrokerReply {
@@ -546,18 +560,27 @@ private final class TunnelBrokerCoordinator {
 
     func appInvalidated(appConnectionID: UUID) {
         var child: SidecarChild?
+        var reference: TunnelReference?
         lock.lock()
         if var session = active, session.lease.appConnectionID == appConnectionID {
             session.lease.appConnected = false
             if session.lease.routeLeaseID == nil {
                 child = session.child
-                active = nil
+                reference = session.lease.reference
+                // Keep the exact session until stopAndReap proves absence.
+                active = session
             } else {
                 active = session
             }
         }
         lock.unlock()
-        child?.stopAndReap()
+        guard let child, let reference, child.stopAndReap() else { return }
+        lock.lock()
+        if let current = active, sameReference(current.lease.reference, reference),
+           current.lease.routeLeaseID == nil, !current.lease.appConnected {
+            active = nil
+        }
+        lock.unlock()
     }
 
     func hold(_ binding: TunnelRouteBinding) -> TunnelBrokerReply {
@@ -575,6 +598,7 @@ private final class TunnelBrokerCoordinator {
 
     func release(_ binding: TunnelRouteBinding) -> TunnelBrokerReply {
         var child: SidecarChild?
+        var reference: TunnelReference?
         lock.lock()
         guard var session = active else {
             lock.unlock()
@@ -590,10 +614,21 @@ private final class TunnelBrokerCoordinator {
             return TunnelBrokerReply(state: .running)
         }
         child = session.child
-        active = nil
+        reference = session.lease.reference
+        // Keep the unheld, disconnected session as a retirement tombstone
+        // until the child has been positively reaped.
+        active = session
         lock.unlock()
-        child?.stopAndReap()
-        return TunnelBrokerReply(state: .idle)
+        guard child?.stopAndReap() ?? false, let reference else {
+            return TunnelBrokerReply(state: .running, errorCode: .unavailable)
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        if let current = active, sameReference(current.lease.reference, reference),
+           current.lease.routeLeaseID == nil, !current.lease.appConnected {
+            active = nil
+        }
+        return .init(state: .idle)
     }
 
     func routeStatus(_ binding: TunnelRouteBinding) -> TunnelBrokerReply {

@@ -16,7 +16,7 @@ use super::{
     SidecarLifecycleState, SidecarProcessStatus,
 };
 #[cfg(unix)]
-use super::{SidecarRuntime as _, StdioSidecarRuntime};
+use super::{LocalProcessLauncher, SidecarRuntime as _, StdioSidecarLauncher, StdioSidecarRuntime};
 
 const COMMAND_CAPACITY: usize = 32;
 const DIAGNOSTIC_CAPACITY: usize = 128;
@@ -33,34 +33,38 @@ pub trait AsyncProductionRuntime: Send + 'static {
     async fn stop(&mut self) -> Result<(), NetworkErrorCode>;
 }
 
-/// AsyncProductionRuntime adapter for the existing synchronous stdio sidecar.
+/// AsyncProductionRuntime adapter for a synchronous stdio sidecar launcher.
 ///
-/// The stdio implementation owns the child, trust-manifest verification, and
-/// forced-kill/reap behavior.  This thin adapter only bridges that blocking
-/// boundary into Tokio.  Production's Tokio runtime is multi-threaded, which
-/// is required by `block_in_place`; the adapter deliberately does not create a
-/// second process or alter the locked bootstrap protocol.
+/// The injected launcher owns the child/session generation, stdio descriptors,
+/// and exact stop/reap behavior.  Keeping that launcher type here is required
+/// for the macOS tunnel broker: collapsing back to `LocalProcessLauncher`
+/// would make the privileged broker seam unreachable from the production
+/// controller.  This adapter only bridges the blocking protocol boundary into
+/// Tokio and does not alter protocol-v2 framing.
 #[cfg(unix)]
-pub struct AsyncStdioSidecarRuntime {
-    inner: StdioSidecarRuntime,
+pub struct AsyncStdioSidecarRuntime<L: StdioSidecarLauncher = LocalProcessLauncher> {
+    inner: StdioSidecarRuntime<L>,
 }
 
 #[cfg(unix)]
-impl AsyncStdioSidecarRuntime {
+impl<L: StdioSidecarLauncher> AsyncStdioSidecarRuntime<L> {
     #[must_use]
-    pub const fn new(inner: StdioSidecarRuntime) -> Self {
+    pub const fn new(inner: StdioSidecarRuntime<L>) -> Self {
         Self { inner }
     }
 
     #[must_use]
-    pub fn into_inner(self) -> StdioSidecarRuntime {
+    pub fn into_inner(self) -> StdioSidecarRuntime<L> {
         self.inner
     }
 }
 
 #[cfg(unix)]
 #[async_trait]
-impl AsyncProductionRuntime for AsyncStdioSidecarRuntime {
+impl<L> AsyncProductionRuntime for AsyncStdioSidecarRuntime<L>
+where
+    L: StdioSidecarLauncher + 'static,
+{
     async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
         tokio::task::block_in_place(|| self.inner.start(context))
     }
@@ -721,7 +725,23 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    #[cfg(unix)]
+    use crate::networking::SidecarProcessControl;
     use crate::networking::{IpcRequestPayload, IpcResponsePayload};
+
+    #[cfg(unix)]
+    struct RejectingLauncher {
+        launches: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    impl StdioSidecarLauncher for RejectingLauncher {
+        fn launch(&mut self, generation: u64) -> Result<Box<dyn SidecarProcessControl>, NetworkErrorCode> {
+            assert_eq!(generation, 1, "first broker-style launch must use generation one");
+            self.launches.fetch_add(1, Ordering::AcqRel);
+            Err(NetworkErrorCode::SidecarUnavailable)
+        }
+    }
 
     #[derive(Clone, Copy)]
     enum RequestMode {
@@ -746,6 +766,33 @@ mod tests {
 
     struct QueueBlockingRuntime {
         request_entries: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_stdio_adapter_preserves_the_injected_launcher() -> Result<(), NetworkErrorCode> {
+        let launches = Arc::new(AtomicUsize::new(0));
+        let runtime = StdioSidecarRuntime::with_launcher(
+            std::path::PathBuf::from("/fixed-broker-policy"),
+            RejectingLauncher {
+                launches: Arc::clone(&launches),
+            },
+        );
+        let mut adapter = AsyncStdioSidecarRuntime::new(runtime);
+        let context =
+            SidecarLaunchContext::new("production.broker-test".into(), vec![1; 32]).with_private_key(vec![2; 32]);
+
+        assert_eq!(
+            AsyncProductionRuntime::start(&mut adapter, &context).await,
+            Err(NetworkErrorCode::SidecarUnavailable)
+        );
+        assert_eq!(launches.load(Ordering::Acquire), 1);
+
+        // This type assertion is the regression gate: the async production
+        // adapter must return the exact injected launcher rather than silently
+        // narrowing the runtime back to `LocalProcessLauncher`.
+        let _: StdioSidecarRuntime<RejectingLauncher> = adapter.into_inner();
+        Ok(())
     }
 
     #[async_trait]

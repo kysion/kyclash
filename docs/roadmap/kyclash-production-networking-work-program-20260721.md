@@ -111,6 +111,18 @@ does not claim Darwin `utun`, private-route installation, tunnel-broker/XPC, or
 production endpoint readiness. The redacted record is
 `docs/testing/kyclash-userspace-lab-app-vm-20260723.md`.
 
+Broker session seam checkpoint (2026-07-23): the fixed Mach-service client,
+typed stdio descriptor handoff, broker/runtime generation separation, exact
+stop/reap receipt boundary, and stale-generation recovery-only quarantine are
+implemented and covered by Rust, Objective-C, Swift, and contract tests. Late
+XPC session replies now close transferred descriptors explicitly. This is a
+source-level safety slice only: the production factory is deliberately not
+wired to it until the locked broker-assigned instance ID, route-helper hold /
+release interlock, dynamic restart materialization, and privileged-service
+registration gates are complete. It therefore does not claim production
+Connect, real-utun App operation, private-route installation, or Mihomo
+coexistence.
+
 Hosted CI continuation (2026-07-22): the replacement macOS verify run
 `29932701242` (GitHub Actions run #69) is fully successful. It keeps the
 shipped one-second userspace probe deadline, applies a separate

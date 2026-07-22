@@ -101,7 +101,8 @@ const networkingDevItems: NavigationItem[] =
     : []
 
 const networkingProductionItems: NavigationItem[] =
-  import.meta.env.VITE_NETWORKING_PRODUCTION === 'true'
+  import.meta.env.VITE_NETWORKING_PRODUCTION === 'true' &&
+  import.meta.env.VITE_NETWORKING_SYSTEM_LAB !== 'true'
     ? [
         {
           label: 'KyClash Network',

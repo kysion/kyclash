@@ -37,10 +37,12 @@ fn build_route_helper_registration() {
     let sources = [
         std::path::Path::new("../macos/route-helper/registration.m"),
         std::path::Path::new("../macos/route-helper/client.m"),
+        std::path::Path::new("../macos/tunnel-broker/client.m"),
     ];
     let objects = [
         output.join("kyclash-route-helper-registration.o"),
         output.join("kyclash-route-helper-client.o"),
+        output.join("kyclash-tunnel-broker-client.o"),
     ];
     let archive = output.join("libkyclash_route_helper_registration.a");
     for (source, object) in sources.iter().zip(&objects) {
