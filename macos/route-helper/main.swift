@@ -1146,6 +1146,11 @@ private final class RouteCoordinator {
     private var legacyJournal: LegacyRouteJournal?
     private var journalCorrupt = false
     private var lastCompletedReference: LeaseReference?
+    // Every accepted XPC connection enters this set before NSXPCConnection is
+    // resumed.  Keeping admission, request dispatch, owned rollback, and
+    // removal under the same lock makes a sole-caller `idle` reply an
+    // authoritative connection barrier instead of a journal-only snapshot.
+    private var registeredConnectionIDs = Set<UUID>()
     private var activeConnectionID: UUID?
     private var lastCompletedConnectionID: UUID?
     private var heartbeatDeadline = Date.distantPast
@@ -1200,13 +1205,27 @@ private final class RouteCoordinator {
         timer?.cancel()
     }
 
-    func discover() -> HelperReply {
+    @discardableResult
+    func register(connectionID: UUID) -> Bool {
+        lock.withLock { registeredConnectionIDs.insert(connectionID).inserted }
+    }
+
+    func discover(
+        connectionID: UUID = coordinatorSelfTestConnectionID
+    ) -> HelperReply {
         lock.withLock {
+            guard isRegistered(connectionID) else { return ownershipFailure() }
+            guard registeredConnectionIDs.count == 1 else {
+                return HelperReply(state: "failed_closed", errorCode: "not_ready")
+            }
             if journalCorrupt { return HelperReply(state: "failed_closed", errorCode: "journal_corrupt") }
             if legacyJournal != nil {
                 return HelperReply(state: "failed_closed", errorCode: "recovery_required")
             }
-            return journal == nil ? HelperReply(state: "idle") : HelperReply(state: "failed_closed", errorCode: "recovery_required")
+            if journal != nil || activeConnectionID != nil {
+                return HelperReply(state: "failed_closed", errorCode: "recovery_required")
+            }
+            return HelperReply(state: "idle")
         }
     }
 
@@ -1215,6 +1234,7 @@ private final class RouteCoordinator {
         connectionID: UUID = coordinatorSelfTestConnectionID
     ) -> HelperReply {
         lock.withLock {
+            guard isRegistered(connectionID) else { return ownershipFailure() }
             guard !journalCorrupt,
                   legacyJournal == nil,
                   activeConnectionID == nil,
@@ -1250,7 +1270,10 @@ private final class RouteCoordinator {
         connectionID: UUID = coordinatorSelfTestConnectionID
     ) -> HelperReply {
         lock.withLock {
-            guard ownsConnection(connectionID), valid(reference), var current = journal else {
+            guard isRegistered(connectionID),
+                  ownsConnection(connectionID),
+                  valid(reference),
+                  var current = journal else {
                 return ownershipFailure()
             }
             let remaining = current.owner.privateCIDRs.filter { !current.appliedCIDRs.contains($0) }
@@ -1308,6 +1331,7 @@ private final class RouteCoordinator {
         connectionID: UUID = coordinatorSelfTestConnectionID
     ) -> HelperReply {
         lock.withLock {
+            guard isRegistered(connectionID) else { return ownershipFailure() }
             if journal == nil,
                lastCompletedConnectionID == connectionID,
                lastCompletedReference.map({ referencesEqual($0, reference) }) == true {
@@ -1323,11 +1347,12 @@ private final class RouteCoordinator {
         connectionID: UUID = coordinatorSelfTestConnectionID
     ) -> HelperReply {
         lock.withLock {
+            guard isRegistered(connectionID) else { return ownershipFailure() }
             if legacyJournal != nil {
                 return HelperReply(state: "failed_closed", errorCode: "recovery_required")
             }
             guard !journalCorrupt,
-                  activeConnectionID == nil || activeConnectionID == connectionID,
+                  activeConnectionID == connectionID,
                   owner.isValid(),
                   let journal,
                   journal.owner == JournalOwner(owner),
@@ -1346,6 +1371,7 @@ private final class RouteCoordinator {
         connectionID: UUID = coordinatorSelfTestConnectionID
     ) -> HelperReply {
         lock.withLock {
+            guard isRegistered(connectionID) else { return ownershipFailure() }
             if legacyJournal != nil {
                 return HelperReply(state: "failed_closed", errorCode: "recovery_required")
             }
@@ -1360,6 +1386,7 @@ private final class RouteCoordinator {
         connectionID: UUID = coordinatorSelfTestConnectionID
     ) -> HelperReply {
         lock.withLock {
+            guard isRegistered(connectionID) else { return ownershipFailure() }
             if legacyJournal != nil {
                 return HelperReply(state: "failed_closed", errorCode: "recovery_required")
             }
@@ -1367,15 +1394,33 @@ private final class RouteCoordinator {
         }
     }
 
-    func invalidate(
-        _ reference: LeaseReference?,
+    @discardableResult
+    func unregister(
         connectionID: UUID = coordinatorSelfTestConnectionID
-    ) {
+    ) -> HelperReply {
         lock.withLock {
-            guard ownsConnection(connectionID) else { return }
-            if let reference, !valid(reference) { return }
-            _ = rollbackLocked()
-            activeConnectionID = nil
+            guard isRegistered(connectionID) else { return ownershipFailure() }
+
+            // Removal is deliberately after the exact connection's owned
+            // rollback attempt.  A concurrently polling replacement therefore
+            // observes `not_ready` until cleanup has completed under this same
+            // lock.  On failure, the durable journal remains authoritative and
+            // discovery returns recovery_required rather than transient idle.
+            let ownsLease = activeConnectionID == connectionID
+            let rolledBack = !ownsLease || rollbackLocked()
+            if ownsLease, rolledBack { activeConnectionID = nil }
+            registeredConnectionIDs.remove(connectionID)
+
+            guard rolledBack else {
+                return HelperReply(state: "failed_closed", errorCode: "rollback_failed")
+            }
+            if journalCorrupt {
+                return HelperReply(state: "failed_closed", errorCode: "journal_corrupt")
+            }
+            if legacyJournal != nil || journal != nil || activeConnectionID != nil {
+                return HelperReply(state: "failed_closed", errorCode: "recovery_required")
+            }
+            return HelperReply(state: "idle")
         }
     }
 
@@ -1422,6 +1467,10 @@ private final class RouteCoordinator {
         activeConnectionID == connectionID
     }
 
+    private func isRegistered(_ connectionID: UUID) -> Bool {
+        registeredConnectionIDs.contains(connectionID)
+    }
+
     private func ownershipFailure() -> HelperReply { HelperReply(state: "failed_closed", errorCode: "ownership_mismatch") }
 
     private func expireLease() {
@@ -1431,8 +1480,9 @@ private final class RouteCoordinator {
                 _ = rollbackLocked()
             } else if legacyJournal != nil {
                 _ = rollbackLegacyLocked()
+            } else {
+                activeConnectionID = nil
             }
-            activeConnectionID = nil
         }
     }
 
@@ -1723,13 +1773,13 @@ private extension NSLock {
 }
 
 private final class RouteHelperService: NSObject, RouteHelperProtocol {
-    private let connectionID = UUID()
+    private let connectionID: UUID
     private let clientIdentity: ClientAuditIdentity
     private let lifecycleLock = NSLock()
     private var connectionActive = true
-    private var reference: LeaseReference?
 
-    init(clientIdentity: ClientAuditIdentity) {
+    init(connectionID: UUID, clientIdentity: ClientAuditIdentity) {
+        self.connectionID = connectionID
         self.clientIdentity = clientIdentity
         super.init()
         routeHelperLogger.notice(
@@ -1751,18 +1801,11 @@ private final class RouteHelperService: NSObject, RouteHelperProtocol {
     }
 
     func discover(reply: @escaping (HelperReply) -> Void) {
-        reply(activeReply { RouteCoordinator.shared.discover() })
+        reply(activeReply { RouteCoordinator.shared.discover(connectionID: connectionID) })
     }
 
     func begin(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
-        let result = activeReply {
-            let result = RouteCoordinator.shared.begin(owner, connectionID: connectionID)
-            if result.state == "prepared" {
-                reference = owner.reference
-            }
-            return result
-        }
-        reply(result)
+        reply(activeReply { RouteCoordinator.shared.begin(owner, connectionID: connectionID) })
     }
 
     func apply(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
@@ -1770,25 +1813,11 @@ private final class RouteHelperService: NSObject, RouteHelperProtocol {
     }
 
     func rollback(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
-        let result = activeReply {
-            let result = RouteCoordinator.shared.rollback(reference, connectionID: connectionID)
-            if result.state == "idle" {
-                self.reference = nil
-            }
-            return result
-        }
-        reply(result)
+        reply(activeReply { RouteCoordinator.shared.rollback(reference, connectionID: connectionID) })
     }
 
     func recover(_ owner: LeaseOwner, reply: @escaping (HelperReply) -> Void) {
-        let result = activeReply {
-            let result = RouteCoordinator.shared.recover(owner, connectionID: connectionID)
-            if result.errorCode == nil {
-                reference = owner.reference
-            }
-            return result
-        }
-        reply(result)
+        reply(activeReply { RouteCoordinator.shared.recover(owner, connectionID: connectionID) })
     }
 
     func heartbeat(_ reference: LeaseReference, reply: @escaping (HelperReply) -> Void) {
@@ -1803,9 +1832,7 @@ private final class RouteHelperService: NSObject, RouteHelperProtocol {
         let invalidated = lifecycleLock.withLock { () -> Bool in
             guard connectionActive else { return false }
             connectionActive = false
-            let active = reference
-            reference = nil
-            RouteCoordinator.shared.invalidate(active, connectionID: connectionID)
+            _ = RouteCoordinator.shared.unregister(connectionID: connectionID)
             return true
         }
         guard invalidated else { return }
@@ -1822,11 +1849,19 @@ private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
             return false
         }
         connection.setCodeSigningRequirement(appRequirement)
-        let service = RouteHelperService(clientIdentity: clientIdentity)
+        let connectionID = UUID()
+        guard RouteCoordinator.shared.register(connectionID: connectionID) else {
+            routeHelperLogger.error("rejected duplicate helper connection identity")
+            return false
+        }
+        let service = RouteHelperService(connectionID: connectionID, clientIdentity: clientIdentity)
         connection.exportedInterface = routeHelperInterface()
         connection.exportedObject = service
         connection.invalidationHandler = { service.invalidateConnection() }
         connection.interruptionHandler = { service.invalidateConnection() }
+        // Registration must happen before resume: a replacement connection
+        // can now poll discover without racing an already accepted old
+        // connection whose request has not yet reached the coordinator.
         connection.resume()
         return true
     }
@@ -1968,6 +2003,23 @@ private func selfTestOwner(
     )
 }
 
+private func selfTestCoordinator(
+    executor: RouteExecuting,
+    journalURL: URL,
+    removeJournal: @escaping (URL) -> Bool = removeJournalFile
+) -> RouteCoordinator {
+    let coordinator = RouteCoordinator(
+        executor: executor,
+        journalURL: journalURL,
+        removeJournal: removeJournal
+    )
+    precondition(
+        coordinator.register(connectionID: coordinatorSelfTestConnectionID),
+        "self-test connection registration must be unique"
+    )
+    return coordinator
+}
+
 private func runRouteCoordinatorSelfTest() -> Bool {
     do {
         let auditIdentity = ClientAuditIdentity.validated(
@@ -2058,7 +2110,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // Normal IPv4+IPv6 cycle, duplicate messages, replay mismatch, and
         // explicit connection invalidation all remain idempotent.
         let normalExecutor = InjectedRouteExecutor()
-        let normal = RouteCoordinator(executor: normalExecutor, journalURL: root.appendingPathComponent("normal.plist"))
+        let normal = selfTestCoordinator(executor: normalExecutor, journalURL: root.appendingPathComponent("normal.plist"))
         try requireSelfTest(normal.discover().state == "idle", "normal discover must start idle")
         try requireSelfTest(normal.begin(owner).state == "prepared", "normal begin must prepare")
         try requireSelfTest(normal.apply(owner.reference).state == "applied", "normal apply must apply both families")
@@ -2074,14 +2126,16 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // independently from heartbeat expiry.
         try requireSelfTest(normal.begin(owner).state == "prepared", "invalidation cycle must prepare")
         try requireSelfTest(normal.apply(owner.reference).state == "applied", "invalidation cycle must apply")
-        normal.invalidate(owner.reference)
-        try requireSelfTest(normal.discover().state == "idle" && normalExecutor.added.isEmpty,
-                            "connection invalidation must remove owned routes")
+        try requireSelfTest(normal.unregister().state == "idle" && normalExecutor.added.isEmpty,
+                            "connection unregister must remove owned routes")
+        try requireSelfTest(normal.discover().errorCode == "ownership_mismatch",
+                            "unregistered connection must not discover")
 
-        // A lease belongs to one concrete XPC connection, not merely to a
-        // guessable operation/reference tuple. A second signed connection
-        // cannot apply, recover, heartbeat, inspect, invalidate, or roll back
-        // the first connection's transaction.
+        // Registration is the helper-side A/B barrier. B cannot certify idle
+        // while A is still accepted, including before A's already queued begin
+        // reaches the coordinator. Once A unregisters, its exact owned routes
+        // are rolled back under the same lock and only the still-live B can
+        // certify authoritative idle.
         let connectionExecutor = InjectedRouteExecutor()
         let connectionCoordinator = RouteCoordinator(
             executor: connectionExecutor,
@@ -2089,9 +2143,31 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         )
         let connectionA = UUID()
         let connectionB = UUID()
+        let unknownConnection = UUID()
+        try requireSelfTest(
+            connectionCoordinator.begin(owner, connectionID: connectionA).errorCode == "ownership_mismatch",
+            "unregistered A must not begin"
+        )
+        try requireSelfTest(
+            connectionCoordinator.register(connectionID: connectionA)
+                && connectionCoordinator.register(connectionID: connectionB),
+            "A and B registrations must be accepted"
+        )
+        try requireSelfTest(
+            !connectionCoordinator.register(connectionID: connectionA),
+            "duplicate registration must be rejected"
+        )
+        try requireSelfTest(
+            connectionCoordinator.discover(connectionID: connectionB).errorCode == "not_ready",
+            "B must not certify idle before A's late begin"
+        )
         try requireSelfTest(
             connectionCoordinator.begin(owner, connectionID: connectionA).state == "prepared",
-            "first XPC connection must own begin"
+            "registered A's late begin must still be serialized"
+        )
+        try requireSelfTest(
+            connectionCoordinator.discover(connectionID: connectionB).errorCode == "not_ready",
+            "B must remain not_ready while A owns a prepared lease"
         )
         try requireSelfTest(
             connectionCoordinator.apply(owner.reference, connectionID: connectionB).errorCode == "ownership_mismatch",
@@ -2109,10 +2185,10 @@ private func runRouteCoordinatorSelfTest() -> Bool {
             connectionCoordinator.status(owner.reference, connectionID: connectionB).errorCode == "ownership_mismatch",
             "second XPC connection must not inspect another lease"
         )
-        connectionCoordinator.invalidate(owner.reference, connectionID: connectionB)
         try requireSelfTest(
-            connectionCoordinator.status(owner.reference, connectionID: connectionA).state == "prepared",
-            "foreign invalidation must not release the active lease"
+            connectionCoordinator.unregister(connectionID: unknownConnection).errorCode == "ownership_mismatch"
+                && connectionCoordinator.discover(connectionID: connectionB).errorCode == "not_ready",
+            "unknown unregister must not change the registered connection barrier"
         )
         try requireSelfTest(
             connectionCoordinator.apply(owner.reference, connectionID: connectionA).state == "applied",
@@ -2123,17 +2199,123 @@ private func runRouteCoordinatorSelfTest() -> Bool {
             "second XPC connection must not roll back another lease"
         )
         try requireSelfTest(!connectionExecutor.added.isEmpty, "foreign rollback must not delete owned routes")
-        connectionCoordinator.invalidate(owner.reference, connectionID: connectionA)
         try requireSelfTest(
-            connectionCoordinator.discover().state == "idle" && connectionExecutor.added.isEmpty,
-            "owning connection invalidation must roll back and release the lease"
+            connectionCoordinator.unregister(connectionID: connectionA).state == "idle"
+                && connectionExecutor.added.isEmpty,
+            "owning A unregister must roll back and release its lease"
+        )
+        try requireSelfTest(
+            connectionCoordinator.discover(connectionID: connectionA).errorCode == "ownership_mismatch"
+                && connectionCoordinator.begin(owner, connectionID: connectionA).errorCode == "ownership_mismatch"
+                && connectionCoordinator.apply(owner.reference, connectionID: connectionA).errorCode == "ownership_mismatch"
+                && connectionCoordinator.rollback(owner.reference, connectionID: connectionA).errorCode == "ownership_mismatch"
+                && connectionCoordinator.recover(owner, connectionID: connectionA).errorCode == "ownership_mismatch"
+                && connectionCoordinator.heartbeat(owner.reference, connectionID: connectionA).errorCode == "ownership_mismatch"
+                && connectionCoordinator.status(owner.reference, connectionID: connectionA).errorCode == "ownership_mismatch"
+                && connectionCoordinator.unregister(connectionID: connectionA).errorCode == "ownership_mismatch",
+            "unregistered A must be rejected by every coordinator operation"
+        )
+        try requireSelfTest(
+            connectionCoordinator.discover(connectionID: connectionB).state == "idle",
+            "sole registered B must certify authoritative idle"
+        )
+
+        // A failed unregister rollback removes the dead registration but
+        // retains both the durable journal and active-owner tombstone. The
+        // fresh sole B sees recovery_required, never idle, and stale A cannot
+        // adopt or mutate the frozen transaction.
+        let unregisterFailureExecutor = InjectedRouteExecutor()
+        let unregisterFailurePath = root.appendingPathComponent("unregister-rollback-failure.plist")
+        let unregisterFailure = RouteCoordinator(
+            executor: unregisterFailureExecutor,
+            journalURL: unregisterFailurePath
+        )
+        let failureA = UUID()
+        let failureB = UUID()
+        try requireSelfTest(
+            unregisterFailure.register(connectionID: failureA)
+                && unregisterFailure.register(connectionID: failureB),
+            "rollback-failure A/B registrations must succeed"
+        )
+        try requireSelfTest(
+            unregisterFailure.begin(owner, connectionID: failureA).state == "prepared"
+                && unregisterFailure.apply(owner.reference, connectionID: failureA).state == "applied",
+            "rollback-failure fixture must own applied routes"
+        )
+        unregisterFailureExecutor.failDeleteAt = unregisterFailureExecutor.deleteCalls
+        try requireSelfTest(
+            unregisterFailure.unregister(connectionID: failureA).errorCode == "rollback_failed",
+            "failed A unregister must surface rollback failure"
+        )
+        try requireSelfTest(
+            unregisterFailure.discover(connectionID: failureB).errorCode == "recovery_required"
+                && unregisterFailure.recover(owner, connectionID: failureB).errorCode == "ownership_mismatch"
+                && !unregisterFailureExecutor.added.isEmpty
+                && FileManager.default.fileExists(atPath: unregisterFailurePath.path),
+            "sole B must see recovery_required and cannot adopt failed A ownership"
+        )
+        try requireSelfTest(
+            unregisterFailure.discover(connectionID: failureA).errorCode == "ownership_mismatch"
+                && unregisterFailure.recover(owner, connectionID: failureA).errorCode == "ownership_mismatch"
+                && unregisterFailure.rollback(owner.reference, connectionID: failureA).errorCode == "ownership_mismatch",
+            "failed unregister must still reject stale A"
+        )
+        unregisterFailureExecutor.failDeleteAt = nil
+        unregisterFailure.expireLeaseForSelfTest()
+        try requireSelfTest(
+            unregisterFailure.discover(connectionID: failureB).state == "idle"
+                && unregisterFailureExecutor.added.isEmpty,
+            "successful frozen-owner retry must restore authoritative B idle"
+        )
+
+        // A helper process generation that starts with a durable v2 journal
+        // must synchronously try rollback before accepting requests. If that
+        // recovery fails, the fresh connection can only discover the frozen
+        // recovery state; even an exact owner payload cannot cross the XPC
+        // generation boundary and adopt it.
+        let startupFailurePath = root.appendingPathComponent("startup-rollback-failure.plist")
+        let startupFailureExecutor = InjectedRouteExecutor()
+        do {
+            let first = selfTestCoordinator(
+                executor: startupFailureExecutor,
+                journalURL: startupFailurePath
+            )
+            try requireSelfTest(first.begin(owner).state == "prepared",
+                                "startup-failure fixture must prepare")
+            try requireSelfTest(first.apply(owner.reference).state == "applied",
+                                "startup-failure fixture must apply")
+        }
+        startupFailureExecutor.failDeleteAt = startupFailureExecutor.deleteCalls
+        let failedStartup = RouteCoordinator(
+            executor: startupFailureExecutor,
+            journalURL: startupFailurePath
+        )
+        let startupFreshConnection = UUID()
+        try requireSelfTest(
+            failedStartup.register(connectionID: startupFreshConnection),
+            "fresh startup connection registration must succeed"
+        )
+        try requireSelfTest(
+            failedStartup.discover(connectionID: startupFreshConnection).errorCode == "recovery_required"
+                && failedStartup.recover(owner, connectionID: startupFreshConnection).errorCode == "ownership_mismatch"
+                && !startupFailureExecutor.added.isEmpty
+                && FileManager.default.fileExists(atPath: startupFailurePath.path),
+            "failed startup rollback must retain routes and journal without cross-generation adoption"
+        )
+        startupFailureExecutor.failDeleteAt = nil
+        failedStartup.expireLeaseForSelfTest()
+        try requireSelfTest(
+            failedStartup.discover(connectionID: startupFreshConnection).state == "idle"
+                && startupFailureExecutor.added.isEmpty
+                && !FileManager.default.fileExists(atPath: startupFailurePath.path),
+            "later internal recovery must restore authoritative fresh-connection idle"
         )
 
         // A prepared lease has no applied or pending CIDR yet.  Rollback must
         // still remove its journal, and a duplicate rollback must remain
         // idempotent instead of failing on an empty inspection set.
         let preparedExecutor = InjectedRouteExecutor()
-        let preparedRollback = RouteCoordinator(
+        let preparedRollback = selfTestCoordinator(
             executor: preparedExecutor,
             journalURL: root.appendingPathComponent("prepared-rollback.plist")
         )
@@ -2153,7 +2335,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let symlinkPath = root.appendingPathComponent("journal-symlink.plist")
         try Data("not-a-journal".utf8).write(to: symlinkTarget, options: [.atomic])
         try FileManager.default.createSymbolicLink(at: symlinkPath, withDestinationURL: symlinkTarget)
-        let symlinkCoordinator = RouteCoordinator(
+        let symlinkCoordinator = selfTestCoordinator(
             executor: InjectedRouteExecutor(),
             journalURL: symlinkPath
         )
@@ -2168,7 +2350,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // a journal is written or any mutation is attempted.
         let conflictExecutor = InjectedRouteExecutor()
         conflictExecutor.existing = [cidrs[0]]
-        let conflict = RouteCoordinator(executor: conflictExecutor, journalURL: root.appendingPathComponent("conflict.plist"))
+        let conflict = selfTestCoordinator(executor: conflictExecutor, journalURL: root.appendingPathComponent("conflict.plist"))
         try requireSelfTest(conflict.begin(owner).errorCode == "route_conflict", "exact pre-existing route must conflict")
         try requireSelfTest(conflictExecutor.added.isEmpty, "conflict must not mutate routes")
 
@@ -2180,7 +2362,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let trustedBroadExecutor = InjectedRouteExecutor()
         trustedBroadExecutor.existing.insert("0.0.0.0/1")
         trustedBroadExecutor.existingRouteInterfaces["0.0.0.0/1"] = "utun123"
-        let trustedBroad = RouteCoordinator(
+        let trustedBroad = selfTestCoordinator(
             executor: trustedBroadExecutor,
             journalURL: root.appendingPathComponent("trusted-broad.plist")
         )
@@ -2196,7 +2378,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let unknownBroadExecutor = InjectedRouteExecutor()
         unknownBroadExecutor.existing.insert("0.0.0.0/1")
         unknownBroadExecutor.existingRouteInterfaces["0.0.0.0/1"] = "en0"
-        let unknownBroad = RouteCoordinator(
+        let unknownBroad = selfTestCoordinator(
             executor: unknownBroadExecutor,
             journalURL: root.appendingPathComponent("unknown-broad.plist")
         )
@@ -2206,7 +2388,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let exactTrustedExecutor = InjectedRouteExecutor()
         exactTrustedExecutor.existing.insert("10.64.0.0/16")
         exactTrustedExecutor.existingRouteInterfaces["10.64.0.0/16"] = "utun123"
-        let exactTrusted = RouteCoordinator(
+        let exactTrusted = selfTestCoordinator(
             executor: exactTrustedExecutor,
             journalURL: root.appendingPathComponent("exact-trusted.plist")
         )
@@ -2216,7 +2398,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let moreSpecificTrustedExecutor = InjectedRouteExecutor()
         moreSpecificTrustedExecutor.existing.insert("10.64.1.0/24")
         moreSpecificTrustedExecutor.existingRouteInterfaces["10.64.1.0/24"] = "utun123"
-        let moreSpecificTrusted = RouteCoordinator(
+        let moreSpecificTrusted = selfTestCoordinator(
             executor: moreSpecificTrustedExecutor,
             journalURL: root.appendingPathComponent("more-specific-trusted.plist")
         )
@@ -2228,8 +2410,8 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         for failAt in 0...1 {
             let executor = InjectedRouteExecutor()
             executor.failAddAt = failAt
-            let coordinator = RouteCoordinator(executor: executor,
-                                                journalURL: root.appendingPathComponent("add-failure-\(failAt).plist"))
+            let coordinator = selfTestCoordinator(executor: executor,
+                                                    journalURL: root.appendingPathComponent("add-failure-\(failAt).plist"))
             try requireSelfTest(coordinator.begin(owner).state == "prepared", "faulted begin must prepare")
             try requireSelfTest(coordinator.apply(owner.reference).errorCode == "route_apply_failed",
                                 "add failure \(failAt) must fail closed")
@@ -2241,8 +2423,8 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // exact-state inspection proves the owned route was removed.
         let ambiguousExecutor = InjectedRouteExecutor()
         ambiguousExecutor.failAddAfterMutationAt = 1
-        let ambiguous = RouteCoordinator(executor: ambiguousExecutor,
-                                         journalURL: root.appendingPathComponent("ambiguous-add.plist"))
+        let ambiguous = selfTestCoordinator(executor: ambiguousExecutor,
+                                             journalURL: root.appendingPathComponent("ambiguous-add.plist"))
         try requireSelfTest(ambiguous.begin(owner).state == "prepared", "ambiguous begin must prepare")
         try requireSelfTest(ambiguous.apply(owner.reference).errorCode == "route_apply_failed",
                             "ambiguous add must fail closed")
@@ -2251,7 +2433,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // Force rollback itself to fail once, verify the stronger error is
         // surfaced, then retry after the injected fault is consumed.
         let rollbackExecutor = InjectedRouteExecutor()
-        let rollback = RouteCoordinator(executor: rollbackExecutor, journalURL: root.appendingPathComponent("rollback-failure.plist"))
+        let rollback = selfTestCoordinator(executor: rollbackExecutor, journalURL: root.appendingPathComponent("rollback-failure.plist"))
         try requireSelfTest(rollback.begin(owner).state == "prepared", "rollback fault begin must prepare")
         try requireSelfTest(rollback.apply(owner.reference).state == "applied", "rollback fault apply must apply")
         rollbackExecutor.failDeleteAt = rollbackExecutor.deleteCalls
@@ -2269,7 +2451,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let persistFailurePath = root.appendingPathComponent("rollback-persist-failure.plist")
         let persistFailureTarget = root.appendingPathComponent("rollback-persist-target.plist")
         let persistFailureExecutor = InjectedRouteExecutor()
-        let persistFailure = RouteCoordinator(
+        let persistFailure = selfTestCoordinator(
             executor: persistFailureExecutor,
             journalURL: persistFailurePath
         )
@@ -2293,7 +2475,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // A foreign route appearing after apply must not prevent removal of
         // the exact owned route or cause the foreign route to be deleted.
         let foreignExecutor = InjectedRouteExecutor()
-        let foreign = RouteCoordinator(executor: foreignExecutor, journalURL: root.appendingPathComponent("foreign-after-apply.plist"))
+        let foreign = selfTestCoordinator(executor: foreignExecutor, journalURL: root.appendingPathComponent("foreign-after-apply.plist"))
         try requireSelfTest(foreign.begin(owner).state == "prepared", "foreign begin must prepare")
         try requireSelfTest(foreign.apply(owner.reference).state == "applied", "foreign apply must apply")
         foreignExecutor.existing.insert(cidrs[0])
@@ -2302,7 +2484,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
                             "foreign rollback must preserve the foreign route")
 
         let foreignOnlyExecutor = InjectedRouteExecutor()
-        let foreignOnly = RouteCoordinator(
+        let foreignOnly = selfTestCoordinator(
             executor: foreignOnlyExecutor,
             journalURL: root.appendingPathComponent("foreign-only.plist")
         )
@@ -2316,7 +2498,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // Journal unlink failure keeps recovery required; a later retry can
         // complete and the same reference is idempotent after success.
         var allowJournalRemoval = false
-        let unlink = RouteCoordinator(
+        let unlink = selfTestCoordinator(
             executor: InjectedRouteExecutor(),
             journalURL: root.appendingPathComponent("unlink-failure.plist"),
             removeJournal: { _ in allowJournalRemoval }
@@ -2337,12 +2519,12 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let restartPath = root.appendingPathComponent("restart.plist")
         let restartExecutor = InjectedRouteExecutor()
         do {
-            let first = RouteCoordinator(executor: restartExecutor, journalURL: restartPath)
+            let first = selfTestCoordinator(executor: restartExecutor, journalURL: restartPath)
             try requireSelfTest(first.begin(owner).state == "prepared", "restart begin must prepare")
             try requireSelfTest(first.apply(owner.reference).state == "applied", "restart apply must apply")
         }
         try requireSelfTest(!restartExecutor.added.isEmpty, "restart fixture must leave durable routes")
-        let restarted = RouteCoordinator(executor: restartExecutor, journalURL: restartPath)
+        let restarted = selfTestCoordinator(executor: restartExecutor, journalURL: restartPath)
         try requireSelfTest(restarted.discover().state == "idle" && restartExecutor.added.isEmpty,
                             "helper restart must recover routes before discover")
 
@@ -2360,7 +2542,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         )
         try PropertyListEncoder().encode(legacyJournal).write(to: legacyPath, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: journalFilePermissions], ofItemAtPath: legacyPath.path)
-        let migrated = RouteCoordinator(executor: legacyExecutor, journalURL: legacyPath)
+        let migrated = selfTestCoordinator(executor: legacyExecutor, journalURL: legacyPath)
         try requireSelfTest(migrated.discover().state == "idle", "legacy journal must rollback during startup")
         try requireSelfTest(legacyExecutor.added.isEmpty, "legacy rollback must remove only exact owned routes")
         try requireSelfTest(!FileManager.default.fileExists(atPath: legacyPath.path), "legacy journal must be removed after rollback")
@@ -2379,7 +2561,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
             [.posixPermissions: journalFilePermissions],
             ofItemAtPath: ambiguousLegacyPath.path
         )
-        let refusedLegacy = RouteCoordinator(
+        let refusedLegacy = selfTestCoordinator(
             executor: ambiguousLegacyExecutor,
             journalURL: ambiguousLegacyPath
         )
@@ -2396,7 +2578,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         let corruptPath = root.appendingPathComponent("corrupt.plist")
         try Data("not-a-property-list".utf8).write(to: corruptPath, options: [.atomic])
         let corruptExecutor = InjectedRouteExecutor()
-        let corrupt = RouteCoordinator(executor: corruptExecutor, journalURL: corruptPath)
+        let corrupt = selfTestCoordinator(executor: corruptExecutor, journalURL: corruptPath)
         try requireSelfTest(corrupt.discover().errorCode == "journal_corrupt", "corrupt journal must fail closed")
         try requireSelfTest(corruptExecutor.added.isEmpty, "corrupt journal must not mutate routes")
 
@@ -2416,7 +2598,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         )
         try unknownData.write(to: unknownPath, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: journalFilePermissions], ofItemAtPath: unknownPath.path)
-        let unknown = RouteCoordinator(executor: InjectedRouteExecutor(), journalURL: unknownPath)
+        let unknown = selfTestCoordinator(executor: InjectedRouteExecutor(), journalURL: unknownPath)
         try requireSelfTest(unknown.discover().errorCode == "journal_corrupt",
                             "unknown journal fields must fail closed")
 
@@ -2433,7 +2615,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         try PropertyListEncoder().encode(semanticJournal).write(to: semanticPath, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: journalFilePermissions], ofItemAtPath: semanticPath.path)
         let semanticExecutor = InjectedRouteExecutor()
-        let semantic = RouteCoordinator(executor: semanticExecutor, journalURL: semanticPath)
+        let semantic = selfTestCoordinator(executor: semanticExecutor, journalURL: semanticPath)
         try requireSelfTest(semantic.discover().errorCode == "journal_corrupt",
                             "semantic journal corruption must fail closed")
         try requireSelfTest(semanticExecutor.added.isEmpty,
@@ -2452,7 +2634,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
             [.posixPermissions: journalFilePermissions],
             ofItemAtPath: overlappingPendingPath.path
         )
-        let overlappingPending = RouteCoordinator(
+        let overlappingPending = selfTestCoordinator(
             executor: InjectedRouteExecutor(),
             journalURL: overlappingPendingPath
         )
@@ -2463,7 +2645,7 @@ private func runRouteCoordinatorSelfTest() -> Bool {
         // trusting only the applied-CIDR count in the journal.
         let livePath = root.appendingPathComponent("live-status.plist")
         let liveExecutor = InjectedRouteExecutor()
-        let live = RouteCoordinator(executor: liveExecutor, journalURL: livePath)
+        let live = selfTestCoordinator(executor: liveExecutor, journalURL: livePath)
         try requireSelfTest(live.begin(owner).state == "prepared", "live status begin must prepare")
         try requireSelfTest(live.status(owner.reference).state == "prepared",
                             "prepared status must inspect absent owned routes")

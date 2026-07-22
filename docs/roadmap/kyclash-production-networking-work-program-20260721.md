@@ -68,11 +68,14 @@ stopping points.
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
 The exact policy-identity portion of the locked production restart and
-rematerialization amendment is complete at the source boundary. The first
-incomplete source criterion is now XPC connection-generation registration and
-rematerialization, beginning with the helper accepted-connection barrier. The
-first incomplete aggregate criterion remains S1.13. Overall S1 status: in
-progress.
+rematerialization amendment is complete at the source boundary. The helper
+accepted-connection barrier (XPC-A) is now implemented and locally closed:
+registration happens before `resume`, every request is bound to a registered
+generation, and invalidation rolls back under the same coordinator lock before
+the replacement generation may observe authoritative `idle`. The first
+incomplete source criterion is now XPC-B: the Objective-C first-wins terminal
+generation state and precise transport-status boundary. The first incomplete
+aggregate criterion remains S1.13. Overall S1 status: in progress.
 
 ### Work-package dependency chain
 
@@ -552,8 +555,10 @@ less-specific Mihomo exception is separately governed by
 in the v1 helper covered by this contract; the v2 boundary is implemented and
 recorded under S1.12 below.
 
-Status (2026-07-22): complete. The cross-platform route-owner and lease
-contract is implemented with strict serialization, exact utun owner matching,
+Status (2026-07-22): complete for the previously locked typed helper/XPC
+surface; the XPC-A accepted-connection barrier amendment is now also locally
+closed. The cross-platform route-owner and lease contract is implemented with
+strict serialization, exact utun owner matching,
 bounded canonical private CIDRs, replay mismatch refusal, and no generic
 command/path/environment fields. A macOS 13 Swift LaunchDaemon now implements
 the fixed typed NSSecureCoding method surface, rejects root/unsigned or
@@ -586,7 +591,10 @@ A Developer ID-signed lab client then completed the real privileged Mach-
 service `discover` round trip with idle state and no error; launchd reported
 the helper running with one successful exec. The v2 executor, lease, and
 crash-recovery evidence are recorded under S1.12 below; packaged-Mihomo
-evidence is recorded under S1.13. Its remaining production live-source,
+evidence is recorded under S1.13. The XPC-A evidence includes
+warnings-as-errors Swift/Objective-C builds, injected coordinator self-tests,
+same-generation typed `not_ready` to `idle` retry coverage, and static VM
+safety checks. Its remaining production live-source,
 reachability, abort/reboot, and aggregate-cleanup cases remain the first
 incomplete VM system criterion.
 

@@ -9,10 +9,13 @@ route-helper v2 evidence have passed their applicable gates through S1.12.
 S1.04 is complete again after the atomic stdio protocol-v2 Rust/Go/TypeScript,
 strict-wire, race, actual-child, and lifecycle gates passed. The exact
 policy-identity portion of the locked production restart/rematerialization
-implementation is now complete; the XPC connection-generation chain,
-beginning with the helper accepted-connection barrier, is the first incomplete
-safe source criterion required by the incomplete S1.13 VM aggregate. This
-audit is not a terminal completion or permission to stop continuous delivery
+implementation is complete, and XPC-A (the helper accepted-connection
+barrier) is now locally closed. Registration occurs before XPC resume, all
+requests require a live registered generation, and invalidation performs the
+owned rollback before a replacement can certify idle. XPC-B (the Objective-C
+first-wins terminal-generation and precise transport-status boundary) is the
+first incomplete safe source criterion required by the incomplete S1.13 VM
+aggregate. This audit is not a terminal completion or permission to stop continuous delivery
 while safe work remains.
 
 This is not a production-release declaration. Continuation is authorized. Real
@@ -24,6 +27,12 @@ public-distribution enhancement rather than a current development blocker.
 
 - The route transaction engine covers conflict refusal, rollback, restart
   recovery, idempotence, and fault injection without changing host routes.
+- XPC-A's helper connection barrier is locally closed: accepted IDs register
+  before `resume`; every request requires a live registered generation; sole
+  generation discovery is the only authoritative `idle`; stale IDs fail
+  closed; and invalidation rollback retains the journal and recovery tombstone
+  on failure. The native lab client retries only typed v2 `not_ready` on that
+  same connection generation.
 - Production initialization now persists only revision, exact signed-envelope
   SHA-256, and key ID under a bounded cross-process transaction. Exact restart
   is zero-write; v1 migration, expiry, same-revision identity changes,
@@ -148,7 +157,8 @@ production infrastructure, updater publication, and release activation remain
 separate authorization boundaries:
 
 1. Finish the locked XPC connection-generation/rematerialization source chain,
-   then exercise the production-feature Rust live-source path against the
+   starting with XPC-B's Objective-C terminal-generation/transport-status
+   boundary, then exercise the production-feature Rust live-source path against the
    packaged Mihomo control API in the disposable VM, including private-service
    reachability, app/sidecar/helper abort, reboot/retry, and aggregate
    foreign-route cleanup. The ordinary signed-App managed-TUN subcase has
@@ -367,7 +377,7 @@ S1.13 remains the first incomplete VM aggregate criterion for production Rust
 live-source invocation, private-service reachability, app/sidecar/helper abort,
 reboot/retry, and the aggregate foreign-state/credential cleanup gate. The
 ordinary App matrix does not substitute for the default-off production
-control path. Its exact policy-identity/restart source prerequisite is now
-complete; XPC connection-generation/rematerialization remains the first source
-prerequisite. No endpoint, release, updater activation, production
+control path. Its exact policy-identity/restart and XPC-A helper-barrier source
+prerequisites are now complete; XPC-B terminal-generation/transport status
+remains the first source prerequisite. No endpoint, release, updater activation, production
 infrastructure, or real login-Keychain lifecycle was touched.

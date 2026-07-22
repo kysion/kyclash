@@ -81,6 +81,8 @@ SYNTHETIC_LAUNCH_PID=""
 SYNTHETIC_OWNER_EVIDENCE_SAFE=0
 HOLD_CLIENT_PID=""
 HOLD_CLIENT_LOG=""
+DISCOVER_RETRY_CLIENT_PID=""
+DISCOVER_RETRY_CLIENT_LOG=""
 PREEXISTING_UTUNS=""
 HELPER_IS_BOOTSTRAPPED=1
 CORRUPT_JOURNAL_INSTALLED=0
@@ -112,7 +114,7 @@ desired_routes=10.200.0.0/16,fd00:200::/48
 conflict_routes=10.200.128.0/24,fd00:200:0:1::/64
 covering_routes=10.200.0.0/15,fd00:200::/47
 preflight_overlap_guard=reject-fixed-prefix-and-selected-less-specific-overlap
-scenarios=discover,dual-stack-normal,exact-conflict,more-specific-conflict,unknown-interface-conflict,explicit-mihomo-covering,helper-kill-restart,journal-corrupt-fail-closed,final-absence
+scenarios=discover,dual-stack-normal,exact-conflict,more-specific-conflict,unknown-interface-conflict,explicit-mihomo-covering,same-generation-discover-retry,helper-kill-restart,journal-corrupt-fail-closed,final-absence
 forbidden=default-route,DNS,caller-supplied-route,caller-supplied-command,production-network
 dry_run_mutations=none
 EOF
@@ -1258,6 +1260,98 @@ stop_hold_client() {
   fi
 }
 
+start_same_generation_discover_retry() {
+  DISCOVER_RETRY_CLIENT_LOG="${TMP_ROOT}/same-generation-discover-retry.log"
+  assert_client_integrity
+  "${CLIENT}" --discover-retry-after-not-ready \
+    >"${DISCOVER_RETRY_CLIENT_LOG}" 2>&1 &
+  DISCOVER_RETRY_CLIENT_PID=$!
+  local attempt generation_count
+  attempt=0
+  while [[ "${attempt}" -lt 100 ]]; do
+    if ! /bin/kill -0 "${DISCOVER_RETRY_CLIENT_PID}" 2>/dev/null; then
+      /bin/cat "${DISCOVER_RETRY_CLIENT_LOG}" >&2
+      wait "${DISCOVER_RETRY_CLIENT_PID}" 2>/dev/null || true
+      DISCOVER_RETRY_CLIENT_PID=""
+      printf 'same-generation discover client exited before typed not_ready\n' >&2
+      return 1
+    fi
+    if /usr/bin/grep -Fqx 'discover_not_ready_observed=true' \
+      "${DISCOVER_RETRY_CLIENT_LOG}"; then
+      generation_count="$(/usr/bin/grep -Fxc 'client_generations_created=1' \
+        "${DISCOVER_RETRY_CLIENT_LOG}" || true)"
+      if [[ "${generation_count}" != 1 ]] || \
+        ! /usr/bin/grep -Fq \
+          'transport_status=0 protocol_version=2 state=4 error_code=1' \
+          "${DISCOVER_RETRY_CLIENT_LOG}"; then
+        printf 'same-generation discover client emitted invalid not_ready evidence\n' >&2
+        return 1
+      fi
+      return 0
+    fi
+    /bin/sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  printf 'same-generation discover client did not observe typed not_ready\n' >&2
+  return 1
+}
+
+finish_same_generation_discover_retry() {
+  local client_pid status generation_count attempt
+  client_pid="${DISCOVER_RETRY_CLIENT_PID}"
+  [[ -n "${client_pid}" ]] || {
+    printf 'same-generation discover client PID is absent\n' >&2
+    return 1
+  }
+  attempt=0
+  while /bin/kill -0 "${client_pid}" 2>/dev/null && \
+    [[ "${attempt}" -lt 250 ]]; do
+    /bin/sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  if /bin/kill -0 "${client_pid}" 2>/dev/null; then
+    stop_exact_process "${client_pid}" "${CLIENT}" || return 1
+    wait "${client_pid}" 2>/dev/null || true
+    DISCOVER_RETRY_CLIENT_PID=""
+    /bin/cat "${DISCOVER_RETRY_CLIENT_LOG}" | /usr/bin/tee -a "${LOG_FILE}"
+    printf 'same-generation discover client exceeded its total matrix deadline\n' >&2
+    return 1
+  fi
+  set +e
+  wait "${client_pid}"
+  status=$?
+  set -e
+  DISCOVER_RETRY_CLIENT_PID=""
+  /bin/cat "${DISCOVER_RETRY_CLIENT_LOG}" | /usr/bin/tee -a "${LOG_FILE}"
+  generation_count="$(/usr/bin/grep -Fxc 'client_generations_created=1' \
+    "${DISCOVER_RETRY_CLIENT_LOG}" || true)"
+  if [[ "${status}" -ne 0 || "${generation_count}" != 1 ]] || \
+    ! /usr/bin/grep -Fqx 'discover_not_ready_observed=true' \
+      "${DISCOVER_RETRY_CLIENT_LOG}" || \
+    ! /usr/bin/grep -Fqx 'discover_final_state=idle' \
+      "${DISCOVER_RETRY_CLIENT_LOG}" || \
+    ! /usr/bin/awk '
+      $1 == "discover-retry" {
+        count += 1
+        if ($2 != "client_generation=1") invalid = 1
+      }
+      END { exit count > 0 && !invalid ? 0 : 1 }
+    ' "${DISCOVER_RETRY_CLIENT_LOG}"; then
+    printf 'same-generation discover client did not prove not_ready to idle\n' >&2
+    return 1
+  fi
+}
+
+stop_same_generation_discover_retry() {
+  if [[ -n "${DISCOVER_RETRY_CLIENT_PID}" ]]; then
+    if ! stop_exact_process "${DISCOVER_RETRY_CLIENT_PID}" "${CLIENT}"; then
+      return 1
+    fi
+    wait "${DISCOVER_RETRY_CLIENT_PID}" 2>/dev/null || true
+    DISCOVER_RETRY_CLIENT_PID=""
+  fi
+}
+
 bootout_helper() {
   local previous_pid current_pid attempt command_line
   previous_pid="$(helper_pid || true)"
@@ -1940,6 +2034,37 @@ run_matrix() {
   assert_journal_absent
   stop_synthetic_mihomo_utun
 
+  printf 'scenario=same-generation-discover-retry-after-not-ready\n' | \
+    /usr/bin/tee -a "${LOG_FILE}"
+  local same_generation_helper_pid same_generation_helper_start
+  same_generation_helper_pid="$(helper_pid)"
+  [[ -n "${same_generation_helper_pid}" ]]
+  assert_process_identity "${same_generation_helper_pid}" "${HELPER}"
+  same_generation_helper_start="$(/usr/bin/sudo /bin/ps \
+    -p "${same_generation_helper_pid}" -o lstart= 2>/dev/null || true)"
+  [[ -n "${same_generation_helper_start}" ]]
+  start_hold_client
+  assert_route_present_once exact4 "${OWNER_UTUN}"
+  assert_route_present_once exact6 "${OWNER_UTUN}"
+  assert_root_path "${JOURNAL}" 600 file
+  start_same_generation_discover_retry
+  stop_hold_client
+  finish_same_generation_discover_retry
+  if ! assert_process_identity "${same_generation_helper_pid}" "${HELPER}" || \
+    [[ "$(helper_pid)" != "${same_generation_helper_pid}" ]] || \
+    [[ "$(/usr/bin/sudo /bin/ps -p "${same_generation_helper_pid}" \
+      -o lstart= 2>/dev/null || true)" != "${same_generation_helper_start}" ]]; then
+    printf 'helper changed identity during connection-generation rollback\n' >&2
+    return 1
+  fi
+  assert_route_absent exact4
+  assert_route_absent exact6
+  assert_journal_absent
+  printf 'same_generation_final_routes=absent\n' | /usr/bin/tee -a "${LOG_FILE}"
+  printf 'same_generation_final_journal=absent\n' | /usr/bin/tee -a "${LOG_FILE}"
+  printf 'same_generation_final_lease=idle\n' | /usr/bin/tee -a "${LOG_FILE}"
+  printf 'same_generation_helper_restart=none\n' | /usr/bin/tee -a "${LOG_FILE}"
+
   printf 'scenario=helper-kill-restart-recovery\n' | /usr/bin/tee -a "${LOG_FILE}"
   start_hold_client
   /bin/cat "${HOLD_CLIENT_LOG}" | /usr/bin/tee -a "${LOG_FILE}"
@@ -2136,6 +2261,7 @@ cleanup() {
   trap - EXIT INT TERM
   set +e
 
+  if ! stop_same_generation_discover_retry; then CLEANUP_FAILURE=1; fi
   if ! stop_hold_client; then CLEANUP_FAILURE=1; fi
   for ((index = ${#ADDED_ROUTES[@]} - 1; index >= 0; index--)); do
     entry="${ADDED_ROUTES[${index}]}"

@@ -13,6 +13,8 @@ typedef struct {
 } KCRClientReply;
 
 static const uint8_t KCRProtocolVersion = 2;
+static const unsigned int KCRDiscoverRetryAttempts = 100;
+static const useconds_t KCRDiscoverRetryDelayMicroseconds = 100000;
 
 void *kyclash_route_helper_client_create(void);
 void kyclash_route_helper_client_destroy(void *raw);
@@ -47,6 +49,82 @@ static BOOL requireError(NSString *step, KCRClientReply reply, int32_t state,
          reply.error_code == errorCode;
 }
 
+static BOOL isTypedNotReady(KCRClientReply reply) {
+  return reply.transport_status == 0 &&
+         reply.protocol_version == KCRProtocolVersion && reply.state == 4 &&
+         reply.error_code == 1;
+}
+
+static KCRClientReply discoverAfterTransientNotReady(void *client) {
+  KCRClientReply reply = {-1, -1, -1, -1};
+  for (unsigned int attempt = 1; attempt <= KCRDiscoverRetryAttempts;
+       attempt++) {
+    reply = kyclash_route_helper_client_discover(client);
+    if (!isTypedNotReady(reply))
+      return reply;
+    printf("discover-wait client_generation=1 attempt=%u state=not_ready\n",
+           attempt);
+    fflush(stdout);
+    usleep(KCRDiscoverRetryDelayMicroseconds);
+  }
+  return reply;
+}
+
+static BOOL runDiscoverRetryAfterNotReady(void) {
+  void *client = kyclash_route_helper_client_create();
+  if (client == NULL) {
+    fprintf(stderr, "unable to create route-helper client generation\n");
+    return NO;
+  }
+
+  // This mode is intentionally one native client and therefore one
+  // NSXPCConnection generation.  It proves that typed not_ready is retried on
+  // that same generation rather than rematerializing a connection per poll.
+  printf("client_generations_created=1\n");
+  fflush(stdout);
+  BOOL sawNotReady = NO;
+  BOOL passed = NO;
+  for (unsigned int attempt = 1; attempt <= KCRDiscoverRetryAttempts;
+       attempt++) {
+    KCRClientReply reply = kyclash_route_helper_client_discover(client);
+    printf("discover-retry client_generation=1 attempt=%u transport_status=%d "
+           "protocol_version=%d state=%d error_code=%d\n",
+           attempt, reply.transport_status, reply.protocol_version, reply.state,
+           reply.error_code);
+    fflush(stdout);
+    if (reply.transport_status != 0 ||
+        reply.protocol_version != KCRProtocolVersion) {
+      fprintf(stderr,
+              "discover retry terminated on a transport or protocol failure\n");
+      break;
+    }
+    if (isTypedNotReady(reply)) {
+      if (!sawNotReady) {
+        sawNotReady = YES;
+        printf("discover_not_ready_observed=true\n");
+        fflush(stdout);
+      }
+      usleep(KCRDiscoverRetryDelayMicroseconds);
+      continue;
+    }
+    if (sawNotReady && reply.state == 0 && reply.error_code == 0) {
+      printf("discover_final_state=idle\n");
+      fflush(stdout);
+      passed = YES;
+      break;
+    }
+    fprintf(stderr,
+            "discover retry expected typed not_ready followed by idle\n");
+    break;
+  }
+  if (!passed && sawNotReady) {
+    fprintf(stderr,
+            "discover retry did not reach idle within the bounded window\n");
+  }
+  kyclash_route_helper_client_destroy(client);
+  return passed;
+}
+
 static BOOL isCanonicalUtunInterface(const char *value) {
   if (value == NULL)
     return NO;
@@ -68,8 +146,10 @@ static void printUsage(const char *executable) {
           "[--mihomo-utun utunN] | "
           "%s --hold-after-apply --dual-stack [utun-interface] "
           "[--mihomo-utun utunN] | "
+          "%s --discover-retry-after-not-ready | "
           "%s --if-nametoindex utunN\n",
-          executable, executable, executable, executable, executable);
+          executable, executable, executable, executable, executable,
+          executable);
 }
 
 int main(int argc, const char *argv[]) {
@@ -88,6 +168,10 @@ int main(int argc, const char *argv[]) {
       printf("if_nametoindex device=%s index=%u exists=true\n", argv[2],
              interfaceIndex);
       return 0;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "--discover-retry-after-not-ready") == 0) {
+      return runDiscoverRetryAfterNotReady() ? 0 : 1;
     }
 
     const char *arguments[5] = {argv[0], NULL, NULL, NULL, NULL};
@@ -111,24 +195,29 @@ int main(int argc, const char *argv[]) {
     }
     if (mihomoInterface != NULL && argumentCount == 1)
       argumentsValid = NO;
-    BOOL dualStack = argumentCount == 3 &&
-                     strcmp(arguments[1], "--dual-stack") == 0;
+    BOOL dualStack =
+        argumentCount == 3 && strcmp(arguments[1], "--dual-stack") == 0;
     BOOL expectConflict = argumentCount == 4 &&
                           strcmp(arguments[1], "--expect-conflict") == 0 &&
                           strcmp(arguments[2], "--dual-stack") == 0;
     BOOL holdAfterApply = argumentCount == 4 &&
                           strcmp(arguments[1], "--hold-after-apply") == 0 &&
                           strcmp(arguments[2], "--dual-stack") == 0;
-    BOOL routeMode = argumentCount == 2 || dualStack || expectConflict ||
-                     holdAfterApply;
+    BOOL routeMode =
+        argumentCount == 2 || dualStack || expectConflict || holdAfterApply;
     if (!argumentsValid || (argumentCount != 1 && !routeMode)) {
       printUsage(argv[0]);
       return 2;
     }
 
     void *client = kyclash_route_helper_client_create();
+    // The accepted-connection barrier deliberately reports typed not_ready
+    // while an immediately preceding client generation is still draining.
+    // Keep this one native generation and retry only that transient helper
+    // reply; transport/protocol failures and every other state remain
+    // terminal for the lab operation.
     BOOL passed = requireReply(@"discover",
-                               kyclash_route_helper_client_discover(client), 0);
+                               discoverAfterTransientNotReady(client), 0);
     if (passed && routeMode) {
       // The Virtualization.framework guest owns the TEST-NET blocks on its
       // en0 underlay. Use a fixed private pair that is absent from that
