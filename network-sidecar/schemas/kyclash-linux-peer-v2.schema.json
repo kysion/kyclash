@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kysion/kyclash/network-sidecar/schemas/kyclash-linux-peer-v2.schema.json",
+  "title": "KyClash Linux production peer configuration v2",
+  "description": "Live public, secret-free configuration for the single-client brokered Linux Peer. Private TLS and WireGuard keys are accepted only from fixed systemd credentials. Duplicate JSON keys plus canonical CIDR, aggregate CIDR-text, overlap, address-family, listener-coherence, endpoint-host, and key checks are additionally rejected by the Go decoder. Schema v1 remains superseded evidence and is rejected by live mode.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "carrier_auth_version",
+    "peer_id",
+    "deployment_id",
+    "tls",
+    "wireguard",
+    "listeners",
+    "forwarding",
+    "policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "carrier_auth_version": {
+      "const": 1
+    },
+    "peer_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "deployment_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trust_mode",
+        "minimum_version",
+        "server_name",
+        "local_certificate_sha256",
+        "client_authentication"
+      ],
+      "properties": {
+        "trust_mode": {
+          "const": "system_roots",
+          "description": "KyClash clients validate this Peer with their operating-system trust roots and the configured server_name."
+        },
+        "minimum_version": {
+          "const": "1.3"
+        },
+        "server_name": {
+          "$ref": "#/$defs/server_name"
+        },
+        "local_certificate_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Peer-local startup self-check of the leaf certificate DER. This is not a client certificate pin and does not replace system-root plus hostname validation."
+        },
+        "client_authentication": {
+          "const": "wireguard_public_key"
+        }
+      }
+    },
+    "wireguard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "server_public_key_base64",
+        "server_addresses",
+        "clients",
+        "mtu"
+      ],
+      "properties": {
+        "server_public_key_base64": {
+          "$ref": "#/$defs/wireguard_public_key"
+        },
+        "server_addresses": {
+          "$ref": "#/$defs/host_prefixes"
+        },
+        "clients": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/client"
+          },
+          "description": "Live version 2 authorizes exactly one configured WireGuard client and one active carrier."
+        },
+        "mtu": {
+          "const": 1420
+        }
+      }
+    },
+    "listeners": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/quic_listener"
+        },
+        {
+          "$ref": "#/$defs/wss_listener"
+        },
+        {
+          "$ref": "#/$defs/tcp_listener"
+        }
+      ],
+      "items": false,
+      "description": "The decoder additionally requires one exact canonical IPv4 bind address, three distinct unprivileged ports, URL-port equality, one canonical lowercase TLS DNS host, and exact QUIC to WSS to TCP order."
+    },
+    "forwarding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "tunnel_interface",
+        "site_interface",
+        "private_cidrs",
+        "return_path"
+      ],
+      "properties": {
+        "mode": {
+          "const": "brokered_linux_tun_fd"
+        },
+        "tunnel_interface": {
+          "const": "kyclash0"
+        },
+        "site_interface": {
+          "$ref": "#/$defs/interface_name"
+        },
+        "private_cidrs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/cidr"
+          },
+          "description": "One to sixteen canonical, nonoverlapping private prefixes. Sixteen items at the per-item 64-character ceiling bound canonical prefix text to 1 KiB; the decoder enforces the exact aggregate and full-prefix containment contracts."
+        },
+        "return_path": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": {
+              "const": "routed"
+            }
+          }
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_active_clients",
+        "max_active_carriers",
+        "carrier_handshake_timeout_seconds",
+        "health_interval_seconds",
+        "idle_timeout_seconds",
+        "shutdown_grace_seconds"
+      ],
+      "properties": {
+        "max_active_clients": {
+          "const": 1
+        },
+        "max_active_carriers": {
+          "const": 1
+        },
+        "carrier_handshake_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "health_interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "idle_timeout_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 900
+        },
+        "shutdown_grace_seconds": {
+          "const": 10
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "wireguard_public_key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$"
+    },
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "public_key_base64", "tunnel_addresses"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "public_key_base64": {
+          "$ref": "#/$defs/wireguard_public_key"
+        },
+        "tunnel_addresses": {
+          "$ref": "#/$defs/host_prefixes"
+        }
+      }
+    },
+    "host_prefixes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/cidr"
+      }
+    },
+    "cidr": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[0-9A-Fa-f:.]+/[0-9]{1,3}$"
+    },
+    "interface_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 15,
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "server_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^(?![0-9.]+$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "bind_address": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 21,
+      "pattern": "^(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])(?:\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}:(?:10(?:2[4-9]|[3-9][0-9])|1[1-9][0-9]{2}|[2-9][0-9]{3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65(?:[0-4][0-9]{2}|5(?:[0-2][0-9]|3[0-5])))$"
+    },
+    "listener_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "bind", "url"],
+      "properties": {
+        "transport": {
+          "enum": ["quic", "wss", "tcp"]
+        },
+        "bind": {
+          "$ref": "#/$defs/bind_address"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      }
+    },
+    "quic_listener": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/listener_base"
+        },
+        {
+          "properties": {
+            "transport": {
+              "const": "quic"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^https://"
+            }
+          }
+        }
+      ]
+    },
+    "wss_listener": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/listener_base"
+        },
+        {
+          "properties": {
+            "transport": {
+              "const": "wss"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^wss://[^?#]+/kynp$"
+            }
+          }
+        }
+      ]
+    },
+    "tcp_listener": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/listener_base"
+        },
+        {
+          "properties": {
+            "transport": {
+              "const": "tcp"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^tcp://"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

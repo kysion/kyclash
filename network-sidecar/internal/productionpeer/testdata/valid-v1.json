@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "peer_id": "peer.test.production",
+  "deployment_id": "deployment.test.20260723",
+  "tls": {
+    "trust_mode": "system_roots",
+    "minimum_version": "1.3",
+    "server_name": "peer.example.invalid",
+    "local_certificate_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "client_authentication": "wireguard_public_key"
+  },
+  "wireguard": {
+    "server_public_key_base64": "ERERERERERERERERERERERERERERERERERERERERERE=",
+    "server_addresses": ["10.255.255.1/32", "fd00:255::1/128"],
+    "clients": [
+      {
+        "id": "client.test.macos",
+        "public_key_base64": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+        "tunnel_addresses": ["10.255.255.2/32", "fd00:255::2/128"]
+      }
+    ],
+    "mtu": 1420
+  },
+  "listeners": [
+    {
+      "transport": "quic",
+      "bind": "192.0.2.10:2443",
+      "url": "https://peer.example.invalid:2443"
+    },
+    {
+      "transport": "wss",
+      "bind": "192.0.2.10:2444",
+      "url": "wss://peer.example.invalid:2444/kynp"
+    },
+    {
+      "transport": "tcp",
+      "bind": "192.0.2.10:2445",
+      "url": "tcp://peer.example.invalid:2445"
+    }
+  ],
+  "forwarding": {
+    "mode": "preprovisioned_linux_tun",
+    "tunnel_interface": "kyclash0",
+    "site_interface": "ens192",
+    "private_cidrs": ["10.127.0.0/16", "fd00:127::/48"],
+    "return_path": {
+      "mode": "routed"
+    }
+  },
+  "policy": {
+    "max_active_clients": 1,
+    "max_active_carriers": 1,
+    "carrier_handshake_timeout_seconds": 10,
+    "health_interval_seconds": 5,
+    "idle_timeout_seconds": 120,
+    "shutdown_grace_seconds": 10
+  }
+}

@@ -63,7 +63,7 @@ stopping points.
 | S1.10 | disposable-VM termination matrix | complete; signed GUI/logout/re-login, Go sidecar controller-kill/EOF plus parent-reparent cleanup, and the combined production-sidecar-owned real-utun controller-kill matrix passed; the ordinary inherited Mihomo child orphan remains a separately tracked non-production cleanup limitation |
 | S1.11 | signed helper and typed XPC | complete; ServiceManagement registration and signed client/helper round trip passed in the VM |
 | S1.12 | route lease/recovery | complete; v2 wire/journal migration, injected failure coverage, signed dual-stack VM transaction, conflict refusal, helper restart, journal-corruption fail-closed, and final-absence evidence passed |
-| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary, signed synthetic and packaged-Mihomo matrices, and the signed App-managed `utun4093` GUI/lifecycle matrix pass in the disposable VM; production live-source execution, private reachability, abort/reboot, and aggregate cleanup remain |
+| S1.13 | Mihomo coexistence VM matrix | in progress; typed live-source boundary, signed synthetic and packaged-Mihomo matrices, the signed App-managed `utun4093` GUI/lifecycle matrix, and the separate unsigned same-VM core-network lab pass in the disposable VM; the production broker-bound/v3 exact-candidate live execution, independent peer/server, abort/reboot, and aggregate cleanup remain |
 | S1.14–S1.15 | impairment, performance/package lifecycle | in progress; CI matrices and package audit are active, lifecycle/soak evidence remains |
 | S1.16 | physical/staging gates | pending; physical Mac and explicitly authorized staging observations remain |
 
@@ -111,19 +111,35 @@ does not claim Darwin `utun`, private-route installation, tunnel-broker/XPC, or
 production endpoint readiness. The redacted record is
 `docs/testing/kyclash-userspace-lab-app-vm-20260723.md`.
 
-Broker session seam checkpoint (2026-07-23): the fixed Mach-service client,
-typed stdio descriptor handoff, broker/runtime generation separation, exact
-stop/reap receipt boundary, and stale-generation recovery-only quarantine are
-implemented and covered by Rust, Objective-C, Swift, and contract tests. Late
-XPC session replies now close transferred descriptors explicitly. A separate
-pure-Rust v3 owner/journal contract now carries the complete broker
-protocol/generation/sidecar/lease/operation tuple and rejects v2 mutation
-claims, replay, and out-of-order transitions. These are source-level safety
-slices only: the production factory is deliberately not wired to them until
-the native hold/release interlock, dynamic restart materialization, and
-privileged-service registration gates are complete. They therefore do not
-claim production Connect, real-utun App operation, private-route installation,
-or Mihomo coexistence.
+Core-network App checkpoint (2026-07-23): the separately reviewed no-sign
+`networking-vm-network-lab-app` candidate then passed visibly in the same
+selected guest. Exact App executable SHA-256
+`39866bf893106aeaa9c567cc33e0c1394a820177df794b1785841166846822a2`
+created real `utun4`, installed only `10.88.0.2/32`, reached the private echo
+over QUIC, WSS, and TCP with break-before-make, and coexisted with the fixed
+Mihomo `utun4094`/covering route. App EOF and the visible Disconnect control
+each removed the lab harness, Mihomo, sockets, utuns, and routes while leaving
+the default route unchanged. This proves the requested core behavior only
+against a peer inside the same VM/harness whose carrier listeners are on
+`127.0.0.1`; it is not independent-device, production XPC, or S1.13 evidence.
+The redacted evidence is under
+`target/macos-vm-lab/evidence/vm-network-final-postfix-connected-20260723T025619Z/`.
+
+Production broker/v3 checkpoint (2026-07-23): the fixed Mach-service client,
+typed stdio descriptor handoff, independent broker/runtime generations,
+one-shot dynamic generation bind, exact stop/reap boundary, and
+stale-generation recovery quarantine are implemented. The production factory
+now prepares fresh broker material and constructs the deferred v3 route
+boundary after Connect. The native v3 helper and root-broker clients reconnect
+with a fresh XPC epoch after transient transport loss without replaying the
+ambiguous request; old-epoch callbacks cannot terminalize the replacement.
+The production no-argument helper listener, root-owned v3 journal recovery,
+helper/broker heartbeat watchdogs, positive post-delete route-absence proof,
+distinct ambiguous/rejected outcomes, and fixed bundled code-requirement /
+launchd-manifest Connect gate are present in the current source and contract
+tests. These are source-level safety slices only. They do not claim production
+Connect in the VM, App-owned real utun, private-route installation, or Mihomo
+coexistence.
 
 Hosted CI continuation (2026-07-22): the replacement macOS verify run
 `29932701242` (GitHub Actions run #69) is fully successful. It keeps the
@@ -825,6 +841,25 @@ prerequisite. These observations are current evidence, not completion of S1.13.
 No password automation, Keychain mutation, route mutation, signing, release,
 or production endpoint was used.
 
+A separately reviewed no-sign path compiles only
+`networking-vm-utun-lab-app` and connects to the fixed VM socket
+`/var/run/net.kysion.kyclash.vm-utun-lab.sock`. That smaller profile remains
+the explicit `VM LAB · REAL UTUN · NO ROUTES` fixture.
+
+The newer sibling `networking-vm-network-lab-app` profile has now passed its
+visible disposable-VM acceptance. It connects only to
+`/var/run/net.kysion.kyclash.vm-network-lab.sock`; the manually authorized
+root harness created `utun4`, installed `10.88.0.2/32` after carrier health,
+proved the fixed private echo over QUIC, WSS, and TCP, and coexisted with the
+lab Mihomo on `utun4094`. Both App EOF and UI Disconnect cleanup passed. The
+peer and all three carrier listeners were nevertheless inside the same VM and
+bound to loopback, so this closes only the no-sign single-VM core-network lab,
+not an independent peer, production helper/XPC, signing, or S1.13.
+
+VM SSH uses the dedicated key. `sshpass`, `sudo -S`, scripted password stdin,
+Keychain retrieval, and UI password injection remain forbidden; no password is
+stored in source, commands, logs, or evidence.
+
 The uid-501 failure exposed an unimplemented privilege boundary rather than a
 carrier defect. The corrective architecture is now approved and locked in
 `kyclash-privileged-tunnel-broker-review-20260723.md`: a second, independently
@@ -832,9 +867,11 @@ authenticated tunnel broker owns only the fixed sidecar/utun session, while
 the existing helper remains route-only. The required route-before-tunnel crash
 ordering is locked separately in
 `kyclash-tunnel-route-retirement-interlock-review-20260723.md`. Source work has
-started at the reusable stdio launch/process-control seam. These reviews do not
-convert the current no-sign probe into a production pass; an ad-hoc App remains
-restricted to userspace/UI and explicit disposable-VM lab evidence.
+since advanced through the broker-bound production factory and v3 route
+composition recorded in the current source slice below. These reviews and
+source gates do not convert the historical no-sign userspace probe into a
+production pass. The distinct VM-utun lab App described above can add lab-only
+real-interface evidence while retaining `routes_installed=false`.
 
 The independent App-managed Mihomo matrix now also passes against a freshly
 installed Developer ID-signed internal PKG in the same `VirtualMac2,1` guest.
@@ -1068,42 +1105,102 @@ networking over QUIC with WSS/TCP fallback, apply only owned private routes,
 coexist with Mihomo TUN, recover from every tested failure, expose only redacted
 state, and leave no owned system state after disconnect or recovery.
 
-#### S1.13 source continuation — 2026-07-23 broker-bound route authority
+#### S1.13 current source slice — 2026-07-23 production broker/v3 chain
 
-The next source slice is complete but does not close the S1.13 VM aggregate.
-The controller now exposes a one-shot broker-bound start path: a successful
-handshake issues a non-copyable receipt binding the runtime generation to the
-broker generation and exact sidecar instance. Plain starts cannot consume a
-broker-bound controller; failed handshakes, cancelled receipt delivery, and
-child exits are exact-reaped or recovery-only and never reuse the old broker
-session.
+The production source chain is now wired but does not close the S1.13 VM
+aggregate. A fresh tunnel-broker session is prepared without a Rust runtime
+generation. After the controller allocates its generation, the prepared stdio
+launcher binds it exactly once at the launch edge. The accepted handshake
+issues a non-copyable receipt containing the independent Rust generation,
+broker generation, and exact broker-assigned sidecar identity. Restart
+prepares new broker material; abandoned, stale, ambiguous, or not-exactly-
+reaped sessions cannot be reused or represented as positive absence.
 
-That receipt can now be consumed once with verified `TunnelDeviceFacts` to
-create a sealed route authority. The pure-Rust v3 lifecycle contract and its
-fault-injection adapters enforce:
+The receipt and matching `TunnelDeviceFacts` produce one sealed route
+authority. The production v3 route lifecycle preserves the exact
+broker/sidecar/lease/operation tuple and enforces:
 
 `hold_pending (durable) -> exact broker hold -> held -> route apply -> applied`
 
 and, on teardown,
 
-`route rollback/prove absence -> retirement_pending (durable) -> exact broker
-release -> released`.
+`route rollback -> successful post-delete absence inspection ->
+retirement_pending (durable) -> exact broker release -> released`.
 
-An ambiguous hold can only retire without route mutation; rollback/release
-failure retains the original authority and full tuple. v2/v1 records are
-recovery-only and cannot be upgraded. The fixed broker now has a typed v3
-full-tuple route surface, legacy/v3 mixing refusal, exact no-op retirement for
-an unreceived hold, and a bounded retired tombstone for lost release replies.
-The route-helper has a separate v3 wire/journal schema and executable
-unprivileged contract self-test; its v3 interface is deliberately not installed
-or connected to the production coordinator yet.
+The Objective-C root bridge is linked only into the route-helper target. The
+helper's no-argument path selects the production v3 listener; explicit v3 and
+legacy v2 lab listeners require their fixed CLI/environment gates. Production
+and explicit v3 lab listeners use the root-owned atomic v3 plist store with
+strict schema, ownership, permission, symlink, and same-owner startup-recovery
+checks.
 
-Focused Rust (341 library tests including one manual ignored test), Swift,
-Objective-C, Node contract, formatting, Clippy, and diff gates pass. The
-root-broker route client remains source-only and is not linked into the App; it
-must be linked into the signed route-helper in the next native interlock slice.
-The production factory/service remains default-off and unwired. The no-sign
-App therefore remains a userspace lab artifact and cannot claim real utun,
-private-route, or production-helper acceptance. The disposable VM's real-utun
-manual gate is prepared and waiting only for one visible local `sudo` entry;
-SSH itself uses the VM-only key and requires no password automation.
+Both the route-helper v3 App client and the helper-to-broker root client now
+allocate a fresh XPC connection epoch after timeout, interruption,
+invalidation, or remote transport failure. They never replay the failed
+ambiguous call, and a callback from an older epoch cannot terminalize the
+replacement. Definitive broker rejection is distinct from ambiguous transport
+outcome. A possibly committed hold therefore retains `HoldPending` recovery
+authority and refuses new work; it is never erased as though no hold existed.
+
+The helper heartbeat watchdog sends an expired active lease through the same
+rollback/prove-absence/release path. A nil or failed post-delete route
+inspection is not positive absence and retains the durable journal in
+recovery-only state. The tunnel-broker heartbeat watchdog marks the held tuple
+as recovery-required but deliberately keeps the exact child/utun and hold
+until the helper proves routes absent and releases that tuple. A bounded exact
+tombstone supports a lost-release-reply retry without converting an unknown or
+stale generation into reap evidence.
+
+Production Connect requires both fixed SMAppService daemons to report enabled
+and independently verifies the bundled route-helper and tunnel-broker
+identifier/Team-ID requirements plus their exact launchd labels, Mach services,
+and bundle programs. This readiness gate accepts no caller-selected path or
+requirement. The production feature remains default-off outside the reviewed
+candidate.
+
+These are source and contract-test results only. No new signing, helper
+registration, broker contact, production route mutation, or release
+publication is claimed by this slice. S1.13 remains the first incomplete
+aggregate criterion: the exact production candidate must still pass the
+disposable-VM Connect, real-utun, private-service reachability, private-route,
+packaged-Mihomo coexistence, QUIC -> WSS -> TCP, abort/reboot, and final-
+absence matrix.
+
+The separately reviewed unsigned App is deliberately not that candidate. Its
+newer `networking-vm-network-lab-app` sibling has passed real-utun, fixed
+private-route/reachability, Mihomo coexistence, QUIC -> WSS -> TCP, App-EOF,
+and visible-Disconnect acceptance in `kyclash-macos-lab-work`. The exact App
+executable SHA-256 is
+`39866bf893106aeaa9c567cc33e0c1394a820177df794b1785841166846822a2`.
+Its compatible peer and carrier listeners still run inside the same root
+harness and bind loopback, so it cannot claim a second device, external/site
+server, production XPC, signing, publication, or S1.13 completion. The next
+core lab gate is a separately reviewed independent Peer VM; production and
+staging endpoints remain outside this program's authorization. SSH already
+uses the VM-only key; `sshpass`, `sudo -S`, and all password injection or
+retention are forbidden.
+
+#### S1.13 Linux Peer live-runtime contract and config-v2 continuation
+
+The Linux Peer live-runtime contract has passed the required three independent
+review tracks and is locked for source implementation and isolated Linux
+acceptance. The reviewed-content SHA-256 is
+`e68c5938fe26b4729f4f4404c7ce222a1b6eed18e671c327e384e3ff5e57c998`;
+all final verdicts are C0/H0/M0.
+
+The first merge unit implements only the public config/schema boundary:
+schema v2, carrier-auth v1, one configured client, one brokered Linux TUN-FD
+mode, fixed check path, canonical keys and endpoints, bounded nonoverlapping
+private prefixes, and exact IPv4/IPv6 family-set agreement across server,
+client, and forwarding policy. The superseded v1 artifacts remain negative
+evidence. Non-cached focused tests, race tests, vet, Linux cross-build checks,
+and the full Go test/vet gates pass.
+
+The Peer remains fail-closed: no live command exists and the old fixed
+credential-directory skeleton cannot be reached through the public loader.
+The next units must implement profile-v2 pairing and the exact
+invocation-bound credential/ACL-v2 boundary before TUN brokerage, TLS
+possession proof, QUIC/WSS/TCP listeners, route WAL/lease recovery, hardened
+systemd activation, and isolated live-runtime acceptance. This source unit
+does not authorize deployment, site contact, PVE/ROS/K3s changes, or S1.13
+closure.
