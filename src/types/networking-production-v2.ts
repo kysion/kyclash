@@ -38,7 +38,7 @@ const CANONICAL_PUBLIC_KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/
 
-export type ProductionTransportKindV2 = (typeof EXPECTED_TRANSPORTS)[number]
+type ProductionTransportKindV2 = (typeof EXPECTED_TRANSPORTS)[number]
 
 export interface ProductionNetworkProfileV2 {
   schema_version: typeof PRODUCTION_NETWORK_SCHEMA_VERSION

@@ -856,21 +856,21 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(VALID_PRODUCTION_PROFILE_V2)?;
         value
             .as_object_mut()
-            .expect("profile object")
+            .ok_or_else(|| anyhow::anyhow!("profile fixture is not an object"))?
             .remove("carrier_auth_version");
         assert!(serde_json::from_value::<ProductionNetworkProfileV2>(value).is_err());
 
         let mut value: serde_json::Value = serde_json::from_str(VALID_PRODUCTION_PROFILE_V2)?;
         value["tunnel"]
             .as_object_mut()
-            .expect("tunnel object")
+            .ok_or_else(|| anyhow::anyhow!("tunnel fixture is not an object"))?
             .remove("local_public_key");
         assert!(serde_json::from_value::<ProductionNetworkProfileV2>(value).is_err());
 
         let mut value: serde_json::Value = serde_json::from_str(VALID_PRODUCTION_PROFILE_V2)?;
         value["tunnel"]
             .as_object_mut()
-            .expect("tunnel object")
+            .ok_or_else(|| anyhow::anyhow!("tunnel fixture is not an object"))?
             .remove("peer_public_key");
         assert!(serde_json::from_value::<ProductionNetworkProfileV2>(value).is_err());
         Ok(())
@@ -915,7 +915,7 @@ mod tests {
 
         let mut noncanonical_padding = profile.tunnel.local_public_key.clone().into_bytes();
         let trailing_sextet = noncanonical_padding.len() - 2;
-        noncanonical_padding[trailing_sextet] = match noncanonical_padding[trailing_sextet] {
+        let replacement = match noncanonical_padding[trailing_sextet] {
             b'A' => b'B',
             b'E' => b'F',
             b'I' => b'J',
@@ -932,13 +932,18 @@ mod tests {
             b'0' => b'1',
             b'4' => b'5',
             b'8' => b'9',
-            value => panic!("canonical 32-byte Base64 has unexpected trailing sextet {value}"),
+            value => {
+                return Err(anyhow::anyhow!(
+                    "canonical 32-byte Base64 has unexpected trailing sextet {value}"
+                ));
+            }
         };
+        noncanonical_padding[trailing_sextet] = replacement;
         let mut candidate = profile.clone();
         candidate.tunnel.local_public_key = String::from_utf8(noncanonical_padding)?;
         assert_invalid_production_profile(&candidate);
 
-        let mut same_keys = profile.clone();
+        let mut same_keys = profile;
         same_keys.tunnel.local_public_key = same_keys.tunnel.peer_public_key.clone();
         assert_invalid_production_profile(&same_keys);
         Ok(())
