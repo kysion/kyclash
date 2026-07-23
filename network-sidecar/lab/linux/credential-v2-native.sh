@@ -137,7 +137,7 @@ assert_denied_in_mount_namespace() {
   local gid="$4"
   local groups="$5"
   local namespace="/proc/${main_pid}/ns/mnt"
-  if [[ ! -e "${namespace}" ]]; then
+  if ! sudo /usr/bin/test -e "${namespace}"; then
     echo "credential_v2_native=missing_service_namespace"
     exit 1
   fi
