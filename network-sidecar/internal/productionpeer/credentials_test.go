@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -62,17 +63,46 @@ func TestCredentialBundleMatchesSystemRootHostnameLocalHashAndWireGuardIdentity(
 func TestCredentialBundleNeverFormatsOrRetainsSecretBytesAfterClose(t *testing.T) {
 	config := validConfig(t)
 	bundle, _ := validCredentialBundle(t, &config)
-	certificateBytes := bundle.tlsCertificatePEM
-	privateKeyBytes := bundle.tlsPrivateKeyPEM
-	wireGuardBytes := bundle.wireGuardPrivateKey
-	formatted := bundle.String()
-	for _, forbidden := range []string{
-		string(privateKeyBytes),
-		string(wireGuardBytes),
-		config.WireGuard.ServerPublicKeyBase64,
+	withOwnedSlack := func(encoded []byte) []byte {
+		owned := make([]byte, len(encoded), len(encoded)+16)
+		copy(owned, encoded)
+		clear(encoded)
+		for index := len(owned); index < cap(owned); index++ {
+			owned[:cap(owned)][index] = 0xa5
+		}
+		return owned
+	}
+	bundle.tlsCertificatePEM = withOwnedSlack(bundle.tlsCertificatePEM)
+	bundle.tlsPrivateKeyPEM = withOwnedSlack(bundle.tlsPrivateKeyPEM)
+	bundle.wireGuardPrivateKey = withOwnedSlack(bundle.wireGuardPrivateKey)
+	certificateBytes := bundle.tlsCertificatePEM[:cap(bundle.tlsCertificatePEM)]
+	privateKeyBytes := bundle.tlsPrivateKeyPEM[:cap(bundle.tlsPrivateKeyPEM)]
+	wireGuardBytes := bundle.wireGuardPrivateKey[:cap(bundle.wireGuardPrivateKey)]
+	copiedValue := *bundle
+	for _, formatted := range []string{
+		bundle.String(),
+		fmt.Sprintf("%v", bundle),
+		fmt.Sprintf("%+v", bundle),
+		fmt.Sprintf("%#v", bundle),
+		fmt.Sprintf("%s", bundle),
+		fmt.Sprintf("%q", bundle),
+		fmt.Sprintf("%v", copiedValue),
+		fmt.Sprintf("%+v", copiedValue),
+		fmt.Sprintf("%#v", copiedValue),
+		fmt.Sprintf("%s", copiedValue),
+		fmt.Sprintf("%q", copiedValue),
 	} {
-		if strings.Contains(formatted, forbidden) {
-			t.Fatal("credential string exposed identity material")
+		for _, forbidden := range []string{
+			string(privateKeyBytes),
+			string(wireGuardBytes),
+			config.WireGuard.ServerPublicKeyBase64,
+		} {
+			if strings.Contains(formatted, forbidden) {
+				t.Fatal("credential formatting exposed identity material")
+			}
+		}
+		if !strings.Contains(formatted, "<redacted>") {
+			t.Fatal("credential formatting lost its fixed redaction marker")
 		}
 	}
 	bundle.Close()

@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -31,20 +33,40 @@ type CredentialBundle struct {
 	wireGuardPrivateKey []byte
 }
 
-func (bundle *CredentialBundle) String() string {
-	return "CredentialBundle{TLSCertificate:<redacted> TLSPrivateKey:<redacted> WireGuardPrivateKey:<redacted>}"
+const credentialBundleRedacted = "CredentialBundle{TLSCertificate:<redacted> TLSPrivateKey:<redacted> WireGuardPrivateKey:<redacted>}"
+
+func (CredentialBundle) String() string {
+	return credentialBundleRedacted
+}
+
+func (CredentialBundle) GoString() string {
+	return credentialBundleRedacted
+}
+
+// Format is deliberately a value-receiver method so formatting either a
+// bundle pointer or a copied bundle value cannot fall back to fmt's recursive
+// struct formatter and expose the owned byte slices.
+func (CredentialBundle) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, credentialBundleRedacted)
 }
 
 func (bundle *CredentialBundle) Close() {
 	if bundle == nil {
 		return
 	}
-	clear(bundle.tlsCertificatePEM)
-	clear(bundle.tlsPrivateKeyPEM)
-	clear(bundle.wireGuardPrivateKey)
+	clearOwnedCredential(bundle.tlsCertificatePEM)
+	clearOwnedCredential(bundle.tlsPrivateKeyPEM)
+	clearOwnedCredential(bundle.wireGuardPrivateKey)
 	bundle.tlsCertificatePEM = nil
 	bundle.tlsPrivateKeyPEM = nil
 	bundle.wireGuardPrivateKey = nil
+}
+
+func clearOwnedCredential(encoded []byte) {
+	if encoded == nil {
+		return
+	}
+	clear(encoded[:cap(encoded)])
 }
 
 // LoadSystemdCredentialBundle remains fail-closed until the separately locked

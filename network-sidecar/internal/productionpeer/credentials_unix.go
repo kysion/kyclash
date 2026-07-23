@@ -3,7 +3,6 @@
 package productionpeer
 
 import (
-	"bytes"
 	"io"
 	"os"
 
@@ -22,22 +21,11 @@ func ReadLinuxConfig() ([]byte, error) {
 	)
 }
 
-// readStableCredentialAt opens the trusted directory first and the fixed
-// credential relative to that directory. O_NOFOLLOW, descriptor metadata,
-// name-to-descriptor identity checks before and after the bounded read, and
-// strict owner/mode checks make replacement or symlink ambiguity fail closed.
-func readStableCredentialAt(directory, name string, maximum int64, expectedUID uint32) ([]byte, error) {
-	if !validCredentialName(name) || maximum <= 0 {
-		return nil, ErrCredentialUnavailable
-	}
-	return readStableFileAt(directory, name, maximum, expectedUID, 0o077, true)
-}
-
 func readStablePublicConfigAt(directory, name string, maximum int64, expectedUID uint32) ([]byte, error) {
 	if name != LinuxConfigFileName || maximum <= 0 {
 		return nil, ErrInvalidConfig
 	}
-	encoded, err := readStableFileAt(directory, name, maximum, expectedUID, 0o022, false)
+	encoded, err := readStableFileAt(directory, name, maximum, expectedUID, 0o022)
 	if err != nil {
 		clear(encoded)
 		return nil, ErrInvalidConfig
@@ -51,7 +39,6 @@ func readStableFileAt(
 	maximum int64,
 	expectedUID uint32,
 	forbiddenMode uint32,
-	rejectNUL bool,
 ) ([]byte, error) {
 	directoryDescriptor, err := unix.Open(
 		directory,
@@ -103,8 +90,7 @@ func readStableFileAt(
 	}
 	encoded, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil ||
-		int64(len(encoded)) != openedFacts.Size ||
-		rejectNUL && bytes.IndexByte(encoded, 0) >= 0 {
+		int64(len(encoded)) != openedFacts.Size {
 		clear(encoded)
 		return nil, ErrCredentialUnavailable
 	}
@@ -120,10 +106,6 @@ func readStableFileAt(
 		return nil, ErrCredentialUnavailable
 	}
 	return encoded, nil
-}
-
-func credentialFactsValid(mode uint32, uid uint32, size int64, expectedUID uint32, maximum int64) bool {
-	return stableFileFactsValid(mode, uid, size, expectedUID, maximum, 0o077)
 }
 
 func stableFileFactsValid(

@@ -1228,3 +1228,29 @@ route, VM, site, or production endpoint was touched. The next dependency is
 the reviewed invocation-bound credentials-directory and ACL-v2 unit; TUN
 brokerage, carrier listeners, recovery, systemd hardening, isolated Linux
 acceptance, and the final macOS S1.13 aggregate remain after it.
+
+#### S1.13 credential filesystem/ACL-v2 foundation continuation
+
+The non-activating Linux credential-filesystem foundation now replaces the
+old Peer-writable `0700`/`0600` test helper. It holds one directory descriptor
+for the complete three-file transaction, uses canonical fixed-basename
+`openat2` resolution, snapshots `statx` mount/object facts plus access/default
+ACLs, enforces one complete materialization profile, rechecks the exact entry
+set and absolute path, and clears every fixed-capacity allocation on failure
+or close. The exact POSIX ACL parser is order-independent but permits only the
+owner, one named Peer user, group owner, mask and other entries with their
+locked permissions.
+
+The source slice includes a standard Ubuntu 24.04 native gate for the real
+root-owned named-user ACL and Peer-owned read-only-mount shapes, plus a
+nonzero `User=kyclash` transient service using three real encrypted
+`LoadCredentialEncrypted=` sources. It covers positive Peer reads and
+negative write/chmod/unlink/rename/create plus unrelated/shared-group reads.
+Its workflow must pass before the slice is promoted to `main`.
+
+This does not close the invocation-bound credential criterion or S1.13. The
+production loader and no-argument command remain unreachable and fail
+closed; there is no environment read, real credential access, listener, TUN,
+route or site contact. The next source unit is still the fixed
+binary/identity manifest and exact self-pidfd/systemd invocation capability,
+followed by process hardening and the one-use opaque identity lease.

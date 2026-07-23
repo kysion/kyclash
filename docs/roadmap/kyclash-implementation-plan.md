@@ -759,3 +759,30 @@ material, opens no listener, creates no TUN, and installs no route. S1.13
 therefore remains open; the next locked source unit is the invocation-bound
 `$CREDENTIALS_DIRECTORY` and ACL-v2 boundary, followed by TUN brokerage and
 live carrier ownership.
+
+### 2026-07-24 Linux Peer credential filesystem/ACL-v2 foundation
+
+The first non-activating credential-boundary slice removes the superseded
+Peer-writable `0700`/`0600` helper and adds a Linux-only transaction over one
+continuously held directory descriptor. It accepts only the two locked
+systemd materialization profiles: UID/GID-0 objects with the one exact named
+Peer ACL, or Peer-owned mode-`0500`/`0400` objects on a read-only mount with
+no access/default ACL. Fixed-basename `openat2`, `statx` mount IDs,
+filesystem facts, single-link files, exact directory entries, bounded reads,
+NUL rejection, context cut points, final path re-resolution and complete
+failure/close zeroization are all covered by synthetic race seams.
+
+A dedicated Ubuntu 24.04 workflow additionally constructs both profiles with
+real ACL and read-only-mount operations, then repeats the positive path through
+a real nonzero `User=kyclash` transient service with three encrypted
+`LoadCredentialEncrypted=` sources. It proves the Peer can read but cannot
+write, chmod, unlink, rename or create, while unrelated and shared-group
+identities cannot read. Promotion to `main` requires that native gate to pass.
+
+This foundation is deliberately not the live credential provider. The public
+loader remains fixed fail-closed, the command remains `--check-config` only,
+and neither `CREDENTIALS_DIRECTORY` nor a real credential location is read.
+The aggregate invocation-bound boundary remains in progress until the
+binary/identity manifest, exact self-pidfd systemd invocation proof,
+dumpable/NoNewPrivs/TSYNC-seccomp bootstrap and opaque one-use identity lease
+are implemented and pass native Linux acceptance.
