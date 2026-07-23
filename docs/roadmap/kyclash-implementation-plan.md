@@ -779,6 +779,13 @@ a real nonzero `User=kyclash` transient service with three encrypted
 write, chmod, unlink, rename or create, while unrelated and shared-group
 identities cannot read. Promotion to `main` requires that native gate to pass.
 
+The isolated native gate passed on candidate `8dfc01f7` in GitHub Actions run
+[`30054362974`](https://github.com/kysion/kyclash/actions/runs/30054362974).
+The recorded Ubuntu 24.04/systemd-255 job completed the real ACL, read-only
+mount, encrypted systemd materialization, identity-denial, explicit teardown,
+race, vet and Linux amd64/arm64 compile steps without using a production
+credential or endpoint.
+
 This foundation is deliberately not the live credential provider. The public
 loader remains fixed fail-closed, the command remains `--check-config` only,
 and neither `CREDENTIALS_DIRECTORY` nor a real credential location is read.

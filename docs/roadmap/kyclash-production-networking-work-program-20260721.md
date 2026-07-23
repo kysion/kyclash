@@ -1248,6 +1248,13 @@ nonzero `User=kyclash` transient service using three real encrypted
 negative write/chmod/unlink/rename/create plus unrelated/shared-group reads.
 Its workflow must pass before the slice is promoted to `main`.
 
+Candidate `8dfc01f7` passed that isolated native gate in GitHub Actions run
+[`30054362974`](https://github.com/kysion/kyclash/actions/runs/30054362974).
+The retained job provenance locks Ubuntu 24.04 and systemd 255; every real
+ACL, read-only mount, encrypted credential materialization, denial, teardown,
+race, vet and Linux architecture step completed without production data or
+site contact.
+
 This does not close the invocation-bound credential criterion or S1.13. The
 production loader and no-argument command remain unreachable and fail
 closed; there is no environment read, real credential access, listener, TUN,
