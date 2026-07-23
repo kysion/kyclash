@@ -620,3 +620,31 @@ remains open for profile-v2 pairing, invocation-bound credential/ACL handling,
 brokered TUN ownership, carrier proof/listeners, route WAL and recovery,
 systemd hardening, isolated Linux acceptance, and the later macOS production
 aggregate.
+
+## Production profile-v2 exact-pair source unit — 2026-07-23
+
+Profile-v2 pairing is now source-complete. The new production profile is
+deliberately separate from the retained v1 lab profile and has matching JSON
+Schema, Go, Rust, and TypeScript definitions. The shared public fixture and
+opaque Go pairing capability require exact agreement with Linux Peer v2 for
+schema/auth versions, server and client public keys, client addresses, server
+name, ordered QUIC -> WSS -> TCP endpoints, `/kynp`, ALPN, MTU, and private
+CIDRs.
+
+The contract is fail-closed for exact JSON keys, duplicate and case-alias
+keys, Unicode surrogate ambiguity, bounded identifiers and prefixes,
+DNS-only control-plane authority, canonical ports and Base64, X25519 low-order
+points at the backend gate, and every noncanonical field-coordinate alias at
+all layers. The executable
+Schema/TypeScript corpus now contains 168 checks and is wired through the
+package command and the network-sidecar workflow, including dependency and
+contract path filters. Focused/non-cached Go, race, vet, Rust, clippy,
+TypeScript, and formatting gates pass. Final protocol, security, and
+cross-language reviews each closed at C0/H0/M0.
+
+This evidence closes only the public profile/Peer pairing dependency. It does
+not load credentials, start live mode, broker a TUN descriptor, open a carrier,
+mutate forwarding or routes, contact Shenzhen, or close S1.13. The first
+remaining source dependency is invocation-bound credential materialization
+and ACL-v2; later gates still include live Peer ownership and the exact
+production macOS aggregate.

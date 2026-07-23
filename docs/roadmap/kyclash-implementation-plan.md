@@ -732,3 +732,30 @@ Profile-v2 pairing, credential materialization, TUN brokerage, TLS possession
 proof, QUIC/WSS/TCP listeners, route WAL/lease recovery, systemd hardening, and
 isolated live acceptance remain subsequent locked units. Live deployment and
 contact with a staging or production site remain unauthorized.
+
+### 2026-07-23 production profile-v2 and Linux Peer-v2 pairing slice
+
+The next dependency-ordered public-contract unit is source-complete. A
+separate production profile v2 now exists in JSON Schema, Go, Rust, and
+TypeScript without changing or auto-upgrading the v1 lab profile. The shared
+fixture pins schema version 2, carrier-auth version 1, both WireGuard public
+keys, the client tunnel addresses, exact private CIDRs, one lowercase DNS
+server name, ordered QUIC -> WSS -> TCP URLs, `/kynp`, ALPN
+`kyclash-network/1`, and MTU 1420.
+
+The Go pairing API returns an opaque, revalidated, deep-copied capability only
+when the profile exactly matches one validated Linux Peer v2 configuration.
+The shared contract rejects unknown/case-aliased/duplicate fields, lone
+UTF-16 surrogates, ambiguous control-plane hosts and ports, noncanonical
+Base64, high-bit aliases, and the remaining field-coordinate aliases at or
+above `2^255-19`; the Go and Rust backend gates additionally reject X25519
+low-order points. The cross-language Schema/TypeScript corpus is an explicit
+package command and a path-complete sidecar CI gate.
+
+Focused Go, race, vet, Rust, clippy, TypeScript, formatting, and 168
+Schema/TypeScript contract checks pass. The final protocol, security, and
+cross-language reviews each reported C0/H0/M0. This unit reads no Keychain
+material, opens no listener, creates no TUN, and installs no route. S1.13
+therefore remains open; the next locked source unit is the invocation-bound
+`$CREDENTIALS_DIRECTORY` and ACL-v2 boundary, followed by TUN brokerage and
+live carrier ownership.

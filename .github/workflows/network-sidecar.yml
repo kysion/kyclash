@@ -5,13 +5,19 @@ on:
     paths:
       - 'network-sidecar/**'
       - '.github/workflows/network-sidecar.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
       - 'docs/architecture/kyclash-network-runtime-v1.md'
       - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
       - 'docs/roadmap/kyclash-sidecar-stdio-*.md'
       - 'schemas/fixtures/network-ipc-*.json'
       - 'schemas/fixtures/network-sidecar-bootstrap-*.json'
       - 'schemas/fixtures/network-sidecar-handshake-*.json'
+      - 'schemas/kyclash-network-production-v2.schema.json'
+      - 'schemas/fixtures/network-production-v2.valid.json'
       - 'src/types/networking.ts'
+      - 'src/types/networking-production-v2.ts'
+      - 'scripts/network-production-v2-contract.test.mjs'
       - 'scripts/build-network-sidecar-macos.mjs'
       - 'scripts/prepare-macos-vm-route-fixture.sh'
       - 'scripts/macos-vm-route-helper-v2-matrix.sh'
@@ -29,13 +35,19 @@ on:
     paths:
       - 'network-sidecar/**'
       - '.github/workflows/network-sidecar.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
       - 'docs/architecture/kyclash-network-runtime-v1.md'
       - 'docs/roadmap/kyclash-runtime-*-review-20260721.md'
       - 'docs/roadmap/kyclash-sidecar-stdio-*.md'
       - 'schemas/fixtures/network-ipc-*.json'
       - 'schemas/fixtures/network-sidecar-bootstrap-*.json'
       - 'schemas/fixtures/network-sidecar-handshake-*.json'
+      - 'schemas/kyclash-network-production-v2.schema.json'
+      - 'schemas/fixtures/network-production-v2.valid.json'
       - 'src/types/networking.ts'
+      - 'src/types/networking-production-v2.ts'
+      - 'scripts/network-production-v2-contract.test.mjs'
       - 'scripts/build-network-sidecar-macos.mjs'
       - 'scripts/prepare-macos-vm-route-fixture.sh'
       - 'scripts/macos-vm-route-helper-v2-matrix.sh'
@@ -239,6 +251,10 @@ jobs:
       - name: Verify TypeScript IPC ownership
         working-directory: ${{ github.workspace }}
         run: pnpm typecheck
+
+      - name: Verify production profile v2 cross-language contract
+        working-directory: ${{ github.workspace }}
+        run: pnpm network-production-v2:contract
 
       - name: Verify Rust protocol-v2 ownership
         working-directory: ${{ github.workspace }}

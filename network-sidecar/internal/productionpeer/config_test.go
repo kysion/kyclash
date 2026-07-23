@@ -2,6 +2,8 @@ package productionpeer
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +50,50 @@ func TestValidConfigRoundTripsStrictly(t *testing.T) {
 	}
 	if decoded.PeerID != config.PeerID || decoded.DeploymentID != config.DeploymentID {
 		t.Fatal("identity fields changed during strict round trip")
+	}
+}
+
+func TestConfigRejectsLowOrderAndNoncanonicalX25519PublicKeys(t *testing.T) {
+	lowOrderOne := make([]byte, 32)
+	lowOrderOne[0] = 1
+	lowOrderToolchain, err := hex.DecodeString(
+		"e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	highBitAlias := bytes.Repeat([]byte{0x22}, 32)
+	highBitAlias[31] |= 0x80
+	fieldAlias := bytes.Repeat([]byte{0xff}, 32)
+	fieldAlias[0] = 0xf6
+	fieldAlias[31] = 0x7f
+	invalidKeys := map[string]string{
+		"low-order-u1":          base64.StdEncoding.EncodeToString(lowOrderOne),
+		"low-order-toolchain":   base64.StdEncoding.EncodeToString(lowOrderToolchain),
+		"x25519-high-bit-alias": base64.StdEncoding.EncodeToString(highBitAlias),
+		"x25519-field-alias":    base64.StdEncoding.EncodeToString(fieldAlias),
+	}
+	clear(lowOrderOne)
+	clear(lowOrderToolchain)
+	clear(highBitAlias)
+	clear(fieldAlias)
+	for name, invalid := range invalidKeys {
+		for field, mutate := range map[string]func(*Config){
+			"server": func(candidate *Config) {
+				candidate.WireGuard.ServerPublicKeyBase64 = invalid
+			},
+			"client": func(candidate *Config) {
+				candidate.WireGuard.Clients[0].PublicKeyBase64 = invalid
+			},
+		} {
+			t.Run(name+"/"+field, func(t *testing.T) {
+				candidate := validConfig(t)
+				mutate(&candidate)
+				if err := candidate.Validate(); !errors.Is(err, ErrInvalidConfig) {
+					t.Fatalf("invalid X25519 public key was accepted: %v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -152,6 +198,103 @@ func TestDecodeConfigRejectsDuplicateKeysAtEveryDepth(t *testing.T) {
 	}
 }
 
+func TestDecodeConfigRejectsCaseAliasesAndAliasOverwritesAtEveryObjectLevel(t *testing.T) {
+	valid, err := os.ReadFile("testdata/valid-v2.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replace := func(old, replacement string) []byte {
+		t.Helper()
+		mutated := strings.Replace(string(valid), old, replacement, 1)
+		if mutated == string(valid) {
+			t.Fatalf("fixture does not contain mutation target %q", old)
+		}
+		return []byte(mutated)
+	}
+	tests := map[string][]byte{
+		"root-case-alias": replace(
+			`"schema_version": 2`,
+			`"SCHEMA_VERSION": 2`,
+		),
+		"root-alias-overwrite": replace(
+			`"schema_version": 2`,
+			`"schema_version": 1, "SCHEMA_VERSION": 2`,
+		),
+		"tls-case-alias": replace(
+			`"server_name": "peer.example.invalid"`,
+			`"SERVER_NAME": "peer.example.invalid"`,
+		),
+		"tls-alias-overwrite": replace(
+			`"server_name": "peer.example.invalid"`,
+			`"server_name": "wrong.example.invalid", "Server_Name": "peer.example.invalid"`,
+		),
+		"wireguard-case-alias": replace(
+			`"mtu": 1420`,
+			`"MTU": 1420`,
+		),
+		"wireguard-alias-overwrite": replace(
+			`"mtu": 1420`,
+			`"mtu": 1419, "MTU": 1420`,
+		),
+		"client-case-alias": replace(
+			`"id": "client.test.macos"`,
+			`"ID": "client.test.macos"`,
+		),
+		"client-alias-overwrite": replace(
+			`"id": "client.test.macos"`,
+			`"id": "invalid/id", "ID": "client.test.macos"`,
+		),
+		"listener-case-alias": replace(
+			`"url": "https://peer.example.invalid:2443"`,
+			`"URL": "https://peer.example.invalid:2443"`,
+		),
+		"listener-alias-overwrite": replace(
+			`"url": "https://peer.example.invalid:2443"`,
+			`"url": "https://wrong.example.invalid:2443", "URL": "https://peer.example.invalid:2443"`,
+		),
+		"forwarding-case-alias": replace(
+			`"mode": "brokered_linux_tun_fd"`,
+			`"MODE": "brokered_linux_tun_fd"`,
+		),
+		"forwarding-alias-overwrite": replace(
+			`"mode": "brokered_linux_tun_fd"`,
+			`"mode": "preprovisioned_linux_tun", "Mode": "brokered_linux_tun_fd"`,
+		),
+		"return-path-case-alias": replace(
+			`"mode": "routed"`,
+			`"MODE": "routed"`,
+		),
+		"return-path-alias-overwrite": replace(
+			`"mode": "routed"`,
+			`"mode": "nat", "Mode": "routed"`,
+		),
+		"policy-case-alias": replace(
+			`"shutdown_grace_seconds": 10`,
+			`"SHUTDOWN_GRACE_SECONDS": 10`,
+		),
+		"policy-alias-overwrite": replace(
+			`"shutdown_grace_seconds": 10`,
+			`"shutdown_grace_seconds": 9, "Shutdown_Grace_Seconds": 10`,
+		),
+	}
+	if !uniqueJSONKeys(valid) || !exactConfigJSONKeys(valid) {
+		t.Fatal("valid fixture failed strict JSON preflight")
+	}
+	for name, encoded := range tests {
+		t.Run(name, func(t *testing.T) {
+			if !uniqueJSONKeys(encoded) {
+				t.Fatal("case alias fixture unexpectedly contains an exact duplicate key")
+			}
+			if exactConfigJSONKeys(encoded) {
+				t.Fatal("exact-key preflight accepted a case alias")
+			}
+			if _, err := DecodeConfig(bytes.NewReader(encoded)); !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("case alias or alias overwrite was accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestDecodeConfigRejectsUnknownTrailingAndOversizedInput(t *testing.T) {
 	valid, err := os.ReadFile("testdata/valid-v2.json")
 	if err != nil {
@@ -170,7 +313,13 @@ func TestDecodeConfigRejectsUnknownTrailingAndOversizedInput(t *testing.T) {
 		"unknown":   unknown,
 		"trailing":  append(append([]byte(nil), valid...), []byte(` {}`)...),
 		"oversized": bytes.Repeat([]byte("x"), MaxConfigSize+1),
-		"empty":     nil,
+		"invalid-utf8": append(
+			append([]byte(nil), valid[:len(valid)-2]...),
+			0xff,
+			'}',
+			'\n',
+		),
+		"empty": nil,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeConfig(bytes.NewReader(encoded)); !errors.Is(err, ErrInvalidConfig) {

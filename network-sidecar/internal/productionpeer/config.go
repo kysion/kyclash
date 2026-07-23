@@ -18,8 +18,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kysion/kyclash/network-sidecar/internal/profile"
+	"golang.org/x/crypto/curve25519"
 )
 
 const (
@@ -60,6 +62,15 @@ var privateRouteAllowlist = [...]netip.Prefix{
 	netip.MustParsePrefix("172.16.0.0/12"),
 	netip.MustParsePrefix("192.168.0.0/16"),
 	netip.MustParsePrefix("fc00::/7"),
+}
+
+var x25519FieldPrime = [curve25519.PointSize]byte{
+	0xed,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0x7f,
 }
 
 type Config struct {
@@ -137,12 +148,15 @@ func DecodeConfig(reader io.Reader) (*Config, error) {
 		return nil, ErrInvalidConfig
 	}
 	encoded, err := io.ReadAll(io.LimitReader(reader, MaxConfigSize+1))
-	if err != nil || len(encoded) == 0 || len(encoded) > MaxConfigSize {
+	if err != nil ||
+		len(encoded) == 0 ||
+		len(encoded) > MaxConfigSize ||
+		!utf8.Valid(encoded) {
 		clear(encoded)
 		return nil, ErrInvalidConfig
 	}
 	defer clear(encoded)
-	if !uniqueJSONKeys(encoded) {
+	if !uniqueJSONKeys(encoded) || !exactConfigJSONKeys(encoded) {
 		return nil, ErrInvalidConfig
 	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
@@ -343,6 +357,112 @@ func uniqueJSONKeys(encoded []byte) bool {
 	return errors.Is(err, io.EOF)
 }
 
+func exactConfigJSONKeys(encoded []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return false
+	}
+	root, ok := exactConfigJSONObject(decoded, []string{
+		"schema_version",
+		"carrier_auth_version",
+		"peer_id",
+		"deployment_id",
+		"tls",
+		"wireguard",
+		"listeners",
+		"forwarding",
+		"policy",
+	})
+	if !ok {
+		return false
+	}
+	if _, ok := exactConfigJSONObject(root["tls"], []string{
+		"trust_mode",
+		"minimum_version",
+		"server_name",
+		"local_certificate_sha256",
+		"client_authentication",
+	}); !ok {
+		return false
+	}
+	wireGuard, ok := exactConfigJSONObject(root["wireguard"], []string{
+		"server_public_key_base64",
+		"server_addresses",
+		"clients",
+		"mtu",
+	})
+	if !ok {
+		return false
+	}
+	clients, ok := wireGuard["clients"].([]any)
+	if !ok {
+		return false
+	}
+	for _, client := range clients {
+		if _, ok := exactConfigJSONObject(client, []string{
+			"id",
+			"public_key_base64",
+			"tunnel_addresses",
+		}); !ok {
+			return false
+		}
+	}
+	listeners, ok := root["listeners"].([]any)
+	if !ok {
+		return false
+	}
+	for _, listener := range listeners {
+		if _, ok := exactConfigJSONObject(listener, []string{
+			"transport",
+			"bind",
+			"url",
+		}); !ok {
+			return false
+		}
+	}
+	forwarding, ok := exactConfigJSONObject(root["forwarding"], []string{
+		"mode",
+		"tunnel_interface",
+		"site_interface",
+		"private_cidrs",
+		"return_path",
+	})
+	if !ok {
+		return false
+	}
+	if _, ok := exactConfigJSONObject(forwarding["return_path"], []string{
+		"mode",
+	}); !ok {
+		return false
+	}
+	if _, ok := exactConfigJSONObject(root["policy"], []string{
+		"max_active_clients",
+		"max_active_carriers",
+		"carrier_handshake_timeout_seconds",
+		"health_interval_seconds",
+		"idle_timeout_seconds",
+		"shutdown_grace_seconds",
+	}); !ok {
+		return false
+	}
+	return true
+}
+
+func exactConfigJSONObject(value any, expected []string) (map[string]any, bool) {
+	object, ok := value.(map[string]any)
+	if !ok || len(object) != len(expected) {
+		return nil, false
+	}
+	for _, key := range expected {
+		if _, exists := object[key]; !exists {
+			return nil, false
+		}
+	}
+	return object, true
+}
+
 func consumeUniqueJSONValue(decoder *json.Decoder, depth int) bool {
 	if depth > MaxConfigJSONDepth {
 		return false
@@ -471,6 +591,18 @@ func decodeKey(value string) ([]byte, bool) {
 		clear(decoded)
 		return nil, false
 	}
+	if !canonicalX25519Coordinate(decoded) {
+		clear(decoded)
+		return nil, false
+	}
+	validationScalar := [curve25519.ScalarSize]byte{9}
+	shared, err := curve25519.X25519(validationScalar[:], decoded)
+	clear(validationScalar[:])
+	clear(shared)
+	if err != nil {
+		clear(decoded)
+		return nil, false
+	}
 	for _, value := range decoded {
 		if value != 0 {
 			return decoded, true
@@ -478,6 +610,21 @@ func decodeKey(value string) ([]byte, bool) {
 	}
 	clear(decoded)
 	return nil, false
+}
+
+func canonicalX25519Coordinate(decoded []byte) bool {
+	if len(decoded) != curve25519.PointSize {
+		return false
+	}
+	for index := len(decoded) - 1; index >= 0; index-- {
+		switch {
+		case decoded[index] < x25519FieldPrime[index]:
+			return true
+		case decoded[index] > x25519FieldPrime[index]:
+			return false
+		}
+	}
+	return false
 }
 
 func hostPrefixes(values []string) ([]netip.Prefix, map[bool]bool, bool) {

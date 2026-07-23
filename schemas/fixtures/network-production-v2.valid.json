@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "carrier_auth_version": 1,
+  "profile_id": "profile.test.production",
+  "control_plane": "https://control.example.invalid",
+  "identity_ref": "keychain:client.test.macos",
+  "site": {
+    "id": "peer.test.production",
+    "display_name": "KyClash production pair fixture",
+    "private_cidrs": ["10.127.0.0/16", "fd00:127::/48"]
+  },
+  "tunnel": {
+    "local_addresses": ["10.255.255.2/32", "fd00:255::2/128"],
+    "local_public_key": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+    "peer_public_key": "ERERERERERERERERERERERERERERERERERERERERERE=",
+    "keepalive_seconds": 25
+  },
+  "transports": {
+    "primary": "quic",
+    "fallbacks": ["wss", "tcp"],
+    "endpoints": [
+      {
+        "transport": "quic",
+        "url": "https://peer.example.invalid:2443"
+      },
+      {
+        "transport": "wss",
+        "url": "wss://peer.example.invalid:2444/kynp"
+      },
+      {
+        "transport": "tcp",
+        "url": "tcp://peer.example.invalid:2445"
+      }
+    ]
+  },
+  "policy": {
+    "connect_timeout_seconds": 15,
+    "health_interval_seconds": 5,
+    "fallback_threshold": 3
+  }
+}

@@ -1204,3 +1204,27 @@ possession proof, QUIC/WSS/TCP listeners, route WAL/lease recovery, hardened
 systemd activation, and isolated live-runtime acceptance. This source unit
 does not authorize deployment, site contact, PVE/ROS/K3s changes, or S1.13
 closure.
+
+#### S1.13 production profile-v2 exact-pair continuation
+
+The profile-v2 dependency is now implemented as an isolated public-contract
+unit. JSON Schema, Go, Rust, and TypeScript share schema version 2 and
+carrier-auth version 1 while the v1 lab profile remains an independent,
+rejected input at the production-v2 boundary. The fixture and opaque Go pair
+capability bind the Linux Peer server key, the macOS client key and addresses,
+the lowercase DNS server identity, exact ordered QUIC -> WSS -> TCP URLs,
+`/kynp`, ALPN `kyclash-network/1`, MTU 1420, and the exact private CIDR list.
+
+The machine contract rejects ambiguous JSON and Unicode, URL-library-specific
+control-plane host forms, noncanonical ports, low-order X25519 points at the
+backend gate, and all alternate encodings of the same field coordinate at
+every layer. Its 168-case
+Schema/TypeScript corpus is now a package command and path-complete CI step;
+focused Go/race/vet and Rust/clippy gates also pass. Final protocol, security,
+and cross-language reviews each reported C0/H0/M0.
+
+This is not a live Peer claim. No credential, listener, TUN, forwarding rule,
+route, VM, site, or production endpoint was touched. The next dependency is
+the reviewed invocation-bound credentials-directory and ACL-v2 unit; TUN
+brokerage, carrier listeners, recovery, systemd hardening, isolated Linux
+acceptance, and the final macOS S1.13 aggregate remain after it.
