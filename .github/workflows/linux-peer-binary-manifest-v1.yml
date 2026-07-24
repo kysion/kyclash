@@ -1,0 +1,134 @@
+name: Linux Peer binary manifest v1
+
+on:
+  pull_request:
+    paths:
+      - 'network-sidecar/internal/productionpeer/**'
+      - 'network-sidecar/cmd/kyclash-network-peer/**'
+      - 'network-sidecar/lab/linux/binary-manifest-v1-native.sh'
+      - 'network-sidecar/go.mod'
+      - 'network-sidecar/go.sum'
+      - '.github/workflows/linux-peer-binary-manifest-v1.yml'
+  push:
+    branches:
+      - main
+      - 'codex/**'
+    paths:
+      - 'network-sidecar/internal/productionpeer/**'
+      - 'network-sidecar/cmd/kyclash-network-peer/**'
+      - 'network-sidecar/lab/linux/binary-manifest-v1-native.sh'
+      - 'network-sidecar/go.mod'
+      - 'network-sidecar/go.sum'
+      - '.github/workflows/linux-peer-binary-manifest-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: network-sidecar
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: network-sidecar/go.sum
+
+      - name: Record hosted-runner provenance
+        run: |
+          set -euo pipefail
+          mkdir -p build/binary-manifest-v1-native
+          test "${RUNNER_ENVIRONMENT:-}" = github-hosted
+          test "${ImageOS:-}" = ubuntu24
+          test -n "${ImageVersion:-}"
+          {
+            printf 'RUNNER_ENVIRONMENT=%s\n' "${RUNNER_ENVIRONMENT}"
+            printf 'ImageOS=%s\n' "${ImageOS:-unknown}"
+            printf 'ImageVersion=%s\n' "${ImageVersion:-unknown}"
+            uname -a
+            cat /etc/os-release
+            systemd --version
+            go version
+          } | tee build/binary-manifest-v1-native/provenance.txt
+          source /etc/os-release
+          test "${ID}" = ubuntu
+          test "${VERSION_ID}" = 24.04
+
+      - name: Install native filesystem tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            acl attr file libcap2-bin nftables procps util-linux
+          nft --version |
+            tee -a build/binary-manifest-v1-native/provenance.txt
+          dpkg-query -W \
+            -f='${Package}=${Version}\n' \
+            acl attr file libcap2-bin nftables procps util-linux |
+            tee -a build/binary-manifest-v1-native/provenance.txt
+
+      - name: Verify module and source
+        run: |
+          set -euo pipefail
+          go mod download
+          go mod verify
+          test -z "$(gofmt -l internal/productionpeer)"
+          go vet ./internal/productionpeer ./cmd/kyclash-network-peer
+
+      - name: Test binary manifest package
+        run: |
+          set -euo pipefail
+          go test -count=1 ./internal/productionpeer ./cmd/kyclash-network-peer
+          go test -race -count=5 ./internal/productionpeer \
+            -run 'BinaryIdentity|FixedBinary|ReadBinary|ValidBinary'
+
+      - name: Run native fixed-path filesystem matrix
+        run: |
+          set -o pipefail
+          bash lab/linux/binary-manifest-v1-native.sh 2>&1 |
+            tee build/binary-manifest-v1-native/run.log
+
+      - name: Compile CGO-free architecture matrix
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go test -c -o "${RUNNER_TEMP}/productionpeer-amd64.test" \
+            ./internal/productionpeer
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go test -c -o "${RUNNER_TEMP}/productionpeer-arm64.test" \
+            ./internal/productionpeer
+          file "${RUNNER_TEMP}/productionpeer-amd64.test" |
+            grep -F 'x86-64'
+          file "${RUNNER_TEMP}/productionpeer-arm64.test" |
+            grep -F 'ARM aarch64'
+
+      - name: Seal native evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p build/binary-manifest-v1-native
+          find build/binary-manifest-v1-native \
+            -maxdepth 1 \
+            -type f \
+            ! -name evidence.sha256 \
+            -print0 |
+            sort -z |
+            xargs -0 -r sha256sum \
+              >build/binary-manifest-v1-native/evidence.sha256
+
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-peer-binary-manifest-v1-${{ runner.arch }}-${{ github.sha }}
+          path: network-sidecar/build/binary-manifest-v1-native/
+          if-no-files-found: error
+          retention-days: 14
