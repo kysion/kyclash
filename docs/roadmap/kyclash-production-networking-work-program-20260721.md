@@ -965,6 +965,19 @@ workflow runs repeated race-enabled sidecar tests. These are CI evidence paths;
 they do not replace the remaining scheduled soak and physical network-change
 observations.
 
+The 2026-07-24 runner-readiness continuation makes the system lab carrier test
+causal under race instrumentation: carrier attach, private-tunnel readiness,
+IPv4/IPv6 echo proof, health, and disconnect now use separate budgets, and the
+race-only readiness window no longer changes ordinary non-race behavior. The
+certificate-chain probes now clean up their non-data-plane TCP carrier
+explicitly, and failure output reports only redacted client/peer counters and
+carrier byte counts. Local evidence passed `go test -count=1 ./...`,
+`go test -race -count=5 -timeout=600s ./internal/userspace`,
+`go test -race -tags=kyclash_race_lab -count=5 -timeout=600s
+./internal/systemlabpeer`, and `go test -race -tags=kyclash_race_lab
+-count=5 -timeout=600s ./internal/labserver`. Hosted workflow evidence remains
+required before this gate is promoted to `main`.
+
 Matrix:
 
 - Loss, duplication, reordering, jitter, latency, rate limit, UDP refusal,

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -488,13 +489,19 @@ func TestPeerBoundsStalledTCPHandshakeAndAcceptsNextConnection(t *testing.T) {
 	if err := accepted.Close(); err != nil {
 		t.Fatal(err)
 	}
-	waitPeerInactive(t, peer)
+	closeCertificateProbeCarrier(t, peer, profile.TCP)
 }
 
 const (
-	systemLabCarrierProofTimeout = 20 * time.Second
-	systemLabStopTimeout         = 5 * time.Second
-	systemLabCleanupTimeout      = 5 * time.Second
+	systemLabCarrierAttachTimeout = 20 * time.Second
+	systemLabCarrierProofTimeout  = 20 * time.Second
+	systemLabStopTimeout          = 5 * time.Second
+	systemLabCleanupTimeout       = 5 * time.Second
+	systemLabReadinessAttempt     = 15 * time.Second
+	systemLabPostAttachSettle     = 100 * time.Millisecond
+	systemLabInactiveTimeout      = 10 * time.Second
+	systemLabInactiveQuiet        = 100 * time.Millisecond
+	systemLabCertificateQuiet     = 500 * time.Millisecond
 )
 
 func TestPeerServesUserspaceHealthOnAllThreeLoopbackCarriers(t *testing.T) {
@@ -595,15 +602,14 @@ func TestPeerServesUserspaceHealthOnAllThreeLoopbackCarriers(t *testing.T) {
 	if err := serverTLS.Close(); err != nil {
 		t.Fatal(err)
 	}
-	waitPeerInactive(t, peer)
+	closeCertificateProbeCarrier(t, peer, profile.TCP)
+	drainPeerAsyncSignals(peer)
 	if _, err := client.Prepare(context.Background(), networkProfile, "system-lab-peer-test"); err != nil {
 		t.Fatal(err)
 	}
 	var previous *trackedCarrier
 	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
 		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), systemLabCarrierProofTimeout)
-			defer cancel()
 			if previous != nil {
 				select {
 				case <-previous.closed:
@@ -621,60 +627,29 @@ func TestPeerServesUserspaceHealthOnAllThreeLoopbackCarriers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := client.Connect(ctx, transport, endpoint); err != nil {
+			drainPeerAsyncSignals(peer)
+			attachContext, cancelAttach := context.WithTimeout(context.Background(), systemLabCarrierAttachTimeout)
+			if err := client.Connect(attachContext, transport, endpoint); err != nil {
+				cancelAttach()
 				t.Fatalf("%s connect: %v", transport, err)
 			}
-			active := false
-			var attached *trackedCarrier
-			deadline := time.Now().Add(2 * time.Second)
-			for time.Now().Before(deadline) {
-				peer.mu.Lock()
-				attached = peer.active
-				active = attached != nil
-				peer.mu.Unlock()
-				if active {
-					break
-				}
-				time.Sleep(10 * time.Millisecond)
+			attached := waitPeerAttached(t, peer, transport, attachContext)
+			cancelAttach()
+			time.Sleep(systemLabPostAttachSettle)
+			readinessContext, cancelReadiness := context.WithTimeout(context.Background(), systemLabTunnelReadinessTimeout)
+			if err := waitEchoRoundTrip(readinessContext, client, netip.MustParseAddrPort("10.88.0.2:8080"), []byte("ready")); err != nil {
+				cancelReadiness()
+				t.Fatalf("%s tunnel readiness IPv4 echo: %v; client=%s peer=%s carrier=%s", transport, err, clientWireGuardStats(client), peerWireGuardStats(peer), trackedCarrierStats(attached))
 			}
-			if !active {
-				select {
-				case attachErr := <-peer.attachErrors:
-					t.Fatalf("%s carrier was not attached by peer: %v", transport, attachErr)
-				case detachErr := <-peer.detachReasons:
-					t.Fatalf("%s carrier detached immediately: %v", transport, detachErr)
-				default:
-					t.Fatalf("%s carrier was not attached by peer", transport)
-				}
+			cancelReadiness()
+			ctx, cancel := context.WithTimeout(context.Background(), systemLabCarrierProofTimeout)
+			defer cancel()
+			if err := echoRoundTrip(ctx, client, netip.MustParseAddrPort("10.88.0.2:8080"), []byte("v4")); err != nil {
+				t.Fatalf("%s IPv4 proof echo: %v", transport, err)
 			}
-			connection, err := client.DialLabTCP(ctx, netip.MustParseAddrPort("10.88.0.2:8080"))
-			if err != nil {
-				t.Fatalf("%s IPv4 echo dial: %v", transport, err)
+			if err := echoRoundTrip(ctx, client, netip.MustParseAddrPort("[fd00:88::2]:8080"), []byte("v6")); err != nil {
+				t.Fatalf("%s IPv6 proof echo: %v", transport, err)
 			}
-			if _, err := connection.Write([]byte("v4")); err != nil {
-				_ = connection.Close()
-				t.Fatalf("%s IPv4 echo write: %v", transport, err)
-			}
-			response := make([]byte, 2)
-			if _, err := io.ReadFull(connection, response); err != nil || string(response) != "v4" {
-				_ = connection.Close()
-				t.Fatalf("%s IPv4 echo response: %q %v", transport, response, err)
-			}
-			_ = connection.Close()
-			connection, err = client.DialLabTCP(ctx, netip.MustParseAddrPort("[fd00:88::2]:8080"))
-			if err != nil {
-				t.Fatalf("%s IPv6 echo dial: %v", transport, err)
-			}
-			if _, err := connection.Write([]byte("v6")); err != nil {
-				_ = connection.Close()
-				t.Fatalf("%s IPv6 echo write: %v", transport, err)
-			}
-			response = make([]byte, 2)
-			if _, err := io.ReadFull(connection, response); err != nil || string(response) != "v6" {
-				_ = connection.Close()
-				t.Fatalf("%s IPv6 echo response: %q %v", transport, response, err)
-			}
-			_ = connection.Close()
 			health, err := client.Health(ctx)
 			if err != nil || !health.Reachable || health.LossPercent != 0 {
 				t.Fatalf("%s health: %#v %v", transport, health, err)
@@ -703,6 +678,187 @@ func TestPeerServesUserspaceHealthOnAllThreeLoopbackCarriers(t *testing.T) {
 	}()
 }
 
+func drainPeerAsyncSignals(peer *Peer) (error, error) {
+	var attachErr error
+	var detachErr error
+	for {
+		select {
+		case attachErr = <-peer.attachErrors:
+		case detachErr = <-peer.detachReasons:
+		default:
+			return attachErr, detachErr
+		}
+	}
+}
+
+func waitPeerAttached(t *testing.T, peer *Peer, transport profile.Transport, ctx context.Context) *trackedCarrier {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		peer.mu.Lock()
+		attached := peer.active
+		deviceUp := peer.deviceUp
+		peer.mu.Unlock()
+		if attached != nil && attached.transport == transport && deviceUp {
+			return attached
+		}
+		select {
+		case <-ctx.Done():
+			attachErr, detachErr := drainPeerAsyncSignals(peer)
+			if attached != nil && attached.transport != transport {
+				t.Fatalf("%s carrier attach observed stale %s carrier before deadline: attach=%v detach=%v", transport, attached.transport, attachErr, detachErr)
+			}
+			if attached != nil {
+				t.Fatalf("%s carrier attached but device was not up before deadline: attach=%v detach=%v", transport, attachErr, detachErr)
+			}
+			t.Fatalf("%s carrier was not attached before deadline: attach=%v detach=%v", transport, attachErr, detachErr)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitEchoRoundTrip(ctx context.Context, client *userspace.Backend, address netip.AddrPort, payload []byte) error {
+	var lastErr error
+	for {
+		attemptTimeout := systemLabReadinessAttempt
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				if lastErr != nil {
+					return fmt.Errorf("%w; last readiness attempt: %v", ctx.Err(), lastErr)
+				}
+				return ctx.Err()
+			}
+			if remaining < attemptTimeout {
+				attemptTimeout = remaining
+			}
+		}
+		attemptContext, cancel := context.WithTimeout(ctx, attemptTimeout)
+		err := echoRoundTrip(attemptContext, client, address, payload)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			return fmt.Errorf("%w; last readiness attempt: %v", ctx.Err(), lastErr)
+		}
+	}
+}
+
+func echoRoundTrip(ctx context.Context, client *userspace.Backend, address netip.AddrPort, payload []byte) error {
+	connection, err := client.DialLabTCP(ctx, address)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w", address, err)
+	}
+	defer connection.Close()
+	if _, err := connection.Write(payload); err != nil {
+		return fmt.Errorf("write %s: %w", address, err)
+	}
+	response := make([]byte, len(payload))
+	if _, err := io.ReadFull(connection, response); err != nil {
+		return fmt.Errorf("read %s: %w", address, err)
+	}
+	if !bytes.Equal(response, payload) {
+		return fmt.Errorf("response %s: got %q want %q", address, response, payload)
+	}
+	return nil
+}
+
+func peerWireGuardStats(peer *Peer) string {
+	peer.mu.Lock()
+	wireGuard := peer.wireGuard
+	peer.mu.Unlock()
+	if wireGuard == nil {
+		return "wireguard=nil"
+	}
+	state, err := wireGuard.IpcGet()
+	if err != nil {
+		return fmt.Sprintf("ipc=%v", err)
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(state, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "last_handshake_time_sec", "last_handshake_time_nsec", "rx_bytes", "tx_bytes":
+			values[key] = value
+		}
+	}
+	return fmt.Sprintf(
+		"last_handshake=%s.%s rx=%s tx=%s",
+		values["last_handshake_time_sec"],
+		values["last_handshake_time_nsec"],
+		values["rx_bytes"],
+		values["tx_bytes"],
+	)
+}
+
+func clientWireGuardStats(client *userspace.Backend) string {
+	stats, err := client.LabWireGuardStats()
+	if err != nil {
+		return fmt.Sprintf("ipc=%v", err)
+	}
+	return fmt.Sprintf(
+		"last_handshake=%s.%s rx=%s tx=%s",
+		stats.LastHandshakeSec,
+		stats.LastHandshakeNSec,
+		stats.RXBytes,
+		stats.TXBytes,
+	)
+}
+
+func trackedCarrierStats(value *trackedCarrier) string {
+	if value == nil {
+		return "nil"
+	}
+	return fmt.Sprintf(
+		"transport=%s send_calls=%d send_bytes=%d receive_calls=%d receive_bytes=%d reason=%v",
+		value.transport,
+		value.sendCalls.Load(),
+		value.sendBytes.Load(),
+		value.receiveCalls.Load(),
+		value.receiveBytes.Load(),
+		value.getReason(),
+	)
+}
+
+func closeCertificateProbeCarrier(t *testing.T, peer *Peer, transport profile.Transport) {
+	t.Helper()
+	deadline := time.Now().Add(systemLabInactiveTimeout)
+	quietSince := time.Time{}
+	for time.Now().Before(deadline) {
+		peer.mu.Lock()
+		active := peer.active
+		peer.mu.Unlock()
+		if active != nil {
+			if active.transport != transport {
+				t.Fatalf("certificate probe attached %s carrier, want %s: %s", active.transport, transport, trackedCarrierStats(active))
+			}
+			if err := active.Close(); err != nil {
+				t.Fatalf("close certificate probe carrier: %v", err)
+			}
+			waitPeerInactive(t, peer)
+			drainPeerAsyncSignals(peer)
+			return
+		}
+		if quietSince.IsZero() {
+			quietSince = time.Now()
+		}
+		if time.Since(quietSince) >= systemLabCertificateQuiet {
+			drainPeerAsyncSignals(peer)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("certificate probe carrier was not observed before cleanup deadline")
+}
+
 func closePeerAndWait(t *testing.T, peer *Peer) {
 	t.Helper()
 	if err := peer.Close(); err != nil {
@@ -723,15 +879,27 @@ func closePeerAndWait(t *testing.T, peer *Peer) {
 
 func waitPeerInactive(t *testing.T, peer *Peer) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(systemLabInactiveTimeout)
+	quietSince := time.Time{}
+	var active *trackedCarrier
+	deviceUp := false
 	for time.Now().Before(deadline) {
 		peer.mu.Lock()
-		inactive := peer.active == nil && !peer.deviceUp
+		active = peer.active
+		deviceUp = peer.deviceUp
+		inactive := active == nil && !deviceUp
 		peer.mu.Unlock()
 		if inactive {
-			return
+			if quietSince.IsZero() {
+				quietSince = time.Now()
+			}
+			if time.Since(quietSince) >= systemLabInactiveQuiet {
+				return
+			}
+		} else {
+			quietSince = time.Time{}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("peer retained an active carrier after close")
+	t.Fatalf("peer retained an active carrier after close: device_up=%t carrier=%s", deviceUp, trackedCarrierStats(active))
 }

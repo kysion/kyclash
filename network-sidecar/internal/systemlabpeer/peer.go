@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -198,10 +199,15 @@ type carrierListener struct {
 
 type trackedCarrier struct {
 	carrier.Carrier
-	closed chan struct{}
-	once   sync.Once
-	mu     sync.Mutex
-	reason error
+	transport    profile.Transport
+	closed       chan struct{}
+	once         sync.Once
+	mu           sync.Mutex
+	reason       error
+	sendCalls    atomic.Uint64
+	sendBytes    atomic.Uint64
+	receiveCalls atomic.Uint64
+	receiveBytes atomic.Uint64
 }
 
 func (value *trackedCarrier) signalClosed() {
@@ -225,8 +231,23 @@ func (value *trackedCarrier) Receive(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		value.setReason(err)
 		value.signalClosed()
+		return nil, err
 	}
+	value.receiveCalls.Add(1)
+	value.receiveBytes.Add(uint64(len(packet)))
 	return packet, err
+}
+
+func (value *trackedCarrier) Send(ctx context.Context, packet []byte) error {
+	err := value.Carrier.Send(ctx, packet)
+	if err != nil {
+		value.setReason(err)
+		value.signalClosed()
+		return err
+	}
+	value.sendCalls.Add(1)
+	value.sendBytes.Add(uint64(len(packet)))
+	return nil
 }
 
 func (value *trackedCarrier) Close() error {
@@ -480,7 +501,7 @@ func (peer *Peer) acceptLoop(listener *carrierListener) {
 			}
 			continue
 		}
-		if err := peer.attach(candidate); err != nil {
+		if err := peer.attach(listener.transport, candidate); err != nil {
 			select {
 			case peer.attachErrors <- err:
 			default:
@@ -490,11 +511,11 @@ func (peer *Peer) acceptLoop(listener *carrierListener) {
 	}
 }
 
-func (peer *Peer) attach(candidate carrier.Carrier) error {
+func (peer *Peer) attach(transport profile.Transport, candidate carrier.Carrier) error {
 	if candidate == nil {
 		return ErrInvalidConfig
 	}
-	tracked := &trackedCarrier{Carrier: candidate, closed: make(chan struct{})}
+	tracked := &trackedCarrier{Carrier: candidate, transport: transport, closed: make(chan struct{})}
 	peer.mu.Lock()
 	if peer.closed || peer.ctx.Err() != nil || peer.active != nil || peer.board == nil || peer.wireGuard == nil {
 		peer.mu.Unlock()

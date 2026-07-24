@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"testing"
@@ -143,6 +144,44 @@ func connectedBackend(t *testing.T, packetCarrier carrier.Carrier) *Backend {
 	}
 	t.Cleanup(func() { _ = backend.Close() })
 	return backend
+}
+
+func TestLabWireGuardStatsAreLimitedToPreparedLabBackend(t *testing.T) {
+	ordinary, err := New(make([]byte, 32), nil, "instance.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ordinary.Prepare(context.Background(), testProfile(t), "request.prepare"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ordinary.LabWireGuardStats(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("ordinary backend exposed lab stats: %v", err)
+	}
+	_ = ordinary.Close()
+
+	lab, err := NewLab(make([]byte, 32), nil, netip.MustParseAddrPort("10.88.0.2:8080"), "instance.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lab.LabWireGuardStats(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("unprepared lab backend exposed stats: %v", err)
+	}
+	if _, err := lab.Prepare(context.Background(), testProfile(t), "request.lab.stats"); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := lab.LabWireGuardStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.LastHandshakeSec == "" || stats.LastHandshakeNSec == "" || stats.RXBytes == "" || stats.TXBytes == "" {
+		t.Fatalf("lab stats omitted expected counters: %#v", stats)
+	}
+	if err := lab.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := lab.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestBackendPreparesConnectsAndReconnectsExplicitCarriers(t *testing.T) {

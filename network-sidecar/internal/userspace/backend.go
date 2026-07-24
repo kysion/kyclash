@@ -45,6 +45,13 @@ type Backend struct {
 	ownerOperation  string
 }
 
+type LabWireGuardStats struct {
+	LastHandshakeSec  string
+	LastHandshakeNSec string
+	RXBytes           string
+	TXBytes           string
+}
+
 type operationCancellation struct {
 	cancel context.CancelFunc
 }
@@ -374,6 +381,39 @@ func (backend *Backend) DialLabTCP(ctx context.Context, address netip.AddrPort) 
 	network := backend.network
 	backend.mu.Unlock()
 	return network.DialContextTCPAddrPort(ctx, address)
+}
+
+// LabWireGuardStats exposes redacted WireGuard counters for loopback lab
+// diagnostics. It is available only on NewLab instances.
+func (backend *Backend) LabWireGuardStats() (LabWireGuardStats, error) {
+	backend.mu.Lock()
+	if backend.closed || backend.wireGuard == nil || !backend.probeAddress.IsValid() {
+		backend.mu.Unlock()
+		return LabWireGuardStats{}, ErrInvalidState
+	}
+	wireGuard := backend.wireGuard
+	backend.mu.Unlock()
+	state, err := wireGuard.IpcGet()
+	if err != nil {
+		return LabWireGuardStats{}, err
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(state, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "last_handshake_time_sec", "last_handshake_time_nsec", "rx_bytes", "tx_bytes":
+			values[key] = value
+		}
+	}
+	return LabWireGuardStats{
+		LastHandshakeSec:  values["last_handshake_time_sec"],
+		LastHandshakeNSec: values["last_handshake_time_nsec"],
+		RXBytes:           values["rx_bytes"],
+		TXBytes:           values["tx_bytes"],
+	}, nil
 }
 
 func validOwnerID(value string) bool {
