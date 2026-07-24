@@ -844,11 +844,20 @@ mod unix {
             }
         }
 
+        #[derive(Clone)]
+        struct FakeCancellationSchedule {
+            cancel_after_records: usize,
+            release_after_records: usize,
+            cancel: Arc<AtomicBool>,
+            release: Arc<AtomicBool>,
+        }
+
         #[derive(Clone, Default)]
         struct FakePipeMetrics {
             stdin_drops: Arc<AtomicUsize>,
             stdout_drops: Arc<AtomicUsize>,
             writes: Arc<Mutex<Vec<u8>>>,
+            cancellation_schedule: Option<FakeCancellationSchedule>,
             kill_calls: Arc<AtomicUsize>,
             poll_calls: Arc<AtomicUsize>,
             reaped: Arc<AtomicUsize>,
@@ -857,16 +866,26 @@ mod unix {
         struct FakeWriter {
             writes: Arc<Mutex<Vec<u8>>>,
             drops: Arc<AtomicUsize>,
+            cancellation_schedule: Option<FakeCancellationSchedule>,
         }
 
         impl Write for FakeWriter {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                {
+                let record_count = {
                     let mut writes = self
                         .writes
                         .lock()
                         .map_err(|_| std::io::Error::other("fake writer lock poisoned"))?;
                     writes.extend_from_slice(bytes);
+                    writes.iter().filter(|byte| **byte == b'\n').count()
+                };
+                if let Some(schedule) = &self.cancellation_schedule {
+                    if record_count >= schedule.cancel_after_records {
+                        schedule.cancel.store(true, Ordering::Release);
+                    }
+                    if record_count >= schedule.release_after_records {
+                        schedule.release.store(true, Ordering::Release);
+                    }
                 }
                 Ok(bytes.len())
             }
@@ -886,16 +905,29 @@ mod unix {
             lines: VecDeque<Vec<u8>>,
             pending: Vec<u8>,
             delay_after_first: Option<Duration>,
+            release_after_first: Option<Arc<AtomicBool>>,
             reads: usize,
             drops: Arc<AtomicUsize>,
         }
 
         impl Read for FakeReader {
             fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-                if self.reads > 0
-                    && let Some(delay) = self.delay_after_first.take()
-                {
-                    thread::sleep(delay);
+                if self.reads > 0 {
+                    if let Some(release) = self.release_after_first.take() {
+                        let deadline = Instant::now() + Duration::from_secs(2);
+                        while !release.load(Ordering::Acquire) {
+                            if Instant::now() >= deadline {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    "fake reader release timed out",
+                                ));
+                            }
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                    if let Some(delay) = self.delay_after_first.take() {
+                        thread::sleep(delay);
+                    }
                 }
                 self.reads = self.reads.saturating_add(1);
                 if self.pending.is_empty() {
@@ -1004,11 +1036,17 @@ mod unix {
                     stdin: Some(FakeWriter {
                         writes: Arc::clone(&spec.metrics.writes),
                         drops: Arc::clone(&spec.metrics.stdin_drops),
+                        cancellation_schedule: spec.metrics.cancellation_schedule.clone(),
                     }),
                     stdout: Some(FakeReader {
                         lines,
                         pending: Vec::new(),
                         delay_after_first: spec.delay_after_first,
+                        release_after_first: spec
+                            .metrics
+                            .cancellation_schedule
+                            .as_ref()
+                            .map(|schedule| Arc::clone(&schedule.release)),
                         reads: 0,
                         drops: Arc::clone(&spec.metrics.stdout_drops),
                     }),
@@ -1107,17 +1145,57 @@ mod unix {
             let (primary, control) = scenario_records(include_str!(
                 "../../../schemas/fixtures/network-ipc-v2.cancel-wins.json"
             ))?;
-            let metrics = fake_metrics();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let release = Arc::new(AtomicBool::new(false));
+            let metrics = FakePipeMetrics {
+                cancellation_schedule: Some(FakeCancellationSchedule {
+                    cancel_after_records: 2,
+                    release_after_records: 3,
+                    cancel: Arc::clone(&cancel),
+                    release,
+                }),
+                ..fake_metrics()
+            };
             let mut runtime = fake_runtime_with_spec(
                 &context,
                 vec![primary.into_bytes(), control.into_bytes()],
                 metrics.clone(),
-                Some(Duration::from_millis(40)),
+                None,
                 None,
             );
             runtime.start(&context)?;
-            let result = request_cancel(&mut runtime);
+            let result = runtime.request_cancellable(
+                &IpcRequest {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: "request.health.123".into(),
+                    payload: IpcRequestPayload::SampleHealth,
+                },
+                cancel.as_ref(),
+            );
             assert_eq!(result, Err(NetworkErrorCode::OperationCancelled));
+            let writes = metrics
+                .writes
+                .lock()
+                .map_err(|_| NetworkErrorCode::SidecarUnavailable)?
+                .clone();
+            assert!(writes.ends_with(b"\n"));
+            let records = writes[..writes.len() - 1]
+                .split(|byte| *byte == b'\n')
+                .collect::<Vec<_>>();
+            assert_eq!(records.len(), 3);
+            assert!(records.iter().all(|record| !record.is_empty()));
+            let primary_request: IpcRequest =
+                serde_json::from_slice(records[1]).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            assert_eq!(primary_request.request_id, "request.health.123");
+            assert!(matches!(primary_request.payload, IpcRequestPayload::SampleHealth));
+            let cancel_request: IpcRequest =
+                serde_json::from_slice(records[2]).map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+            assert_eq!(cancel_request.request_id, "cancel.0000000000000001");
+            assert!(matches!(
+                cancel_request.payload,
+                IpcRequestPayload::Cancel { target_request_id }
+                    if target_request_id == primary_request.request_id
+            ));
             runtime.terminate_child()?;
             assert_eq!(metrics.kill_calls.load(Ordering::Acquire), 1);
             assert!(metrics.reaped.load(Ordering::Acquire) >= 1);
