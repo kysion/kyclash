@@ -191,7 +191,7 @@ func TestPeerReopensExactPersistedIdentityAndPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer closePeerAndWait(t, second)
 	secondDescriptor := second.Descriptor()
 	secondManifest, err := readManifest(filepath.Join(privateDir, manifestFile))
 	if err != nil {
@@ -269,7 +269,7 @@ func TestPeerAcceptsGuestTrustFixtureRootLeafAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer peer.Close()
+	defer closePeerAndWait(t, peer)
 	if peer.Descriptor().CertificatePath != leafPath || peer.Descriptor().CertificateSHA256 != hashHex(leafDER) {
 		t.Fatal("fixture leaf identity was not preserved")
 	}
@@ -441,7 +441,7 @@ func TestPeerBoundsStalledTCPHandshakeAndAcceptsNextConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer peer.Close()
+	defer closePeerAndWait(t, peer)
 	descriptor := peer.Descriptor()
 	manifest, err := readManifest(filepath.Join(privateDir, manifestFile))
 	if err != nil {
@@ -491,6 +491,12 @@ func TestPeerBoundsStalledTCPHandshakeAndAcceptsNextConnection(t *testing.T) {
 	waitPeerInactive(t, peer)
 }
 
+const (
+	systemLabCarrierProofTimeout = 20 * time.Second
+	systemLabStopTimeout         = 5 * time.Second
+	systemLabCleanupTimeout      = 5 * time.Second
+)
+
 func TestPeerServesUserspaceHealthOnAllThreeLoopbackCarriers(t *testing.T) {
 	root := privateTempDir(t)
 	privateDir := filepath.Join(root, "private")
@@ -516,7 +522,7 @@ func TestPeerServesUserspaceHealthOnAllThreeLoopbackCarriers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer peer.Close()
+	defer closePeerAndWait(t, peer)
 	descriptor := peer.Descriptor()
 	manifest, err := readManifest(filepath.Join(privateDir, manifestFile))
 	if err != nil {
@@ -593,101 +599,125 @@ func TestPeerServesUserspaceHealthOnAllThreeLoopbackCarriers(t *testing.T) {
 	if _, err := client.Prepare(context.Background(), networkProfile, "system-lab-peer-test"); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 	var previous *trackedCarrier
 	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
-		if previous != nil {
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), systemLabCarrierProofTimeout)
+			defer cancel()
+			if previous != nil {
+				select {
+				case <-previous.closed:
+				default:
+					t.Fatalf("break-before-make violated: previous carrier was not closed before %s", transport)
+				}
+				peer.mu.Lock()
+				inactive := peer.active == nil && !peer.deviceUp
+				peer.mu.Unlock()
+				if !inactive {
+					t.Fatalf("break-before-make violated: peer still active before %s", transport)
+				}
+			}
+			endpoint, err := networkProfile.Endpoint(transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := client.Connect(ctx, transport, endpoint); err != nil {
+				t.Fatalf("%s connect: %v", transport, err)
+			}
+			active := false
+			var attached *trackedCarrier
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				peer.mu.Lock()
+				attached = peer.active
+				active = attached != nil
+				peer.mu.Unlock()
+				if active {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !active {
+				select {
+				case attachErr := <-peer.attachErrors:
+					t.Fatalf("%s carrier was not attached by peer: %v", transport, attachErr)
+				case detachErr := <-peer.detachReasons:
+					t.Fatalf("%s carrier detached immediately: %v", transport, detachErr)
+				default:
+					t.Fatalf("%s carrier was not attached by peer", transport)
+				}
+			}
+			connection, err := client.DialLabTCP(ctx, netip.MustParseAddrPort("10.88.0.2:8080"))
+			if err != nil {
+				t.Fatalf("%s IPv4 echo dial: %v", transport, err)
+			}
+			if _, err := connection.Write([]byte("v4")); err != nil {
+				_ = connection.Close()
+				t.Fatalf("%s IPv4 echo write: %v", transport, err)
+			}
+			response := make([]byte, 2)
+			if _, err := io.ReadFull(connection, response); err != nil || string(response) != "v4" {
+				_ = connection.Close()
+				t.Fatalf("%s IPv4 echo response: %q %v", transport, response, err)
+			}
+			_ = connection.Close()
+			connection, err = client.DialLabTCP(ctx, netip.MustParseAddrPort("[fd00:88::2]:8080"))
+			if err != nil {
+				t.Fatalf("%s IPv6 echo dial: %v", transport, err)
+			}
+			if _, err := connection.Write([]byte("v6")); err != nil {
+				_ = connection.Close()
+				t.Fatalf("%s IPv6 echo write: %v", transport, err)
+			}
+			response = make([]byte, 2)
+			if _, err := io.ReadFull(connection, response); err != nil || string(response) != "v6" {
+				_ = connection.Close()
+				t.Fatalf("%s IPv6 echo response: %q %v", transport, response, err)
+			}
+			_ = connection.Close()
+			health, err := client.Health(ctx)
+			if err != nil || !health.Reachable || health.LossPercent != 0 {
+				t.Fatalf("%s health: %#v %v", transport, health, err)
+			}
+			if err := client.Disconnect(ctx); err != nil {
+				t.Fatalf("%s disconnect: %v", transport, err)
+			}
+			if attached == nil {
+				t.Fatalf("%s had no carrier to close", transport)
+			}
 			select {
-			case <-previous.closed:
-			default:
-				t.Fatalf("break-before-make violated: previous carrier was not closed before %s", transport)
+			case <-attached.closed:
+			case <-time.After(3 * time.Second):
+				t.Fatalf("%s carrier did not close before next transport", transport)
 			}
-			peer.mu.Lock()
-			inactive := peer.active == nil && !peer.deviceUp
-			peer.mu.Unlock()
-			if !inactive {
-				t.Fatalf("break-before-make violated: peer still active before %s", transport)
-			}
-		}
-		endpoint, err := networkProfile.Endpoint(transport)
-		if err != nil {
+			waitPeerInactive(t, peer)
+			previous = attached
+		}()
+	}
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), systemLabStopTimeout)
+		defer cancel()
+		if err := client.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if err := client.Connect(ctx, transport, endpoint); err != nil {
-			t.Fatalf("%s connect: %v", transport, err)
-		}
-		active := false
-		var attached *trackedCarrier
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			peer.mu.Lock()
-			attached = peer.active
-			active = attached != nil
-			peer.mu.Unlock()
-			if active {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		if !active {
-			select {
-			case attachErr := <-peer.attachErrors:
-				t.Fatalf("%s carrier was not attached by peer: %v", transport, attachErr)
-			case detachErr := <-peer.detachReasons:
-				t.Fatalf("%s carrier detached immediately: %v", transport, detachErr)
-			default:
-				t.Fatalf("%s carrier was not attached by peer", transport)
-			}
-		}
-		connection, err := client.DialLabTCP(ctx, netip.MustParseAddrPort("10.88.0.2:8080"))
-		if err != nil {
-			t.Fatalf("%s IPv4 echo dial: %v", transport, err)
-		}
-		if _, err := connection.Write([]byte("v4")); err != nil {
-			_ = connection.Close()
-			t.Fatalf("%s IPv4 echo write: %v", transport, err)
-		}
-		response := make([]byte, 2)
-		if _, err := io.ReadFull(connection, response); err != nil || string(response) != "v4" {
-			_ = connection.Close()
-			t.Fatalf("%s IPv4 echo response: %q %v", transport, response, err)
-		}
-		_ = connection.Close()
-		connection, err = client.DialLabTCP(ctx, netip.MustParseAddrPort("[fd00:88::2]:8080"))
-		if err != nil {
-			t.Fatalf("%s IPv6 echo dial: %v", transport, err)
-		}
-		if _, err := connection.Write([]byte("v6")); err != nil {
-			_ = connection.Close()
-			t.Fatalf("%s IPv6 echo write: %v", transport, err)
-		}
-		response = make([]byte, 2)
-		if _, err := io.ReadFull(connection, response); err != nil || string(response) != "v6" {
-			_ = connection.Close()
-			t.Fatalf("%s IPv6 echo response: %q %v", transport, response, err)
-		}
-		_ = connection.Close()
-		health, err := client.Health(ctx)
-		if err != nil || !health.Reachable || health.LossPercent != 0 {
-			t.Fatalf("%s health: %#v %v", transport, health, err)
-		}
-		if err := client.Disconnect(ctx); err != nil {
-			t.Fatalf("%s disconnect: %v", transport, err)
-		}
-		if attached == nil {
-			t.Fatalf("%s had no carrier to close", transport)
-		}
-		select {
-		case <-attached.closed:
-		case <-time.After(3 * time.Second):
-			t.Fatalf("%s carrier did not close before next transport", transport)
-		}
-		waitPeerInactive(t, peer)
-		previous = attached
+	}()
+}
+
+func closePeerAndWait(t *testing.T, peer *Peer) {
+	t.Helper()
+	if err := peer.Close(); err != nil {
+		t.Errorf("close peer: %v", err)
+		return
 	}
-	if err := client.Stop(ctx); err != nil {
-		t.Fatal(err)
+	timer := time.NewTimer(systemLabCleanupTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-peer.Done():
+		if err != nil {
+			t.Errorf("peer cleanup: %v", err)
+		}
+	case <-timer.C:
+		t.Error("peer did not finish cleanup")
 	}
 }
 

@@ -299,16 +299,16 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build/race
-          # Keep every package at five race-detector repetitions. Isolate the
-          # CPU-heavy loopback WireGuard matrix so unrelated package workers
-          # cannot consume its probe budget on the three-core hosted runner.
+          # Keep every package at five race-detector repetitions. Isolate both
+          # CPU-heavy loopback WireGuard matrices so unrelated package workers
+          # cannot consume their probe budgets on the three-core hosted runner.
           # Run non-lab packages in two bounded workers: the previous single
           # multi-package invocation reached its 600-second test timeout before
           # it could finish on a cold macOS runner. Each package keeps the same
           # 600-second per-test bound and no package is dropped. The custom tag
           # widens only this instrumented lab's probe budget; ordinary and
           # release builds retain the shipped one-second value.
-          go list ./... | grep -v '/internal/labserver$' > build/race/packages.txt
+          go list ./... | grep -Ev '/internal/(labserver|systemlabpeer)$' > build/race/packages.txt
           {
             race_exit_code=0
             mkdir -p build/race/non-lab
@@ -331,6 +331,10 @@ jobs:
             if ! go test -race -tags=kyclash_race_lab -count=1 -timeout=60s \
                 ./internal/userspace \
                 -run '^TestRaceLabHealthProbeBudgetIsIsolated$'; then
+              race_exit_code=1
+            fi
+            if ! go test -race -tags=kyclash_race_lab -count=5 -timeout=600s \
+                ./internal/systemlabpeer; then
               race_exit_code=1
             fi
             if ! go test -race -tags=kyclash_race_lab -count=5 -timeout=600s \

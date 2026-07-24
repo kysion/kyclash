@@ -2,6 +2,7 @@ package labserver
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/kysion/kyclash/network-sidecar/internal/profile"
 	"github.com/kysion/kyclash/network-sidecar/internal/userspace"
 )
+
+const clusterCleanupTimeout = 5 * time.Second
 
 func TestClusterCarriesBackendHealthProbe(t *testing.T) {
 	clientPrivate, clientPublic, err := keyPair()
@@ -19,7 +22,7 @@ func TestClusterCarriesBackendHealthProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cluster.Close()
+	defer closeClusterAndWait(t, cluster)
 	backend, err := userspace.NewLab(clientPrivate, cluster.Roots(), netip.MustParseAddrPort(ProbeAddress), "instance.cluster")
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +66,7 @@ func TestClusterCarriesBreakBeforeMakeAcrossAllCarriers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cluster.Close()
+	defer closeClusterAndWait(t, cluster)
 	backend, err := userspace.NewLab(clientPrivate, cluster.Roots(), netip.MustParseAddrPort(ProbeAddress), "instance.cluster")
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +91,9 @@ func TestClusterCarriesBreakBeforeMakeAcrossAllCarriers(t *testing.T) {
 		if err := backend.Connect(ctx, transport, endpoint); err != nil {
 			t.Fatalf("%s connect: %v", transport, err)
 		}
+		if err := waitClusterReadyPreservingDone(ctx, cluster, transport); err != nil {
+			t.Fatalf("%s ready: %v", transport, err)
+		}
 		health, err := backend.Health(ctx)
 		if err != nil || !health.Reachable {
 			t.Fatalf("%s health: %#v %v", transport, health, err)
@@ -110,7 +116,7 @@ func TestClusterCarriesProductionBackendHealthAcrossAllCarriers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cluster.Close()
+	defer closeClusterAndWait(t, cluster)
 	backend, err := userspace.New(clientPrivate, cluster.Roots(), "instance.production-health")
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +140,7 @@ func TestClusterCarriesProductionBackendHealthAcrossAllCarriers(t *testing.T) {
 		if err := backend.Connect(ctx, transport, endpoint); err != nil {
 			t.Fatalf("%s connect: %v", transport, err)
 		}
-		if err := cluster.WaitReady(ctx, transport); err != nil {
+		if err := waitClusterReadyPreservingDone(ctx, cluster, transport); err != nil {
 			t.Fatalf("%s ready: %v", transport, err)
 		}
 		health, err := backend.Health(ctx)
@@ -159,7 +165,7 @@ func TestProductionBackendHealthDetectsAbruptLoopbackCarrierFailure(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cluster.Close()
+	defer closeClusterAndWait(t, cluster)
 	backend, err := userspace.New(clientPrivate, cluster.Roots(), "instance.production-failure")
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +188,7 @@ func TestProductionBackendHealthDetectsAbruptLoopbackCarrierFailure(t *testing.T
 	if err := backend.Connect(ctx, profile.TCP, endpoint); err != nil {
 		t.Fatal(err)
 	}
-	if err := cluster.WaitReady(ctx, profile.TCP); err != nil {
+	if err := waitClusterReadyPreservingDone(ctx, cluster, profile.TCP); err != nil {
 		t.Fatal(err)
 	}
 	if health, err := backend.Health(ctx); err != nil || !health.Reachable {
@@ -201,5 +207,75 @@ func TestProductionBackendHealthDetectsAbruptLoopbackCarrierFailure(t *testing.T
 	}
 	if elapsed := time.Since(started); elapsed > clusterFailureObservationBound {
 		t.Fatalf("post-connect failure detection exceeded bound: %v", elapsed)
+	}
+}
+
+func closeClusterAndWait(t *testing.T, cluster *Cluster) {
+	t.Helper()
+	if err := cluster.Close(); err != nil {
+		t.Errorf("close cluster: %v", err)
+		return
+	}
+	timer := time.NewTimer(clusterCleanupTimeout)
+	defer timer.Stop()
+	quicDone := cluster.Done(profile.QUIC)
+	wssDone := cluster.Done(profile.WSS)
+	tcpDone := cluster.Done(profile.TCP)
+	remaining := 3
+	for remaining > 0 {
+		select {
+		case err := <-quicDone:
+			quicDone = nil
+			remaining--
+			if err != nil {
+				t.Errorf("%s cluster cleanup: %v", profile.QUIC, err)
+			}
+		case err := <-wssDone:
+			wssDone = nil
+			remaining--
+			if err != nil {
+				t.Errorf("%s cluster cleanup: %v", profile.WSS, err)
+			}
+		case err := <-tcpDone:
+			tcpDone = nil
+			remaining--
+			if err != nil {
+				t.Errorf("%s cluster cleanup: %v", profile.TCP, err)
+			}
+		case <-timer.C:
+			t.Errorf(
+				"cluster cleanup timed out: quic_pending=%t wss_pending=%t tcp_pending=%t",
+				quicDone != nil,
+				wssDone != nil,
+				tcpDone != nil,
+			)
+			return
+		}
+	}
+}
+
+func waitClusterReadyPreservingDone(
+	ctx context.Context,
+	cluster *Cluster,
+	transport profile.Transport,
+) error {
+	server := cluster.servers[transport]
+	if server == nil {
+		return ErrInvalid
+	}
+	select {
+	case <-server.ready:
+		return nil
+	case err := <-server.done:
+		// Server.Done is a one-value channel rather than a closed broadcast
+		// signal. Preserve the terminal value for closeClusterAndWait so an
+		// observed startup failure cannot hide cleanup evidence.
+		server.done <- err
+		if err == nil {
+			return net.ErrClosed
+		}
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
