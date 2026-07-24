@@ -36,6 +36,9 @@ type NavigationItem = {
     | 'KyClash Network'
     | 'KyClash Network (Dev)'
     | 'KyClash Network (LAB · userspace)'
+    | 'KyClash Network (VM LAB · real utun)'
+    | 'KyClash Network (VM LAB · real utun · private route · Mihomo)'
+    | 'KyClash Network (VM LAB · external peer)'
   path: string
   icon: ReactNode[]
   Component: ComponentType
@@ -91,7 +94,13 @@ const networkingDevItems: NavigationItem[] =
         {
           label:
             import.meta.env.VITE_NETWORKING_SYSTEM_LAB === 'true'
-              ? 'KyClash Network (LAB · userspace)'
+              ? import.meta.env.VITE_NETWORKING_VM_EXTERNAL_PEER_LAB === 'true'
+                ? 'KyClash Network (VM LAB · external peer)'
+                : import.meta.env.VITE_NETWORKING_VM_NETWORK_LAB === 'true'
+                  ? 'KyClash Network (VM LAB · real utun · private route · Mihomo)'
+                  : import.meta.env.VITE_NETWORKING_VM_UTUN_LAB === 'true'
+                    ? 'KyClash Network (VM LAB · real utun)'
+                    : 'KyClash Network (LAB · userspace)'
               : 'KyClash Network (Dev)',
           path: '/networking-dev',
           icon: [<MonitorHeartOutlinedIcon key="mui" />],

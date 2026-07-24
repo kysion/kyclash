@@ -5,15 +5,18 @@
 //! be conflated:
 //!
 //! * initialization verifies an app-owned signed policy and the public
-//!   sidecar trust manifest, but does not touch Keychain, XPC, a sidecar, a
+//!   sidecar trust metadata, but does not touch Keychain, XPC, a sidecar, a
 //!   tunnel, or routes;
 //! * materialization happens only after an explicit connect request and creates
-//!   the Keychain-backed bootstrap context, XPC route client, and controller;
+//!   the Keychain-backed one-shot launch material, broker session, deferred v3
+//!   route boundary, and controller;
 //! * the service itself still owns the locked health/utun/route ordering.
 //!
 //! No endpoint, public key, executable path, or credential is guessed here.
 //! The bundle provider uses fixed resource names and fails closed when the
-//! explicitly provisioned resources are absent or malformed.
+//! explicitly provisioned resources are absent or malformed. On macOS the
+//! privileged broker independently selects and verifies its own fixed sidecar
+//! immediately before launch; the App never supplies a broker executable path.
 
 use std::{
     fs,
@@ -29,15 +32,16 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 
 use super::{
     ActiveMihomoTunSource, FilePolicyIdentityStore, MihomoTunSnapshot, NetworkErrorCode, NetworkProfile, NetworkState,
-    PolicyIdentityCandidate, PolicyTrustStore, ProductionNetworkStatus, ProductionNetworkingService,
-    ProductionSiteSummary, SidecarLifecycleState, SidecarTrustManifest, StaticActiveMihomoTunSource,
+    PolicyIdentityCandidate, PolicyTrustStore, PreparedProductionPolicyVariant, ProductionNetworkStatus,
+    ProductionNetworkingService, ProductionPolicyCatalogProvider, ProductionSiteSummary, SidecarLifecycleState,
+    SidecarTrustManifest, StaticActiveMihomoTunSource, VerifiedProductionPolicyVariant, verify_policy_catalog,
 };
 
 #[cfg(target_os = "macos")]
 use super::{
-    AsyncStdioSidecarRuntime, MacOsKeychainCredentialStore, MacosActiveMihomoTunSource, ProductionControllerHandle,
-    ProductionRouteBoundary, StdioSidecarRuntime, XpcProductionRouteBoundary, prepare_sidecar_launch_context,
-    sidecar_auth_proof, spawn_production_controller,
+    AsyncStdioSidecarRuntime, CredentialReference, DeferredV3ProductionRouteBoundary, MacOsKeychainCredentialStore,
+    MacosActiveMihomoTunSource, ProductionRouteBoundary, SidecarLaunchMaterial, StdioSidecarRuntime,
+    TunnelBrokerSidecarLauncher, resolve_or_generate_wireguard_material, spawn_broker_bound_production_controller,
 };
 
 /// Fixed, app-owned resource names.  They are intentionally not configurable
@@ -68,9 +72,11 @@ const SIDECAR_TRUST_RESOURCE_NAME: &str = "kyclash-network-sidecar-unsupported.t
 const SIDECAR_RESOURCE_NAME: &str = "kyclash-network-sidecar";
 
 /// The immutable, already-authenticated inputs needed to construct one
-/// service.  Creating this value is side-effect free; in particular it does
-/// not verify the executable bytes or read a Keychain item.  Executable trust
-/// is rechecked by `StdioSidecarRuntime` immediately before the child starts.
+/// service. Creating this value is side-effect free; in particular it does
+/// not verify executable bytes or read a Keychain item. The broker-bound
+/// macOS path retains this app-bundle metadata for composition/package
+/// verification, while the privileged broker independently verifies its own
+/// fixed nested sidecar immediately before launch.
 #[derive(Clone, PartialEq, Eq)]
 pub struct VerifiedProductionConfiguration {
     pub profile: NetworkProfile,
@@ -213,33 +219,31 @@ impl DeferredProductionServiceFactory {
         SystemRandom::new()
             .fill(&mut auth_token)
             .map_err(|_| NetworkErrorCode::AuthenticationFailed)?;
-        let instance_id = random_instance_id(&auth_token)?;
-        let materialized = (|| {
-            let mut credentials = MacOsKeychainCredentialStore::new_for_runtime();
-            let context = prepare_sidecar_launch_context(
-                instance_id.clone(),
-                auth_token.clone(),
-                &self.configuration.profile.identity_ref,
-                &mut credentials,
-            )?;
-            let proof = sidecar_auth_proof(&auth_token, &instance_id);
-            Ok::<_, NetworkErrorCode>((context, proof))
-        })();
-        // Do not retain the temporary copy after the context/proof have been
-        // constructed.  The context owns its zeroizing copy for the actor.
-        auth_token.fill(0);
-        let (context, expected_auth_proof) = materialized?;
+        let reference = CredentialReference::parse(&self.configuration.profile.identity_ref)?;
+        let mut credentials = MacOsKeychainCredentialStore::new_for_runtime();
+        let private_key = resolve_or_generate_wireguard_material(&mut credentials, &reference)?;
+        let launch_material = SidecarLaunchMaterial::new(auth_token, private_key.expose().to_vec())?;
 
-        // XPC discovery is explicit-connect work.  It is deliberately after
-        // policy initialization and before any route mutation; `connect()`
-        // itself performs only typed helper discovery.
-        let routes: Box<dyn ProductionRouteBoundary> = Box::new(XpcProductionRouteBoundary::connect()?);
-        let runtime = AsyncStdioSidecarRuntime::new(StdioSidecarRuntime::new_trusted(
+        // Construct the deferred route boundary before starting the broker.
+        // This allocates only local retirement identity and opens no XPC
+        // connection, so a local construction failure cannot leave a broker
+        // child awaiting connection invalidation cleanup.
+        let routes: Box<dyn ProductionRouteBoundary> = Box::new(DeferredV3ProductionRouteBoundary::new()?);
+
+        // The privileged broker, not the ordinary App process, selects and
+        // verifies the fixed sidecar executable.  Its typed start reply owns
+        // the only valid instance ID for this one-shot controller generation.
+        let mut broker = TunnelBrokerSidecarLauncher::new();
+        let prepared = broker.prepare()?;
+        let broker_reference = prepared.session_reference().clone();
+        let instance_id = broker_reference.sidecar_instance_id.clone();
+        let bound_launch = launch_material.bind(broker_reference)?;
+        let runtime = AsyncStdioSidecarRuntime::new(StdioSidecarRuntime::with_launcher(
             self.configuration.sidecar_executable.clone(),
-            self.configuration.sidecar_trust.clone(),
+            prepared,
         ));
-        let controller: ProductionControllerHandle = spawn_production_controller(runtime, context, expected_auth_proof);
-        ProductionNetworkingService::new_with_mihomo_source(
+        let controller = spawn_broker_bound_production_controller(runtime, bound_launch);
+        ProductionNetworkingService::new_broker_bound_with_mihomo_source(
             controller,
             self.configuration.profile.clone(),
             routes,
@@ -272,7 +276,7 @@ impl ProductionServiceFactory for DeferredProductionServiceFactory {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 fn random_instance_id(seed: &[u8]) -> Result<String, NetworkErrorCode> {
     if seed.len() != 32 {
         return Err(NetworkErrorCode::InvalidConfiguration);
@@ -382,6 +386,80 @@ impl BundleProductionInitializationProvider {
         let factory = factory.with_mihomo_source(Arc::new(MacosActiveMihomoTunSource));
         Ok(Arc::new(factory))
     }
+
+    fn verify_policy_variants_sync(&self) -> Result<Vec<VerifiedProductionPolicyVariant>, NetworkErrorCode> {
+        let resources = self.resource_dir.join("resources");
+        let now = self.now.unwrap_or_else(unix_now);
+        verify_policy_catalog(&resources, now).map(|catalog| catalog.bindings())
+    }
+
+    fn prepare_policy_variant_sync(
+        &self,
+        catalog_id: &str,
+        expected: Option<&VerifiedProductionPolicyVariant>,
+    ) -> Result<PreparedProductionPolicyVariant, NetworkErrorCode> {
+        let resources = self.resource_dir.join("resources");
+        let store = FilePolicyIdentityStore::new(self.app_data_dir.clone())?;
+        // The durable anti-replay identity belongs to the entire catalog, not
+        // whichever route variant is currently selected. This permits an
+        // operator to switch between the four concurrently signed variants
+        // while still requiring a revision advance for any catalog change.
+        let mut transaction = store.begin()?;
+        let now = self.now.unwrap_or_else(unix_now);
+        let first_catalog = verify_policy_catalog(&resources, now)?;
+        let (first_binding, _) = first_catalog.selected(catalog_id)?;
+        if expected.is_some_and(|expected| expected != first_binding) {
+            return Err(NetworkErrorCode::PolicySignatureInvalid);
+        }
+        let candidate = PolicyIdentityCandidate::new(
+            first_catalog.revision,
+            first_catalog.identity_sha256.clone(),
+            "catalog.v1".into(),
+            first_catalog.issued_at,
+            first_catalog.expires_at,
+        )?;
+        if transaction.classify(candidate, now)? == super::PolicyIdentityDecision::Reject {
+            return Err(NetworkErrorCode::PolicySignatureInvalid);
+        }
+
+        let manifest_bytes = read_owned_resource(
+            &resources.join(SIDECAR_TRUST_RESOURCE_NAME),
+            SIDECAR_TRUST_RESOURCE_MAX_BYTES,
+        )?;
+        let manifest: SidecarTrustManifest =
+            serde_json::from_slice(&manifest_bytes).map_err(|_| NetworkErrorCode::AuthenticationFailed)?;
+        validate_trust_metadata(&manifest)?;
+
+        // Reopen and verify every catalog envelope immediately before commit.
+        // This closes both expiry drift and cross-file replacement windows.
+        let commit_now = self.now.unwrap_or_else(unix_now);
+        let final_catalog = verify_policy_catalog(&resources, commit_now)?;
+        if final_catalog.revision != first_catalog.revision
+            || final_catalog.identity_sha256 != first_catalog.identity_sha256
+            || final_catalog.bindings() != first_catalog.bindings()
+        {
+            return Err(NetworkErrorCode::PolicySignatureInvalid);
+        }
+        let (selected, policy) = final_catalog.selected(catalog_id)?;
+        if expected.is_some_and(|expected| expected != selected) {
+            return Err(NetworkErrorCode::PolicySignatureInvalid);
+        }
+        let configuration = VerifiedProductionConfiguration::new(
+            policy.profile.clone(),
+            policy.revision,
+            self.resource_dir.join(SIDECAR_RESOURCE_NAME),
+            manifest,
+        )?;
+        transaction.commit(commit_now)?;
+        let factory = DeferredProductionServiceFactory::new(configuration);
+        #[cfg(all(target_os = "macos", feature = "networking-production"))]
+        let factory = factory.with_mihomo_source(Arc::new(MacosActiveMihomoTunSource));
+        Ok(PreparedProductionPolicyVariant {
+            variants: final_catalog.bindings(),
+            selected: selected.clone(),
+            factory: Arc::new(factory),
+        })
+    }
 }
 
 #[async_trait]
@@ -394,7 +472,30 @@ impl ProductionInitializationProvider for BundleProductionInitializationProvider
     }
 }
 
-fn read_owned_resource(path: &Path, maximum_bytes: usize) -> Result<Vec<u8>, NetworkErrorCode> {
+#[async_trait]
+impl ProductionPolicyCatalogProvider for BundleProductionInitializationProvider {
+    async fn verify_policy_variants(&self) -> Result<Vec<VerifiedProductionPolicyVariant>, NetworkErrorCode> {
+        let provider = self.clone();
+        tokio::task::spawn_blocking(move || provider.verify_policy_variants_sync())
+            .await
+            .map_err(|_| NetworkErrorCode::InvalidConfiguration)?
+    }
+
+    async fn prepare_policy_variant(
+        &self,
+        catalog_id: &str,
+        expected: Option<&VerifiedProductionPolicyVariant>,
+    ) -> Result<PreparedProductionPolicyVariant, NetworkErrorCode> {
+        let provider = self.clone();
+        let catalog_id = catalog_id.to_owned();
+        let expected = expected.cloned();
+        tokio::task::spawn_blocking(move || provider.prepare_policy_variant_sync(&catalog_id, expected.as_ref()))
+            .await
+            .map_err(|_| NetworkErrorCode::InvalidConfiguration)?
+    }
+}
+
+pub(crate) fn read_owned_resource(path: &Path, maximum_bytes: usize) -> Result<Vec<u8>, NetworkErrorCode> {
     read_owned_resource_with_hook(path, maximum_bytes, || Ok(()))
 }
 
@@ -469,7 +570,10 @@ fn unix_now() -> u64 {
 }
 
 #[cfg(all(test, unix))]
-pub(crate) use tests::{signed_policy as signed_test_policy, write_bundle_resources as write_test_bundle_resources};
+pub(crate) use tests::{
+    signed_policy as signed_test_policy, signed_policy_with_profile as signed_test_policy_with_profile,
+    write_bundle_resources as write_test_bundle_resources,
+};
 
 #[cfg(test)]
 mod tests {
@@ -516,7 +620,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn signed_policy_with_profile(
+    pub(crate) fn signed_policy_with_profile(
         revision: u64,
         issued_at: u64,
         expires_at: u64,

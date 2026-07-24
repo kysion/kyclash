@@ -183,6 +183,20 @@ type controlBackend struct {
 	closeFn         func() error
 }
 
+type privateProbeBackend struct {
+	*controlBackend
+	privateCalls atomic.Int32
+	privateFn    func(context.Context) (PrivateReachability, error)
+}
+
+func (backend *privateProbeBackend) PrivateReachability(ctx context.Context) (PrivateReachability, error) {
+	backend.privateCalls.Add(1)
+	if backend.privateFn != nil {
+		return backend.privateFn(ctx)
+	}
+	return PrivateReachability{Reachable: true, LatencyMS: 7}, nil
+}
+
 func (backend *controlBackend) Prepare(_ context.Context, _ *profile.Profile, operationID string) (TunnelDeviceFacts, error) {
 	backend.prepareCalls.Add(1)
 	return TunnelDeviceFacts{
@@ -272,6 +286,66 @@ func setupConnectedHarness(t *testing.T, backend Backend) *controlHarness {
 	}
 	assertOKType(t, harness.next(t), connect.RequestID, "status")
 	return harness
+}
+
+func TestPrivateReachabilityIsTypedCancellableAndLabOnly(t *testing.T) {
+	labBackend := &privateProbeBackend{controlBackend: &controlBackend{}}
+	harness := setupConnectedHarness(t, labBackend)
+	probe := request("sample_private_reachability", "request.private.echo", nil)
+	if err := harness.send(probe); err != nil {
+		t.Fatal(err)
+	}
+	assertOKType(t, harness.next(t), probe.RequestID, "private_reachability")
+	if labBackend.privateCalls.Load() != 1 {
+		t.Fatalf("private probe calls = %d, want 1", labBackend.privateCalls.Load())
+	}
+	productionBackend := &controlBackend{}
+	productionHarness := setupConnectedHarness(t, productionBackend)
+	rejected := request("sample_private_reachability", "request.private.production", nil)
+	if err := productionHarness.send(rejected); err != nil {
+		t.Fatal(err)
+	}
+	assertFailureCode(t, productionHarness.next(t), rejected.RequestID, "invalid_state_transition", "invalid sidecar state transition")
+}
+
+func TestPrivateReachabilityCancellationTargetsOnlyTheActiveProbe(t *testing.T) {
+	started := make(chan struct{})
+	backend := &privateProbeBackend{
+		controlBackend: &controlBackend{},
+		privateFn: func(ctx context.Context) (PrivateReachability, error) {
+			close(started)
+			<-ctx.Done()
+			return PrivateReachability{}, ctx.Err()
+		},
+	}
+	harness := setupConnectedHarness(t, backend)
+	primary := request("sample_private_reachability", "request.private.cancelled", nil)
+	if err := harness.send(primary); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("private reachability probe did not start")
+	}
+	cancel := request("cancel", "request.private.cancel.control", json.RawMessage(`{"target_request_id":"request.private.cancelled"}`))
+	if err := harness.send(cancel); err != nil {
+		t.Fatal(err)
+	}
+	first, second := harness.next(t), harness.next(t)
+	responses := []Response{first, second}
+	var accepted, cancelled bool
+	for _, response := range responses {
+		if response.RequestID == cancel.RequestID {
+			accepted = responseOKType(response) == "cancel_accepted"
+		}
+		if response.RequestID == primary.RequestID {
+			cancelled = responseErrorCode(response) == "operation_cancelled"
+		}
+	}
+	if !accepted || !cancelled {
+		t.Fatalf("unexpected cancellation pair: %#v %#v", first, second)
+	}
 }
 
 func assertOKType(t *testing.T, response Response, requestID, expectedType string) {

@@ -4,10 +4,8 @@ import OSLog
 
 private let protocolVersion: UInt8 = 2
 private let legacyProtocolVersion: UInt8 = 1
-// v3 is kept beside the shipped v2 surface during the source-only contract
-// slice.  The coordinator below still serves v2; these values are consumed by
-// the typed wire/journal self-test until the durable interlock is wired in a
-// later batch.
+// v3 is the signed production listener surface. The legacy v2 coordinator is
+// retained only behind an explicit lab flag and for compatibility tests.
 private let routeHelperV3ProtocolVersion: UInt8 = 3
 private let routeBrokerProtocolVersion: UInt8 = 1
 private let maximumMihomoInterfaces = 1
@@ -236,8 +234,7 @@ final class HelperReply: NSObject, NSSecureCoding {
     }
 }
 
-// MARK: - Route-helper v3 wire contract (source-only until the coordinator
-// interlock is enabled)
+// MARK: - Route-helper v3 production wire contract
 
 /// The v3 reference is the complete, non-derivable ownership tuple.  In
 /// particular, the broker generation is deliberately distinct from any Rust
@@ -457,6 +454,16 @@ final class HelperReplyV3: NSObject, NSSecureCoding {
         "released", "recovery_only", "failed_closed"
     ]
 
+    // Keep this vocabulary closed at the XPC boundary.  Broker transport and
+    // implementation details are normalized by the coordinator below; they
+    // must never become arbitrary error strings in a privileged reply.
+    private static let validErrorCodes: Set<String> = [
+        "not_ready", "invalid_owner", "permission_denied", "route_conflict",
+        "journal_write_failed", "journal_corrupt", "route_apply_failed",
+        "rollback_failed", "release_failed", "recovery_required",
+        "ownership_mismatch", "broker_protocol_failure", "broker_status_failed"
+    ]
+
     init(
         protocolVersion: UInt8 = routeHelperV3ProtocolVersion,
         state: String,
@@ -496,7 +503,8 @@ final class HelperReplyV3: NSObject, NSSecureCoding {
 
     func isValid() -> Bool {
         guard protocolVersion == routeHelperV3ProtocolVersion,
-              Self.validStates.contains(state)
+              Self.validStates.contains(state),
+              errorCode.map({ Self.validErrorCodes.contains($0) }) ?? true
         else { return false }
         if let reference {
             return reference.isValid() && transition > 0
@@ -522,9 +530,9 @@ protocol RouteHelperV3Protocol {
     func statusV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void)
 }
 
-/// Builds the v3 interface but is intentionally not installed on the current
-/// listener in this source-only slice.  This keeps v2 clients recovery-only
-/// until the coordinator and root broker bridge land together.
+/// Builds the production v3 interface. The signed helper installs this exact
+/// interface on its fixed launchd Mach service; legacy v2 remains available
+/// only to explicit source/self-test paths and can never authorize v3 routes.
 private func routeHelperV3Interface() -> NSXPCInterface {
     let interface = NSXPCInterface(with: RouteHelperV3Protocol.self)
     let replyClasses = NSSet(objects: HelperReplyV3.self, LeaseReferenceV3.self, NSString.self) as! Set<AnyHashable>
@@ -1077,7 +1085,12 @@ private struct RouteJournalV3: Codable, Equatable {
               appliedCIDRs.allSatisfy(validCIDR),
               appliedCIDRs.allSatisfy({ owner.privateCIDRs.contains($0) }),
               pendingCIDR.map({ validCIDR($0) && owner.privateCIDRs.contains($0) }) ?? true,
-              pendingCIDR.map({ !appliedCIDRs.contains($0) }) ?? true
+              pendingCIDR.map({
+                  // Held/Applied records may mark an already-owned route
+                  // before deletion; the coordinator proves absence after
+                  // the mutation. Add-intent records remain disjoint.
+                  self.state == .held || self.state == .applied || !self.appliedCIDRs.contains($0)
+              }) ?? true
         else { return false }
 
         switch state {
@@ -1680,6 +1693,7 @@ private func routeLookupSelfTest() -> Bool {
 }
 
 private let productionJournalURL = URL(fileURLWithPath: "/Library/Application Support/KyClash/route-lease-v1.plist")
+private let productionJournalV3URL = URL(fileURLWithPath: "/Library/Application Support/KyClash/route-lease-v3.plist")
 private let maximumJournalBytes = 64 * 1024
 private let journalDirectoryPermissions: mode_t = 0o700
 private let journalFilePermissions: mode_t = 0o600
@@ -1691,7 +1705,8 @@ private enum JournalReadResult {
 }
 
 private func isProductionJournalURL(_ url: URL) -> Bool {
-    url.standardizedFileURL.path == productionJournalURL.path
+    let path = url.standardizedFileURL.path
+    return path == productionJournalURL.path || path == productionJournalV3URL.path
 }
 
 private func lstatResult(_ url: URL) -> (info: stat?, error: Int32) {
@@ -1727,7 +1742,8 @@ private func validateJournalDirectory(_ directory: URL, createIfMissing: Bool) -
           hasExactPermissions(info, journalDirectoryPermissions),
           info.st_nlink >= 2
     else { return false }
-    if isProductionJournalURL(directory.appendingPathComponent("route-lease-v1.plist")) {
+    if isProductionJournalURL(directory.appendingPathComponent("route-lease-v1.plist"))
+        || isProductionJournalURL(directory.appendingPathComponent("route-lease-v3.plist")) {
         guard info.st_uid == 0 else { return false }
     }
     return true
@@ -2225,7 +2241,9 @@ private final class RouteCoordinator {
                 cidrs: [cidr],
                 interfaceName: current.owner.interfaceName,
                 trustedMihomoInterfaces: current.owner.activeMihomoTunInterfaces
-            ), afterDelete[cidr]?.ownedExact != true else {
+            ), let afterDeleteEntry = afterDelete[cidr],
+                  !afterDeleteEntry.ownedExact,
+                  !afterDeleteEntry.foreignConflict else {
                 // The durable pending state was never cleared, so a failed or
                 // ambiguous postflight remains recoverable without another
                 // best-effort journal write.
@@ -2315,7 +2333,9 @@ private final class RouteCoordinator {
                 cidrs: [cidr],
                 interfaceName: current.owner.interfaceName,
                 trustedMihomoInterfaces: []
-            ), afterDelete[cidr]?.ownedExact != true else {
+            ), let afterDeleteEntry = afterDelete[cidr],
+                  !afterDeleteEntry.ownedExact,
+                  !afterDeleteEntry.foreignConflict else {
                 legacyJournal = pendingState
                 return false
             }
@@ -2514,6 +2534,192 @@ private final class RouteHelperService: NSObject, RouteHelperProtocol {
     }
 }
 
+/// Separate v3 service object exported by the production listener. It owns a
+/// single coordinator connection and exposes no legacy route surface.
+private final class RouteHelperV3Service: NSObject, RouteHelperV3Protocol {
+    private let connectionID: UUID
+    private let clientIdentity: ClientAuditIdentity
+    private let coordinator: RouteHelperV3Coordinator
+    private let lifecycleLock = NSLock()
+    private var connectionActive = true
+
+    init(
+        connectionID: UUID,
+        clientIdentity: ClientAuditIdentity,
+        coordinator: RouteHelperV3Coordinator
+    ) {
+        self.connectionID = connectionID
+        self.clientIdentity = clientIdentity
+        self.coordinator = coordinator
+        super.init()
+        routeHelperLogger.notice(
+            "accepted v3 client pid=\(clientIdentity.processID, privacy: .public) audit_session=\(clientIdentity.auditSessionID, privacy: .public)"
+        )
+    }
+
+    private func activeReply(_ body: () -> HelperReplyV3) -> HelperReplyV3 {
+        lifecycleLock.withLock {
+            guard connectionActive else { return v3OwnershipFailure() }
+            return body()
+        }
+    }
+
+    func discoverV3(reply: @escaping (HelperReplyV3) -> Void) {
+        reply(activeReply { coordinator.discover(connectionID: connectionID) })
+    }
+
+    func beginV3(_ owner: LeaseOwnerV3, reply: @escaping (HelperReplyV3) -> Void) {
+        reply(activeReply { coordinator.begin(owner, connectionID: connectionID) })
+    }
+
+    func applyV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void) {
+        reply(activeReply { coordinator.apply(reference, connectionID: connectionID) })
+    }
+
+    func rollbackV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void) {
+        reply(activeReply { coordinator.rollback(reference, connectionID: connectionID) })
+    }
+
+    func recoverV3(_ owner: LeaseOwnerV3, reply: @escaping (HelperReplyV3) -> Void) {
+        reply(activeReply { coordinator.recover(owner, connectionID: connectionID) })
+    }
+
+    func heartbeatV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void) {
+        reply(activeReply { coordinator.heartbeat(reference, connectionID: connectionID) })
+    }
+
+    func statusV3(_ reference: LeaseReferenceV3, reply: @escaping (HelperReplyV3) -> Void) {
+        reply(activeReply { coordinator.status(reference, connectionID: connectionID) })
+    }
+
+    func invalidateConnection() {
+        let shouldInvalidate = lifecycleLock.withLock { () -> Bool in
+            guard connectionActive else { return false }
+            connectionActive = false
+            _ = coordinator.invalidate(connectionID: connectionID)
+            return true
+        }
+        guard shouldInvalidate else { return }
+        routeHelperLogger.notice(
+            "closed v3 client pid=\(self.clientIdentity.processID, privacy: .public) audit_session=\(self.clientIdentity.auditSessionID, privacy: .public)"
+        )
+    }
+}
+
+private final class RouteHelperV3ListenerDelegate: NSObject, NSXPCListenerDelegate {
+    private let coordinator: RouteHelperV3Coordinator
+
+    init(coordinator: RouteHelperV3Coordinator) { self.coordinator = coordinator }
+
+    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+        guard let clientIdentity = ClientAuditIdentity.validated(connection: connection) else {
+            routeHelperLogger.error("rejected v3 client with invalid audit identity")
+            return false
+        }
+        connection.setCodeSigningRequirement(appRequirement)
+        let connectionID = UUID()
+        guard coordinator.register(connectionID: connectionID) else {
+            routeHelperLogger.error("rejected duplicate v3 helper connection identity")
+            return false
+        }
+        let service = RouteHelperV3Service(
+            connectionID: connectionID,
+            clientIdentity: clientIdentity,
+            coordinator: coordinator
+        )
+        connection.exportedInterface = routeHelperV3Interface()
+        connection.exportedObject = service
+        connection.invalidationHandler = { service.invalidateConnection() }
+        connection.interruptionHandler = { service.invalidateConnection() }
+        connection.resume()
+        return true
+    }
+}
+
+/// Explicitly gated source/lab listener. It is retained for deterministic
+/// interlock experiments, while the signed production helper below always
+/// activates the same v3 coordinator without an environment opt-in.
+private func runRouteV3LabListener() -> Never {
+    guard ProcessInfo.processInfo.environment["KYCLASH_ROUTE_HELPER_V3_LAB"] == "1" else {
+        fputs("route_v3_lab_listener_disabled\n", stderr)
+        exit(2)
+    }
+    guard let broker = RootBrokerRouteV3Adapter() else {
+        fputs("route_v3_lab_listener_broker_unavailable\n", stderr)
+        exit(1)
+    }
+    let durableStore = DurableRouteJournalV3Store()
+    let coordinator = RouteHelperV3Coordinator(
+        executor: SystemRouteExecutor(),
+        broker: broker,
+        store: durableStore
+    )
+    let startup = coordinator.reconcileStartup()
+    guard startup.state == "idle" || startup.state == "released" || startup.state == "recovery_only"
+    else {
+        fputs("route_v3_lab_listener_recovery_required\n", stderr)
+        exit(1)
+    }
+    // The explicit gate may replace the production process in a lab, so use
+    // the locked helper Mach service name expected by the typed Rust client.
+    let listener = NSXPCListener(machServiceName: "net.kysion.kyclash.route-helper")
+    listener.setConnectionCodeSigningRequirement(appRequirement)
+    let delegate = RouteHelperV3ListenerDelegate(coordinator: coordinator)
+    listener.delegate = delegate
+    listener.resume()
+    RunLoop.current.run()
+    exit(0)
+}
+
+/// Production launch path for the signed SMAppService helper. The durable v3
+/// journal is reconciled before accepting the first App connection. A failed
+/// reconciliation intentionally leaves the coordinator alive in
+/// recovery-only mode so the App receives a typed fail-closed status instead
+/// of observing a disappearing Mach service.
+private func runRouteV3ProductionListener() -> Never {
+    guard let broker = RootBrokerRouteV3Adapter() else {
+        fputs("route_v3_production_broker_unavailable\n", stderr)
+        exit(1)
+    }
+    let coordinator = RouteHelperV3Coordinator(
+        executor: SystemRouteExecutor(),
+        broker: broker,
+        store: DurableRouteJournalV3Store()
+    )
+    let startup = coordinator.reconcileStartup()
+    guard startup.isValid() else {
+        fputs("route_v3_production_startup_invalid\n", stderr)
+        exit(1)
+    }
+    if startup.state != "idle" {
+        routeHelperLogger.warning("v3 helper startup remains (startup.state, privacy: .public)")
+    }
+    let listener = NSXPCListener(machServiceName: "net.kysion.kyclash.route-helper")
+    listener.setConnectionCodeSigningRequirement(appRequirement)
+    let delegate = RouteHelperV3ListenerDelegate(coordinator: coordinator)
+    listener.delegate = delegate
+    listener.resume()
+    RunLoop.current.run()
+    exit(0)
+}
+
+/// Explicit compatibility listener for the legacy v2 coordinator. It is
+/// never selected by the signed helper's no-argument launch path; callers
+/// must opt in both with the command-line flag and the lab environment gate.
+private func runRouteV2LabListener() -> Never {
+    guard ProcessInfo.processInfo.environment["KYCLASH_ROUTE_HELPER_V2_LAB"] == "1" else {
+        fputs("route_v2_lab_listener_disabled\n", stderr)
+        exit(2)
+    }
+    let listener = NSXPCListener(machServiceName: "net.kysion.kyclash.route-helper")
+    listener.setConnectionCodeSigningRequirement(appRequirement)
+    let delegate = ListenerDelegate()
+    listener.delegate = delegate
+    listener.resume()
+    RunLoop.current.run()
+    exit(0)
+}
+
 private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
         guard let clientIdentity = ClientAuditIdentity.validated(connection: connection) else {
@@ -2598,6 +2804,8 @@ private final class InjectedRouteExecutor: RouteExecuting {
     var failAddAt: Int?
     var failAddAfterMutationAt: Int?
     var failDeleteAt: Int?
+    var failInspectAt: Int?
+    private(set) var inspectCalls = 0
     private(set) var addCalls = 0
     private(set) var deleteCalls = 0
 
@@ -2606,6 +2814,8 @@ private final class InjectedRouteExecutor: RouteExecuting {
         interfaceName: String,
         trustedMihomoInterfaces: [String]
     ) -> [String: RouteInspection]? {
+        inspectCalls += 1
+        if failInspectAt == inspectCalls { return nil }
         guard validInterface(interfaceName), cidrs.allSatisfy(validCIDR) else { return nil }
         return Dictionary(uniqueKeysWithValues: cidrs.map { cidr in
             guard let target = parseRouteNetwork(cidr) else {
@@ -2650,12 +2860,773 @@ private final class InjectedRouteExecutor: RouteExecuting {
     }
 }
 
+// MARK: - v3 broker/route interlock
+
+// The v3 owner must refresh its lease while a route hold is live. Expiry
+// enters the same exact rollback -> journal -> broker-release path used by
+// XPC invalidation and startup recovery; it never performs an ad-hoc route
+// mutation or clears authority without a durable proof.
+private let routeHelperV3HeartbeatExpiry: TimeInterval = 15
+private let routeHelperV3HeartbeatWatchdogInterval: TimeInterval = 1
+
+/// The v3 helper coordinator is injected for deterministic tests and is also
+/// the coordinator installed by the signed production listener. Its only
+/// broker operations are the reviewed typed hold/release/status calls; no
+/// path, command, route, or secret can cross this boundary.
+private enum RouteBrokerV3Result: Equatable {
+    case held
+    case released
+    case running
+    case idle
+    /// A typed, validated broker rejection proves that the requested
+    /// operation did not acquire/release ownership. It is the only failure
+    /// class that may clear a durable HoldPending record.
+    case rejected(String)
+    /// Transport loss, timeout, interruption, or an unrecognised broker reply
+    /// is ambiguous: the remote side may have committed the operation. The
+    /// coordinator must retain its journal and recovery authority.
+    case ambiguous(String)
+}
+
+private protocol RouteBrokerV3Executing: AnyObject {
+    func hold(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result
+    func release(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result
+    func status(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result
+}
+
+private enum RouteBrokerV3Operation {
+    case hold
+    case release
+    case status
+}
+
+/// Collapse broker-specific failure text into the closed v3 wire vocabulary.
+/// The root bridge may have several transport/rejection reasons, but none of
+/// those implementation details are safe or stable to expose through XPC.
+private func canonicalBrokerV3Error(
+    _ reason: String,
+    operation: RouteBrokerV3Operation
+) -> String {
+    _ = reason
+    switch operation {
+    case .hold:
+        return "broker_protocol_failure"
+    case .release:
+        return "release_failed"
+    case .status:
+        return "broker_status_failed"
+    }
+}
+
+private protocol RouteJournalV3Persisting: AnyObject {
+    var current: RouteJournalV3? { get }
+    var corrupt: Bool { get }
+    func persist(_ value: RouteJournalV3) -> Bool
+    func remove(_ reference: LeaseReferenceV3) -> Bool
+}
+
+private final class InjectedRouteBrokerV3: RouteBrokerV3Executing {
+    private(set) var heldReference: LeaseReferenceV3?
+    private(set) var releasedReference: LeaseReferenceV3?
+    private(set) var knownReference: LeaseReferenceV3?
+    private(set) var holdCalls = 0
+    private(set) var releaseCalls = 0
+    private(set) var statusCalls = 0
+    var failHold = false
+    var ambiguousHold = false
+    var failRelease = false
+
+    func hold(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result {
+        holdCalls += 1
+        guard reference.isValid() else { return .rejected("invalid_reference") }
+        guard !failHold else {
+            // The ambiguous fixture records the tuple as if the remote hold
+            // committed just before its reply was lost.
+            if ambiguousHold { knownReference = reference }
+            return ambiguousHold ? .ambiguous("broker_hold_timeout") : .rejected("broker_hold_failed")
+        }
+        if let knownReference, !referencesEqualV3(knownReference, reference) {
+            return .rejected("stale_generation")
+        }
+        self.knownReference = reference
+        if let releasedReference, referencesEqualV3(releasedReference, reference) {
+            return .rejected("hold_mismatch")
+        }
+        if let heldReference {
+            return referencesEqualV3(heldReference, reference) ? .held : .rejected("hold_mismatch")
+        }
+        heldReference = reference
+        return .held
+    }
+
+    func release(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result {
+        releaseCalls += 1
+        guard reference.isValid() else { return .rejected("invalid_reference") }
+        guard !failRelease else { return .rejected("broker_release_failed") }
+        if let releasedReference, referencesEqualV3(releasedReference, reference) {
+            return .released
+        }
+        if let heldReference {
+            guard referencesEqualV3(heldReference, reference) else { return .rejected("hold_mismatch") }
+            self.heldReference = nil
+            releasedReference = reference
+            return .released
+        }
+        // Mirrors the broker's exact current-session no-op release for an
+        // ambiguous HoldPending record whose hold never arrived.
+        guard let knownReference, referencesEqualV3(knownReference, reference) else {
+            return .rejected("hold_mismatch")
+        }
+        releasedReference = reference
+        return .released
+    }
+
+    func status(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result {
+        statusCalls += 1
+        guard reference.isValid() else { return .rejected("invalid_reference") }
+        guard let heldReference, referencesEqualV3(heldReference, reference) else {
+            return .idle
+        }
+        return .held
+    }
+}
+
+/// A small durable-store seam for the coordinator. The injected implementation
+/// records every snapshot and can fail a write deterministically; production
+/// registration supplies the root-owned atomic file store below.
+private final class InjectedRouteJournalV3Store: RouteJournalV3Persisting {
+    private(set) var current: RouteJournalV3?
+    let corrupt = false
+    private(set) var persisted: [RouteJournalV3] = []
+    var failPersistAt: Int?
+    var failRemove = false
+    private(set) var persistCalls = 0
+
+    func persist(_ value: RouteJournalV3) -> Bool {
+        persistCalls += 1
+        guard value.isValid(), failPersistAt != persistCalls else { return false }
+        current = value
+        persisted.append(value)
+        return true
+    }
+
+    func remove(_ reference: LeaseReferenceV3) -> Bool {
+        guard !failRemove else { return false }
+        guard let current, referencesEqualV3(current.reference(), reference) else { return false }
+        self.current = nil
+        return true
+    }
+}
+
+/// Root-owned atomic v3 journal store used by the production listener and the
+/// explicit lab listener. It shares the v2 helper's no-symlink,
+/// exact-permission, fsync-before-rename discipline, but uses a distinct
+/// filename/schema so a v1/v2 record can never be upgraded into a broker-held
+/// lease.
+private final class DurableRouteJournalV3Store: RouteJournalV3Persisting {
+    private let url: URL
+    private(set) var current: RouteJournalV3?
+    let corrupt: Bool
+
+    init(url: URL = productionJournalV3URL) {
+        self.url = url
+        switch readJournalData(url) {
+        case .absent:
+            current = nil
+            corrupt = false
+        case .data(let data):
+            do {
+                guard case .currentV3(let journal) = try decodeRouteJournalEnvelope(data),
+                      journal.isValid() else {
+                    throw RouteJournalDecodeError.corrupt
+                }
+                current = journal
+                corrupt = false
+            } catch {
+                current = nil
+                corrupt = true
+            }
+        case .invalid:
+            current = nil
+            corrupt = true
+        }
+    }
+
+    func persist(_ value: RouteJournalV3) -> Bool {
+        guard value.isValid(),
+              validateJournalDirectory(url.deletingLastPathComponent(), createIfMissing: true),
+              !isSymbolicLink(url),
+              let data = try? PropertyListEncoder().encode(value),
+              data.count <= maximumJournalBytes else { return false }
+        let directory = url.deletingLastPathComponent()
+        let temporary = directory.appendingPathComponent(
+            ".route-lease-v3.\(UUID().uuidString).tmp"
+        )
+        let descriptor = open(
+            temporary.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            journalFilePermissions
+        )
+        guard descriptor >= 0 else { return false }
+        var committed = false
+        defer {
+            _ = close(descriptor)
+            if !committed { _ = unlink(temporary.path) }
+        }
+        guard fchmod(descriptor, journalFilePermissions) == 0 else { return false }
+        var offset = 0
+        let writeSucceeded = data.withUnsafeBytes { bytes -> Bool in
+            guard let base = bytes.baseAddress else { return data.isEmpty }
+            while offset < data.count {
+                let count = Darwin.write(descriptor, base.advanced(by: offset), data.count - offset)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                guard count > 0 else { return false }
+                offset += count
+            }
+            return true
+        }
+        guard writeSucceeded, offset == data.count, fsync(descriptor) == 0,
+              rename(temporary.path, url.path) == 0,
+              fsyncDirectory(directory),
+              let info = lstatInfo(url),
+              isRegularFile(info),
+              info.st_nlink == 1,
+              hasExactPermissions(info, journalFilePermissions),
+              (!isProductionJournalURL(url) || info.st_uid == 0) else { return false }
+        committed = true
+        current = value
+        return true
+    }
+
+    func remove(_ reference: LeaseReferenceV3) -> Bool {
+        guard let current, referencesEqualV3(current.reference(), reference) else { return false }
+        // Re-read and decode the exact file immediately before unlinking so a
+        // replacement between the last persist and cleanup cannot be removed
+        // under an old in-memory owner.
+        guard case .data(let data) = readJournalData(url),
+              case .currentV3(let onDisk) = try? decodeRouteJournalEnvelope(data),
+              onDisk == current,
+              referencesEqualV3(onDisk.reference(), reference) else { return false }
+        guard removeJournalFile(url) else { return false }
+        self.current = nil
+        return true
+    }
+}
+
+/// Implements the locked ordering against injected route and broker seams.
+/// The signed helper uses this coordinator as its default listener surface;
+/// the legacy v2 coordinator remains available only behind an explicit lab
+/// flag for compatibility experiments.
+private final class RouteHelperV3Coordinator {
+    private let lock = NSLock()
+    private let executor: RouteExecuting
+    private let broker: RouteBrokerV3Executing
+    private let store: RouteJournalV3Persisting
+    private var journal: RouteJournalV3?
+    private var activeConnectionID: UUID?
+    private var registeredConnectionIDs = Set<UUID>()
+    private var recoveryOnly = false
+    private var heartbeatDeadline = Date.distantPast
+    private let heartbeatWatchdogQueue = DispatchQueue(
+        label: "net.kysion.kyclash.route-helper.v3-heartbeat",
+        qos: .utility
+    )
+    private var heartbeatWatchdog: DispatchSourceTimer?
+
+    init(
+        executor: RouteExecuting,
+        broker: RouteBrokerV3Executing,
+        store: RouteJournalV3Persisting
+    ) {
+        self.executor = executor
+        self.broker = broker
+        self.store = store
+        self.journal = store.current
+        self.recoveryOnly = store.corrupt
+        let timer = DispatchSource.makeTimerSource(queue: heartbeatWatchdogQueue)
+        timer.schedule(
+            deadline: .now() + routeHelperV3HeartbeatWatchdogInterval,
+            repeating: routeHelperV3HeartbeatWatchdogInterval
+        )
+        timer.setEventHandler { [weak self] in self?.heartbeatWatchdogTick() }
+        timer.resume()
+        heartbeatWatchdog = timer
+    }
+
+    deinit { heartbeatWatchdog?.cancel() }
+
+    private func heartbeatWatchdogTick() {
+        lock.withLock {
+            guard let journal,
+                  journal.state == .holdPending || journal.state == .held || journal.state == .applied,
+                  let connectionID = activeConnectionID,
+                  Date() >= heartbeatDeadline else { return }
+            let reply = retireLocked(journal.reference(), connectionID: connectionID)
+            if reply.state != "released" || reply.errorCode != nil {
+                // retireLocked already retained the durable journal and set
+                // recoveryOnly on every ambiguous/failed boundary.
+                recoveryOnly = true
+            }
+        }
+    }
+
+    @discardableResult
+    func register(connectionID: UUID) -> Bool {
+        lock.withLock {
+            // v3 owns one helper connection at a time.  Admission is rejected
+            // here (rather than merely returning not_ready from discover) so a
+            // second client cannot enqueue requests while the first one still
+            // owns a lease or is being invalidated.
+            guard registeredConnectionIDs.isEmpty else { return false }
+            return registeredConnectionIDs.insert(connectionID).inserted
+        }
+    }
+
+    func discover(connectionID: UUID) -> HelperReplyV3 {
+        lock.withLock {
+            guard registeredConnectionIDs.contains(connectionID) else { return v3OwnershipFailure() }
+            if recoveryOnly { return HelperReplyV3(state: "recovery_only") }
+            guard journal == nil, activeConnectionID == nil else {
+                return HelperReplyV3(state: "failed_closed", errorCode: "recovery_required")
+            }
+            return HelperReplyV3(state: "idle")
+        }
+    }
+
+    func begin(_ owner: LeaseOwnerV3, connectionID: UUID) -> HelperReplyV3 {
+        lock.withLock {
+            guard registeredConnectionIDs.contains(connectionID), !recoveryOnly,
+                  journal == nil, activeConnectionID == nil, owner.isValid()
+            else { return v3OwnershipFailure() }
+            guard let inspections = executor.inspect(
+                cidrs: owner.privateCIDRs,
+                interfaceName: owner.interfaceName,
+                trustedMihomoInterfaces: owner.activeMihomoTunInterfaces
+            ), owner.privateCIDRs.allSatisfy({ inspections[$0]?.isAvailable == true }) else {
+                return HelperReplyV3(state: "failed_closed", errorCode: "route_conflict")
+            }
+
+            let pending = RouteJournalV3.holdPending(owner: owner)
+            guard store.persist(pending) else {
+                return HelperReplyV3(state: "failed_closed", errorCode: "journal_write_failed")
+            }
+            journal = pending
+            activeConnectionID = connectionID
+            heartbeatDeadline = Date().addingTimeInterval(routeHelperV3HeartbeatExpiry)
+
+            switch broker.hold(owner.reference) {
+            case .held:
+                guard let held = try? pending.transitioned(to: .held, reference: owner.reference),
+                      store.persist(held) else {
+                    recoveryOnly = true
+                    return v3Reply(for: pending, errorCode: "journal_write_failed")
+                }
+                journal = held
+                heartbeatDeadline = Date().addingTimeInterval(routeHelperV3HeartbeatExpiry)
+                return v3Reply(for: held)
+            case .rejected(let reason):
+                // Only a typed, definitive rejection may clear HoldPending.
+                guard store.remove(owner.reference) else {
+                    recoveryOnly = true
+                    journal = pending
+                    return v3Reply(for: pending, errorCode: "journal_write_failed")
+                }
+                journal = nil
+                activeConnectionID = nil
+                heartbeatDeadline = .distantPast
+                return HelperReplyV3(
+                    state: "failed_closed",
+                    errorCode: canonicalBrokerV3Error(reason, operation: .hold)
+                )
+            case .ambiguous(let reason):
+                // A lost/ambiguous reply may follow a committed remote hold.
+                // Retain the exact pending tuple and force recovery; never
+                // admit a fresh connection while that authority exists.
+                recoveryOnly = true
+                journal = pending
+                return v3Reply(
+                    for: pending,
+                    errorCode: canonicalBrokerV3Error(reason, operation: .hold)
+                )
+            default:
+                recoveryOnly = true
+                return v3Reply(for: pending, errorCode: "broker_protocol_failure")
+            }
+        }
+    }
+
+    func apply(_ reference: LeaseReferenceV3, connectionID: UUID) -> HelperReplyV3 {
+        lock.withLock {
+            guard registeredConnectionIDs.contains(connectionID), activeConnectionID == connectionID,
+                  var current = journal, referencesEqualV3(current.reference(), reference),
+                  current.state == .held || current.state == .applied
+            else { return v3OwnershipFailure() }
+            guard !recoveryOnly else { return HelperReplyV3(state: "recovery_only") }
+            if current.state == .applied { return v3Reply(for: current) }
+
+            for cidr in current.owner.privateCIDRs where !current.appliedCIDRs.contains(cidr) {
+                current.pendingCIDR = cidr
+                guard store.persist(current),
+                      executor.mutate(action: "add", cidr: cidr, interfaceName: current.owner.interfaceName),
+                      let postflight = executor.inspect(
+                          cidrs: [cidr], interfaceName: current.owner.interfaceName,
+                          trustedMihomoInterfaces: current.owner.activeMihomoTunInterfaces
+                      ), postflight[cidr]?.ownedExact == true,
+                      postflight[cidr]?.foreignConflict == false else {
+                    journal = current
+                    recoveryOnly = true
+                    return v3Reply(for: current, errorCode: "route_apply_failed")
+                }
+                current.appliedCIDRs.append(cidr)
+                current.pendingCIDR = nil
+                guard store.persist(current) else {
+                    journal = current
+                    recoveryOnly = true
+                    return v3Reply(for: current, errorCode: "journal_write_failed")
+                }
+                journal = current
+            }
+            guard let applied = try? current.transitioned(to: .applied, reference: reference),
+                  store.persist(applied) else {
+                recoveryOnly = true
+                journal = current
+                return v3Reply(for: current, errorCode: "journal_write_failed")
+            }
+            journal = applied
+            return v3Reply(for: applied)
+        }
+    }
+
+    func rollback(_ reference: LeaseReferenceV3, connectionID: UUID) -> HelperReplyV3 {
+        lock.withLock { retireLocked(reference, connectionID: connectionID) }
+    }
+
+    func recover(_ owner: LeaseOwnerV3, connectionID: UUID) -> HelperReplyV3 {
+        lock.withLock {
+            guard registeredConnectionIDs.contains(connectionID), let journal,
+                  journal.owner == JournalOwnerV3(owner),
+                  referencesEqualV3(journal.reference(), owner.reference) else {
+                return v3OwnershipFailure()
+            }
+            if activeConnectionID != connectionID {
+                guard recoveryOnly || activeConnectionID == nil else { return v3OwnershipFailure() }
+                activeConnectionID = connectionID
+            }
+            return retireLocked(owner.reference, connectionID: connectionID)
+        }
+    }
+
+    /// Reconcile one durable owner before the listener accepts a new lease.
+    /// A failed release leaves `recoveryOnly` set; a later app connection can
+    /// call `recover` with the exact owner and no route mutation is replayed.
+    func reconcileStartup() -> HelperReplyV3 {
+        lock.withLock {
+            guard let journal else {
+                return recoveryOnly
+                    ? HelperReplyV3(state: "recovery_only")
+                    : HelperReplyV3(state: "idle")
+            }
+            let recoveryID = UUID(uuidString: "00000000-0000-4000-8000-000000000008")!
+            registeredConnectionIDs.insert(recoveryID)
+            activeConnectionID = recoveryID
+            let reply = retireLocked(journal.reference(), connectionID: recoveryID)
+            registeredConnectionIDs.remove(recoveryID)
+            if reply.state != "released" || reply.errorCode != nil {
+                recoveryOnly = true
+                activeConnectionID = nil
+            }
+            return reply
+        }
+    }
+
+    func heartbeat(_ reference: LeaseReferenceV3, connectionID: UUID) -> HelperReplyV3 {
+        lock.withLock {
+            guard registeredConnectionIDs.contains(connectionID), activeConnectionID == connectionID,
+                  let journal, referencesEqualV3(journal.reference(), reference) else {
+                return v3OwnershipFailure()
+            }
+            guard !recoveryOnly else { return HelperReplyV3(state: "recovery_only") }
+            return statusWithBrokerLocked(journal)
+        }
+    }
+
+    func status(_ reference: LeaseReferenceV3, connectionID: UUID) -> HelperReplyV3 {
+        lock.withLock {
+            guard registeredConnectionIDs.contains(connectionID), let journal,
+                  referencesEqualV3(journal.reference(), reference) else {
+                return v3OwnershipFailure()
+            }
+            guard !recoveryOnly else { return HelperReplyV3(state: "recovery_only") }
+            return statusWithBrokerLocked(journal)
+        }
+    }
+
+    private func statusWithBrokerLocked(_ journal: RouteJournalV3) -> HelperReplyV3 {
+        guard !recoveryOnly else { return HelperReplyV3(state: "recovery_only") }
+        // A Released tombstone has already proved the exact release and is
+        // only awaiting unlink; it must not be converted back into a live
+        // heartbeat. HoldPending, however, is ambiguous and must query the
+        // broker before any heartbeat can extend its deadline.
+        if journal.state == .released {
+            heartbeatDeadline = .distantPast
+            return v3Reply(for: journal)
+        }
+        guard broker.status(journal.reference()) == .held else {
+            recoveryOnly = true
+            return v3Reply(
+                for: journal,
+                errorCode: canonicalBrokerV3Error("status", operation: .status)
+            )
+        }
+        heartbeatDeadline = Date().addingTimeInterval(routeHelperV3HeartbeatExpiry)
+        return v3Reply(for: journal)
+    }
+
+    func invalidate(connectionID: UUID) -> HelperReplyV3 {
+        lock.withLock {
+            guard registeredConnectionIDs.remove(connectionID) != nil else { return v3OwnershipFailure() }
+            guard let journal, let activeConnectionID, activeConnectionID == connectionID else {
+                return HelperReplyV3(state: "idle")
+            }
+            return retireLocked(journal.reference(), connectionID: connectionID)
+        }
+    }
+
+    private func retireLocked(_ reference: LeaseReferenceV3, connectionID: UUID) -> HelperReplyV3 {
+        guard let current = journal, activeConnectionID == connectionID,
+              referencesEqualV3(current.reference(), reference) else {
+            if journal == nil { return HelperReplyV3(state: "idle") }
+            return v3OwnershipFailure()
+        }
+        // A durable Released tombstone means the exact broker release already
+        // succeeded; only the final journal unlink was lost. Remove that
+        // matching file and do not issue a second release or transition back
+        // through retirement pending.
+        if current.state == .released {
+            guard store.remove(reference) else {
+                recoveryOnly = true
+                return v3Reply(for: current, errorCode: "journal_write_failed")
+            }
+            journal = nil
+            self.activeConnectionID = nil
+            heartbeatDeadline = .distantPast
+            recoveryOnly = false
+            return v3Reply(for: current)
+        }
+        var mutable = current
+        var owned = mutable.appliedCIDRs
+        if let pending = mutable.pendingCIDR, !owned.contains(pending) { owned.append(pending) }
+        for cidr in owned.reversed() {
+            guard let inspection = executor.inspect(
+                cidrs: [cidr], interfaceName: mutable.owner.interfaceName,
+                trustedMihomoInterfaces: mutable.owner.activeMihomoTunInterfaces
+            )?[cidr], !inspection.foreignConflict else {
+                recoveryOnly = true
+                journal = mutable
+                return v3Reply(for: mutable, errorCode: "rollback_failed")
+            }
+            if inspection.ownedExact {
+                // Mark the exact route before mutating the system.  If the
+                // helper dies after route deletion (or during deletion), the
+                // durable pending marker tells the next recovery pass which
+                // operation was in flight instead of presenting a clean
+                // applied snapshot.
+                mutable.pendingCIDR = cidr
+                guard store.persist(mutable) else {
+                    recoveryOnly = true
+                    journal = mutable
+                    return v3Reply(for: mutable, errorCode: "journal_write_failed")
+                }
+                journal = mutable
+            guard executor.mutate(action: "delete", cidr: cidr, interfaceName: mutable.owner.interfaceName),
+                  let postflight = executor.inspect(
+                      cidrs: [cidr], interfaceName: mutable.owner.interfaceName,
+                      trustedMihomoInterfaces: mutable.owner.activeMihomoTunInterfaces
+                  ),
+                  let postflightEntry = postflight[cidr],
+                  !postflightEntry.ownedExact,
+                  !postflightEntry.foreignConflict else {
+                    recoveryOnly = true
+                    journal = mutable
+                    return v3Reply(for: mutable, errorCode: "rollback_failed")
+                }
+            }
+            mutable.appliedCIDRs.removeAll { $0 == cidr }
+            mutable.pendingCIDR = nil
+            guard store.persist(mutable) else {
+                recoveryOnly = true
+                journal = mutable
+                return v3Reply(for: mutable, errorCode: "journal_write_failed")
+            }
+            journal = mutable
+        }
+
+        let retirement: RouteJournalV3
+        if mutable.state == .retirementPending {
+            retirement = mutable
+        } else {
+            guard let transitioned = try? mutable.transitioned(to: .retirementPending, reference: reference),
+                  store.persist(transitioned) else {
+                recoveryOnly = true
+                journal = mutable
+                return v3Reply(for: mutable, errorCode: "journal_write_failed")
+            }
+            retirement = transitioned
+        }
+        guard retirement.isValid() else {
+            recoveryOnly = true
+            journal = mutable
+            return v3Reply(for: mutable, errorCode: "journal_write_failed")
+        }
+        journal = retirement
+        guard case .released = broker.release(reference) else {
+            recoveryOnly = true
+            return v3Reply(
+                for: retirement,
+                errorCode: canonicalBrokerV3Error("release", operation: .release)
+            )
+        }
+        guard let released = try? retirement.transitioned(to: .released, reference: reference),
+              store.persist(released), store.remove(reference) else {
+            recoveryOnly = true
+            journal = retirement
+            return v3Reply(for: retirement, errorCode: "journal_write_failed")
+        }
+        journal = nil
+        self.activeConnectionID = nil
+        heartbeatDeadline = .distantPast
+        recoveryOnly = false
+        return v3Reply(for: released)
+    }
+
+    private func v3Reply(for journal: RouteJournalV3, errorCode: String? = nil) -> HelperReplyV3 {
+        HelperReplyV3(
+            state: journal.state.rawValue,
+            errorCode: errorCode,
+            reference: journal.reference(),
+            transition: journal.transition
+        )
+    }
+}
+
+private func v3OwnershipFailure() -> HelperReplyV3 {
+    HelperReplyV3(state: "failed_closed", errorCode: "ownership_mismatch")
+}
+
+/// Production-facing adapter. Construction is fixed to the root broker Mach
+/// service and is used by the signed v3 helper listener; no caller-supplied
+/// endpoint, command, or route data crosses this boundary.
+private final class RootBrokerRouteV3Adapter: RouteBrokerV3Executing {
+    private let raw: UnsafeMutableRawPointer
+
+    init?() {
+        guard let raw = kyclash_tunnel_broker_route_client_create() else { return nil }
+        self.raw = raw
+    }
+
+    deinit { kyclash_tunnel_broker_route_client_destroy(raw) }
+
+    func hold(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result {
+        let result = call(reference, operation: kyclash_tunnel_broker_route_client_hold)
+        guard result.transport_status == 0 else { return .ambiguous("transport_failure") }
+        if result.error_code != 0 {
+            return result.error_code == 1 || result.error_code == 4 || result.error_code == 5
+                || result.error_code == 6 || result.error_code == 7 || result.error_code == 8
+                ? .rejected("broker_hold_rejected")
+                : .ambiguous("broker_hold_ambiguous")
+        }
+        return result.state == 2 ? .held : .rejected("broker_hold_rejected")
+    }
+
+    func release(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result {
+        let result = call(reference, operation: kyclash_tunnel_broker_route_client_release)
+        guard result.transport_status == 0 else { return .ambiguous("transport_failure") }
+        if result.error_code != 0 {
+            return result.error_code == 1 || result.error_code == 4 || result.error_code == 5
+                || result.error_code == 6 || result.error_code == 7 || result.error_code == 8
+                ? .rejected("broker_release_rejected")
+                : .ambiguous("broker_release_ambiguous")
+        }
+        return (result.state == 0 || result.state == 1) ? .released : .rejected("broker_release_rejected")
+    }
+
+    func status(_ reference: LeaseReferenceV3) -> RouteBrokerV3Result {
+        let result = call(reference, operation: kyclash_tunnel_broker_route_client_status)
+        guard result.transport_status == 0 else { return .ambiguous("transport_failure") }
+        if result.error_code != 0 {
+            return .ambiguous("broker_status_ambiguous")
+        }
+        switch result.state {
+        case 0: return .idle
+        case 1: return .running
+        case 2: return .held
+        default: return .rejected("broker_status_rejected")
+        }
+    }
+
+    private typealias Operation = (
+        UnsafeMutableRawPointer?, Int32, Int32, UInt64,
+        UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?
+    ) -> KCTBRClientReply
+
+    private func call(_ reference: LeaseReferenceV3, operation: Operation) -> KCTBRClientReply {
+        reference.sidecarInstanceID.withCString { sidecar in
+            reference.leaseID.withCString { lease in
+                reference.operationID.withCString { operationID in
+                    operation(
+                        raw,
+                        Int32(reference.protocolVersion),
+                        Int32(reference.brokerProtocolVersion),
+                        reference.brokerGeneration,
+                        sidecar,
+                        lease,
+                        operationID
+                    )
+                }
+            }
+        }
+    }
+}
+
 private enum RouteCoordinatorSelfTestError: Error {
     case failed(String)
 }
 
 private func requireSelfTest(_ condition: @autoclosure () -> Bool, _ description: String) throws {
     guard condition() else { throw RouteCoordinatorSelfTestError.failed(description) }
+}
+
+// The root broker bridge is linked into the helper target. This self-test uses
+// a nil client so the helper build proves the exact POD layout and fail-closed
+// argument path without contacting a broker or mutating routes; the production
+// listener uses the same adapter for typed hold/release/status calls.
+private func runRouteV3BridgeSelfTest() -> Bool {
+    let result = kyclash_tunnel_broker_route_client_hold(
+        nil,
+        3,
+        1,
+        17,
+        nil,
+        nil,
+        nil
+    )
+    guard result.transport_status == 7,
+          result.protocol_version == -1,
+          result.broker_protocol_version == -1,
+          result.broker_generation == 0,
+          result.sidecar_instance_id.0 == 0,
+          result.route_lease_id.0 == 0,
+          result.operation_id.0 == 0,
+          MemoryLayout<KCTBRClientReply>.size >= 8 * MemoryLayout<Int32>.size
+    else {
+        fputs("route_v3_bridge_self_test_failed\n", stderr)
+        return false
+    }
+    print("route_v3_bridge_self_test_ok")
+    return true
 }
 
 private func selfTestOwner(
@@ -2675,7 +3646,10 @@ private func selfTestOwner(
     )
 }
 
-private func selfTestOwnerV3(_ cidrs: [String]) -> LeaseOwnerV3 {
+private func selfTestOwnerV3(
+    _ cidrs: [String],
+    interfaceName: String = "utun42"
+) -> LeaseOwnerV3 {
     let reference = LeaseReferenceV3(
         brokerGeneration: 17,
         sidecarInstanceID: "instance.selftest.v3",
@@ -2685,7 +3659,7 @@ private func selfTestOwnerV3(_ cidrs: [String]) -> LeaseOwnerV3 {
     return LeaseOwnerV3(
         reference: reference,
         sidecarInstanceID: reference.sidecarInstanceID,
-        interfaceName: "utun42",
+        interfaceName: interfaceName,
         tunnelOperationID: "operation.selftest.v3.prepare",
         mtu: 1420,
         profileRevision: 7,
@@ -2700,6 +3674,10 @@ private func runRouteV3WireJournalSelfTest() -> Bool {
         let reference = owner.reference
         try requireSelfTest(reference.isValid(), "v3 reference tuple must validate")
         try requireSelfTest(owner.isValid(), "v3 owner tuple must validate")
+        try requireSelfTest(
+            selfTestOwnerV3(["10.64.0.0/16"], interfaceName: "utun0").isValid(),
+            "utun0 must have the same canonical validity in the v3 owner"
+        )
 
         let archivedOwner = try NSKeyedArchiver.archivedData(
             withRootObject: owner,
@@ -2738,6 +3716,23 @@ private func runRouteV3WireJournalSelfTest() -> Bool {
         try requireSelfTest(
             decodedReply?.matches(wrongReplyReference, transition: 2) == false,
             "wrong broker generation in a reply must fail closed"
+        )
+        let statusFailure = HelperReplyV3(
+            state: "retirement_pending",
+            errorCode: "broker_status_failed",
+            reference: reference,
+            transition: 4
+        )
+        try requireSelfTest(
+            statusFailure.isValid(),
+            "broker status failure must be a recognized v3 wire error"
+        )
+        try requireSelfTest(
+            !HelperReplyV3(
+                state: "failed_closed",
+                errorCode: "broker_hold_failed"
+            ).isValid(),
+            "broker implementation errors must not cross the v3 wire"
         )
 
         let pending = RouteJournalV3.holdPending(owner: owner)
@@ -2922,6 +3917,363 @@ private func runRouteV3WireJournalSelfTest() -> Bool {
         return true
     } catch {
         fputs("route_v3_wire_journal_self_test_failed: \(error)\n", stderr)
+        return false
+    }
+}
+
+private func runRouteV3InterlockSelfTest() -> Bool {
+    do {
+        let connectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000003")!
+        let owner = selfTestOwnerV3(["10.64.0.0/16", "fd00:64::/48"])
+        let executor = InjectedRouteExecutor()
+        let broker = InjectedRouteBrokerV3()
+        let store = InjectedRouteJournalV3Store()
+        let coordinator = RouteHelperV3Coordinator(executor: executor, broker: broker, store: store)
+        try requireSelfTest(coordinator.register(connectionID: connectionID), "v3 listener must register one connection")
+        let duplicateConnectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000008")!
+        try requireSelfTest(
+            !coordinator.register(connectionID: duplicateConnectionID),
+            "v3 listener must reject a second live connection"
+        )
+        try requireSelfTest(coordinator.discover(connectionID: connectionID).state == "idle",
+                            "v3 discover must start idle")
+
+        let pendingExecutor = InjectedRouteExecutor()
+        let pendingBroker = InjectedRouteBrokerV3()
+        let pendingStore = InjectedRouteJournalV3Store()
+        pendingStore.failPersistAt = 2
+        let pendingCoordinator = RouteHelperV3Coordinator(
+            executor: pendingExecutor, broker: pendingBroker, store: pendingStore
+        )
+        let pendingConnectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000007")!
+        try requireSelfTest(pendingCoordinator.register(connectionID: pendingConnectionID),
+                            "ambiguous-hold connection must register")
+        let ambiguousHold = pendingCoordinator.begin(owner, connectionID: pendingConnectionID)
+        try requireSelfTest(ambiguousHold.errorCode == "journal_write_failed" && pendingBroker.heldReference != nil,
+                            "a lost Held journal write must retain the exact broker hold")
+        let ambiguousRecovered = pendingCoordinator.recover(owner, connectionID: pendingConnectionID)
+        try requireSelfTest(ambiguousRecovered.state == "released" && pendingBroker.heldReference == nil,
+                            "ambiguous HoldPending recovery must release without route mutation")
+        try requireSelfTest(pendingExecutor.addCalls == 0,
+                            "ambiguous hold recovery must never add a route")
+
+        // If the broker rejects a hold while the pending journal cannot be
+        // removed, the helper must retain recovery-only ownership instead of
+        // clearing memory and admitting a fresh lease.
+        let failedHoldExecutor = InjectedRouteExecutor()
+        let failedHoldBroker = InjectedRouteBrokerV3()
+        failedHoldBroker.failHold = true
+        let failedHoldStore = InjectedRouteJournalV3Store()
+        failedHoldStore.failRemove = true
+        let failedHold = RouteHelperV3Coordinator(
+            executor: failedHoldExecutor, broker: failedHoldBroker, store: failedHoldStore
+        )
+        let failedHoldConnectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000009")!
+        try requireSelfTest(failedHold.register(connectionID: failedHoldConnectionID),
+                            "failed-hold connection must register")
+        let failedHoldReply = failedHold.begin(owner, connectionID: failedHoldConnectionID)
+        try requireSelfTest(
+            failedHoldReply.errorCode == "journal_write_failed"
+                && failedHoldStore.current?.state == .holdPending
+                && failedHold.discover(connectionID: failedHoldConnectionID).state == "recovery_only",
+            "failed hold cleanup must retain pending ownership when unlink fails"
+        )
+
+        // A lost broker hold reply is ambiguous even when the local journal
+        // unlink would succeed. The exact pending tuple remains recovery-only
+        // and a fresh connection cannot be admitted until that tuple is
+        // explicitly released.
+        let lostReplyExecutor = InjectedRouteExecutor()
+        let lostReplyBroker = InjectedRouteBrokerV3()
+        lostReplyBroker.failHold = true
+        lostReplyBroker.ambiguousHold = true
+        let lostReplyStore = InjectedRouteJournalV3Store()
+        let lostReply = RouteHelperV3Coordinator(
+            executor: lostReplyExecutor, broker: lostReplyBroker, store: lostReplyStore
+        )
+        let lostReplyConnectionID = UUID(uuidString: "00000000-0000-4000-8000-00000000000a")!
+        try requireSelfTest(lostReply.register(connectionID: lostReplyConnectionID),
+                            "lost-reply connection must register")
+        let lostReplyResult = lostReply.begin(owner, connectionID: lostReplyConnectionID)
+        try requireSelfTest(
+            lostReplyResult.errorCode == "broker_protocol_failure"
+                && lostReplyStore.current?.state == .holdPending
+                && lostReply.discover(connectionID: lostReplyConnectionID).state == "recovery_only",
+            "ambiguous hold reply must retain pending authority and refuse fresh work"
+        )
+        let pendingHeartbeat = lostReply.heartbeat(owner.reference, connectionID: lostReplyConnectionID)
+        try requireSelfTest(
+            pendingHeartbeat.state == "recovery_only"
+                && lostReply.discover(connectionID: lostReplyConnectionID).state == "recovery_only",
+            "recovery-only HoldPending heartbeat must not extend its deadline"
+        )
+        let stalePendingStore = InjectedRouteJournalV3Store()
+        try requireSelfTest(
+            stalePendingStore.persist(RouteJournalV3.holdPending(owner: owner)),
+            "stale pending fixture must persist"
+        )
+        let stalePendingBroker = InjectedRouteBrokerV3()
+        let stalePending = RouteHelperV3Coordinator(
+            executor: InjectedRouteExecutor(), broker: stalePendingBroker, store: stalePendingStore
+        )
+        let stalePendingConnectionID = UUID(uuidString: "00000000-0000-4000-8000-00000000000e")!
+        try requireSelfTest(stalePending.register(connectionID: stalePendingConnectionID),
+                            "stale pending status connection must register")
+        try requireSelfTest(
+            stalePending.status(owner.reference, connectionID: stalePendingConnectionID).state == "recovery_only",
+            "HoldPending status must query broker and fail closed when broker is idle"
+        )
+        try requireSelfTest(
+            lostReply.recover(owner, connectionID: lostReplyConnectionID).state == "released"
+                && lostReplyBroker.releaseCalls == 1,
+            "ambiguous hold must be recoverable by exact tuple release"
+        )
+
+        let held = coordinator.begin(owner, connectionID: connectionID)
+        try requireSelfTest(held.matches(owner.reference, transition: 2) && held.state == "held",
+                            "begin must persist HoldPending, then obtain the exact broker hold")
+        try requireSelfTest(store.persisted.first?.state == .holdPending,
+                            "HoldPending must be durable before the broker call")
+        try requireSelfTest(broker.holdCalls == 1 && broker.heldReference != nil,
+                            "exact broker hold must be called once")
+
+        let applied = coordinator.apply(owner.reference, connectionID: connectionID)
+        try requireSelfTest(applied.state == "applied" && applied.transition == 3,
+                            "route apply must follow the held state")
+        try requireSelfTest(Set(executor.added) == Set(owner.privateCIDRs),
+                            "all private routes must be applied by the injected executor")
+
+        let released = coordinator.rollback(owner.reference, connectionID: connectionID)
+        try requireSelfTest(released.state == "released" && released.transition == 5,
+                            "rollback must prove absence before release and reach Released")
+        try requireSelfTest(executor.added.isEmpty && broker.heldReference == nil,
+                            "route rollback and exact broker release must both complete")
+        try requireSelfTest(store.current == nil && broker.releaseCalls == 1,
+                            "released journal must be removed only after broker release")
+        try requireSelfTest(
+            store.persisted.filter { $0.pendingCIDR != nil }.count >= owner.privateCIDRs.count * 2,
+            "route deletion must persist a pending marker before each mutation"
+        )
+        try requireSelfTest(coordinator.rollback(owner.reference, connectionID: connectionID).state == "idle",
+                            "duplicate rollback must be idempotent after release")
+
+        let persistedStates = store.persisted.map(\.state)
+        try requireSelfTest(
+            persistedStates.firstIndex(of: .holdPending) != nil
+                && persistedStates.firstIndex(of: .held) != nil
+                && persistedStates.firstIndex(of: .applied) != nil
+                && persistedStates.firstIndex(of: .retirementPending) != nil
+                && persistedStates.firstIndex(of: .released) != nil,
+            "journal history must include every interlock state"
+        )
+
+        // A release transport failure keeps the hold and enters recovery-only;
+        // retrying the exact owner then releases without replaying route adds.
+        let retryExecutor = InjectedRouteExecutor()
+        let retryBroker = InjectedRouteBrokerV3()
+        let retryStore = InjectedRouteJournalV3Store()
+        let retry = RouteHelperV3Coordinator(executor: retryExecutor, broker: retryBroker, store: retryStore)
+        let retryConnectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000004")!
+        try requireSelfTest(retry.register(connectionID: retryConnectionID), "retry connection must register")
+        try requireSelfTest(retry.begin(owner, connectionID: retryConnectionID).state == "held",
+                            "retry begin must hold the exact broker lease")
+        try requireSelfTest(retry.apply(owner.reference, connectionID: retryConnectionID).state == "applied",
+                            "retry apply must reach applied")
+        retryBroker.failRelease = true
+        let failedRelease = retry.rollback(owner.reference, connectionID: retryConnectionID)
+        try requireSelfTest(failedRelease.errorCode == "release_failed" && failedRelease.state == "retirement_pending",
+                            "release failure must retain RetirementPending and the broker hold")
+        try requireSelfTest(retryBroker.heldReference != nil && retryExecutor.added.isEmpty,
+                            "release failure must not restore routes or drop the hold")
+        try requireSelfTest(retry.status(owner.reference, connectionID: retryConnectionID).state == "retirement_pending",
+                            "release failure must remain recovery-only")
+        retryBroker.failRelease = false
+        let recovered = retry.recover(owner, connectionID: retryConnectionID)
+        try requireSelfTest(recovered.state == "released" && retryBroker.heldReference == nil,
+                            "same-owner recovery must retry only the exact broker release")
+        try requireSelfTest(retryExecutor.addCalls == owner.privateCIDRs.count,
+                            "recovery must not replay route additions")
+
+        // A lost post-release journal removal is also retry-safe: the broker's
+        // exact tombstone accepts the same release, while a new tuple cannot.
+        let tombstoneExecutor = InjectedRouteExecutor()
+        let tombstoneBroker = InjectedRouteBrokerV3()
+        let tombstoneStore = InjectedRouteJournalV3Store()
+        let tombstone = RouteHelperV3Coordinator(
+            executor: tombstoneExecutor, broker: tombstoneBroker, store: tombstoneStore
+        )
+        let tombstoneConnectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000006")!
+        try requireSelfTest(tombstone.register(connectionID: tombstoneConnectionID), "tombstone connection must register")
+        try requireSelfTest(tombstone.begin(owner, connectionID: tombstoneConnectionID).state == "held",
+                            "tombstone begin must hold")
+        try requireSelfTest(tombstone.apply(owner.reference, connectionID: tombstoneConnectionID).state == "applied",
+                            "tombstone apply must complete")
+        tombstoneStore.failRemove = true
+        let lostRemoval = tombstone.rollback(owner.reference, connectionID: tombstoneConnectionID)
+        try requireSelfTest(lostRemoval.errorCode == "journal_write_failed" && tombstoneBroker.heldReference == nil,
+                            "lost journal removal must retain recovery state after exact broker release")
+        tombstoneStore.failRemove = false
+        let tombstoneRecovered = tombstone.recover(owner, connectionID: tombstoneConnectionID)
+        try requireSelfTest(tombstoneRecovered.state == "released" && tombstoneBroker.releaseCalls == 1,
+                            "released journal recovery must only unlink the exact tombstone")
+
+        // Startup must not treat a released tombstone whose unlink failed as
+        // clean: the durable record remains the recovery authority.
+        let startupFailureExecutor = InjectedRouteExecutor()
+        let startupFailureBroker = InjectedRouteBrokerV3()
+        let startupFailureStore = InjectedRouteJournalV3Store()
+        let startupFailure = RouteHelperV3Coordinator(
+            executor: startupFailureExecutor, broker: startupFailureBroker, store: startupFailureStore
+        )
+        let startupFailureConnectionID = UUID(uuidString: "00000000-0000-4000-8000-00000000000b")!
+        try requireSelfTest(startupFailure.register(connectionID: startupFailureConnectionID),
+                            "startup-failure connection must register")
+        try requireSelfTest(startupFailure.begin(owner, connectionID: startupFailureConnectionID).state == "held",
+                            "startup-failure fixture must hold")
+        startupFailureStore.failRemove = true
+        _ = startupFailure.rollback(owner.reference, connectionID: startupFailureConnectionID)
+        try requireSelfTest(startupFailureStore.current?.state == .released,
+                            "startup-failure fixture must retain released tombstone")
+        let restartedStartup = RouteHelperV3Coordinator(
+            executor: startupFailureExecutor, broker: startupFailureBroker, store: startupFailureStore
+        )
+        let startupReply = restartedStartup.reconcileStartup()
+        try requireSelfTest(
+            startupReply.state == "released" && startupReply.errorCode == "journal_write_failed",
+            "startup must report released tombstone unlink failure"
+        )
+        let postStartupConnectionID = UUID(uuidString: "00000000-0000-4000-8000-00000000000c")!
+        try requireSelfTest(restartedStartup.register(connectionID: postStartupConnectionID),
+                            "post-startup recovery connection must register")
+        try requireSelfTest(restartedStartup.discover(connectionID: postStartupConnectionID).state == "recovery_only",
+                            "failed tombstone cleanup must leave coordinator recovery-only")
+
+        // A nil post-delete inspection is not positive absence. Retain the
+        // pending CIDR/journal and require a later exact retry.
+        let nilPostflightExecutor = InjectedRouteExecutor()
+        let nilPostflightBroker = InjectedRouteBrokerV3()
+        let nilPostflightStore = InjectedRouteJournalV3Store()
+        let nilPostflight = RouteHelperV3Coordinator(
+            executor: nilPostflightExecutor, broker: nilPostflightBroker, store: nilPostflightStore
+        )
+        let nilPostflightConnectionID = UUID(uuidString: "00000000-0000-4000-8000-00000000000d")!
+        try requireSelfTest(nilPostflight.register(connectionID: nilPostflightConnectionID),
+                            "nil-postflight connection must register")
+        try requireSelfTest(nilPostflight.begin(owner, connectionID: nilPostflightConnectionID).state == "held",
+                            "nil-postflight fixture must hold")
+        try requireSelfTest(nilPostflight.apply(owner.reference, connectionID: nilPostflightConnectionID).state == "applied",
+                            "nil-postflight fixture must apply")
+        nilPostflightExecutor.failInspectAt = nilPostflightExecutor.inspectCalls + 3
+        let nilPostflightReply = nilPostflight.rollback(owner.reference, connectionID: nilPostflightConnectionID)
+        try requireSelfTest(
+            nilPostflightReply.errorCode == "rollback_failed"
+                && nilPostflightStore.current?.pendingCIDR != nil
+                && nilPostflight.discover(connectionID: nilPostflightConnectionID).state == "recovery_only",
+            "nil post-delete inspection must retain recovery authority"
+        )
+
+        // Connection invalidation must execute rollback before releasing the
+        // broker hold, while retaining the hold if route cleanup fails.
+        let invalidExecutor = InjectedRouteExecutor()
+        let invalidBroker = InjectedRouteBrokerV3()
+        let invalidStore = InjectedRouteJournalV3Store()
+        let invalid = RouteHelperV3Coordinator(
+            executor: invalidExecutor, broker: invalidBroker, store: invalidStore
+        )
+        let invalidConnectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000005")!
+        try requireSelfTest(invalid.register(connectionID: invalidConnectionID), "invalidation connection must register")
+        try requireSelfTest(invalid.begin(owner, connectionID: invalidConnectionID).state == "held",
+                            "invalidation begin must hold")
+        try requireSelfTest(invalid.apply(owner.reference, connectionID: invalidConnectionID).state == "applied",
+                            "invalidation apply must complete")
+        let invalidated = invalid.invalidate(connectionID: invalidConnectionID)
+        try requireSelfTest(invalidated.state == "released" && invalidExecutor.added.isEmpty,
+                            "connection invalidation must rollback routes before broker release")
+        try requireSelfTest(invalidBroker.releaseCalls == 1 && invalidBroker.heldReference == nil,
+                            "invalidation must release the same exact broker tuple")
+
+        print("route_v3_interlock_self_test_ok")
+        return true
+    } catch {
+        fputs("route_v3_interlock_self_test_failed: \(error)\n", stderr)
+        return false
+    }
+}
+
+private func runRouteV3DurableStoreSelfTest() -> Bool {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(
+        "kyclash-route-v3-store-\(UUID().uuidString)", isDirectory: true
+    )
+    do {
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: false)
+        try fileManager.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: root.path)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let owner = selfTestOwnerV3(["10.64.0.0/16", "fd00:64::/48"])
+        let journalURL = root.appendingPathComponent("route-lease-v3.plist")
+        let pending = RouteJournalV3.holdPending(owner: owner)
+        let first = DurableRouteJournalV3Store(url: journalURL)
+        try requireSelfTest(!first.corrupt && first.current == nil, "new v3 store must start absent")
+        try requireSelfTest(first.persist(pending), "v3 store must atomically persist HoldPending")
+        guard let info = lstatInfo(journalURL) else {
+            throw RouteCoordinatorSelfTestError.failed("v3 journal was not created")
+        }
+        try requireSelfTest(
+            isRegularFile(info) && info.st_nlink == 1 && hasExactPermissions(info, journalFilePermissions),
+            "v3 journal must be a private regular 0600 file"
+        )
+        let restarted = DurableRouteJournalV3Store(url: journalURL)
+        try requireSelfTest(restarted.current == pending && !restarted.corrupt,
+                            "v3 store must recover the exact journal after restart")
+
+        let replacement = try pending.transitioned(to: .held, reference: owner.reference)
+        try PropertyListEncoder().encode(replacement).write(to: journalURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: journalURL.path)
+        try requireSelfTest(!restarted.remove(owner.reference),
+                            "replaced v3 journal must not be removed under stale memory")
+        try requireSelfTest(removeJournalFile(journalURL), "test replacement journal cleanup must succeed")
+
+        // Run the full lifecycle against the durable store while keeping route
+        // and broker effects injected and unprivileged.
+        let lifecycleURL = root.appendingPathComponent("lifecycle.plist")
+        let lifecycleStore = DurableRouteJournalV3Store(url: lifecycleURL)
+        let lifecycleBroker = InjectedRouteBrokerV3()
+        let lifecycleExecutor = InjectedRouteExecutor()
+        let lifecycle = RouteHelperV3Coordinator(
+            executor: lifecycleExecutor, broker: lifecycleBroker, store: lifecycleStore
+        )
+        let connectionID = UUID(uuidString: "00000000-0000-4000-8000-000000000009")!
+        try requireSelfTest(lifecycle.register(connectionID: connectionID), "durable lifecycle connection must register")
+        try requireSelfTest(lifecycle.begin(owner, connectionID: connectionID).state == "held",
+                            "durable lifecycle begin must hold")
+        try requireSelfTest(lifecycle.apply(owner.reference, connectionID: connectionID).state == "applied",
+                            "durable lifecycle apply must complete")
+        try requireSelfTest(lifecycle.rollback(owner.reference, connectionID: connectionID).state == "released",
+                            "durable lifecycle rollback must release")
+        try requireSelfTest(!fileManager.fileExists(atPath: lifecycleURL.path),
+                            "durable lifecycle must remove the journal after release")
+
+        let corruptURL = root.appendingPathComponent("corrupt.plist")
+        try Data("not-a-plist".utf8).write(to: corruptURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: corruptURL.path)
+        let corrupt = DurableRouteJournalV3Store(url: corruptURL)
+        try requireSelfTest(corrupt.corrupt && corrupt.current == nil,
+                            "malformed v3 journal must fail closed")
+
+        let symlinkTarget = root.appendingPathComponent("symlink-target")
+        let symlinkURL = root.appendingPathComponent("symlink.plist")
+        try Data("target".utf8).write(to: symlinkTarget, options: .atomic)
+        try fileManager.createSymbolicLink(at: symlinkURL, withDestinationURL: symlinkTarget)
+        let symlinkStore = DurableRouteJournalV3Store(url: symlinkURL)
+        try requireSelfTest(symlinkStore.corrupt && !symlinkStore.persist(pending),
+                            "symlink v3 journal must fail closed for read and write")
+
+        print("route_v3_durable_store_self_test_ok")
+        return true
+    } catch {
+        fputs("route_v3_durable_store_self_test_failed: \(error)\n", stderr)
+        try? fileManager.removeItem(at: root)
         return false
     }
 }
@@ -3623,24 +4975,31 @@ private enum RouteHelperMain {
             if !runRouteV3WireJournalSelfTest() { exit(1) }
             return
         }
+        if CommandLine.arguments.contains("--route-v3-interlock-self-test") {
+            if !runRouteV3InterlockSelfTest() { exit(1) }
+            return
+        }
+        if CommandLine.arguments.contains("--route-v3-durable-store-self-test") {
+            if !runRouteV3DurableStoreSelfTest() { exit(1) }
+            return
+        }
+        if CommandLine.arguments.contains("--route-v3-bridge-self-test") {
+            if !runRouteV3BridgeSelfTest() { exit(1) }
+            return
+        }
         if CommandLine.arguments.contains("--route-coordinator-self-test") {
             if !runRouteCoordinatorSelfTest() { exit(1) }
             return
         }
-        // Force construction before the listener accepts its first request.
-        // RouteCoordinator's initializer loads and reconciles any durable
-        // journal, so a helper restart cannot leave owned routes pending on a
-        // later client discovery call.
-        _ = RouteCoordinator.shared
-        let delegate = ListenerDelegate()
-        let listener = NSXPCListener(machServiceName: "net.kysion.kyclash.route-helper")
-        // Apply the same immutable designated requirement at the listener so
-        // an unsigned or foreign-team process is rejected before the delegate
-        // records its audit identity.  The per-connection requirement remains
-        // in place as a second enforcement point before message delivery.
-        listener.setConnectionCodeSigningRequirement(appRequirement)
-        listener.delegate = delegate
-        listener.resume()
-        RunLoop.current.run()
+        if CommandLine.arguments.contains("--route-v3-lab-listener") {
+            runRouteV3LabListener()
+        }
+        if CommandLine.arguments.contains("--route-v2-lab-listener") {
+            runRouteV2LabListener()
+        }
+        // Production always exposes the broker-bound v3 listener. Legacy v2
+        // code remains compiled for recovery/self-test coverage but is never
+        // selected by the signed launchd helper.
+        runRouteV3ProductionListener()
     }
 }

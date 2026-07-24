@@ -10,6 +10,12 @@ private let brokerMachService = "net.kysion.kyclash.tunnel-broker"
 private let brokerExecutableName = "kyclash-tunnel-broker"
 private let sidecarExecutableName = "kyclash-network-sidecar"
 private let maximumIdentifierBytes = 64
+// A route-helper connection must refresh the exact v3 lease periodically.
+// Expiry is an explicit recovery signal only: the broker never tears down a
+// held route/utun on a timer, because only the helper can prove route
+// rollback, fsync its journal, and issue the matching release.
+private let routeHeartbeatExpiry: TimeInterval = 15
+private let routeHeartbeatWatchdogInterval: TimeInterval = 1
 private let appRequirement = "anchor apple generic and identifier \"net.kysion.kyclash\" and certificate leaf[subject.OU] = \"RQUQ8Y3S9H\""
 private let routeHelperRequirement = "anchor apple generic and identifier \"net.kysion.kyclash.route-helper\" and certificate leaf[subject.OU] = \"RQUQ8Y3S9H\""
 
@@ -634,6 +640,8 @@ private struct SessionLeaseState {
     var releasedLegacyRouteLeaseID: String?
     var routeBindingV3: TunnelRouteBindingV3?
     var releasedRouteBindingV3: TunnelRouteBindingV3?
+    var lastRouteHeartbeat: Date?
+    var routeRecoveryRequired = false
 
     var hasRouteHold: Bool { routeLeaseID != nil || routeBindingV3 != nil }
 
@@ -673,10 +681,16 @@ private struct SessionLeaseState {
         }
         guard routeLeaseID == nil, releasedLegacyRouteLeaseID == nil else { return .holdMismatch }
         if let current = routeBindingV3 {
-            return sameRouteBindingV3(current, binding) ? nil : .holdMismatch
+            guard sameRouteBindingV3(current, binding) else { return .holdMismatch }
+            guard !routeRecoveryRequired else { return .unavailable }
+            lastRouteHeartbeat = Date()
+            routeRecoveryRequired = false
+            return nil
         }
         guard releasedRouteBindingV3 == nil else { return .holdMismatch }
         routeBindingV3 = binding
+        lastRouteHeartbeat = Date()
+        routeRecoveryRequired = false
         return nil
     }
 
@@ -697,17 +711,31 @@ private struct SessionLeaseState {
         // request never reached the broker. Record the full tuple so a lost
         // reply can be retried but a different tuple cannot claim absence.
         releasedRouteBindingV3 = binding
+        lastRouteHeartbeat = nil
+        routeRecoveryRequired = false
         return nil
     }
 
-    func statusV3(_ binding: TunnelRouteBindingV3) -> BrokerErrorCode? {
+    mutating func statusV3(_ binding: TunnelRouteBindingV3) -> BrokerErrorCode? {
         guard binding.isValid(), routeBindingV3MatchesReference(binding, reference) else {
             return .staleGeneration
         }
         guard routeLeaseID == nil, releasedLegacyRouteLeaseID == nil else { return .holdMismatch }
-        if let current = routeBindingV3, sameRouteBindingV3(current, binding) { return nil }
+        if let current = routeBindingV3, sameRouteBindingV3(current, binding) {
+            if routeRecoveryRequired { return .unavailable }
+            lastRouteHeartbeat = Date()
+            return nil
+        }
         if let released = releasedRouteBindingV3, sameRouteBindingV3(released, binding) { return nil }
         return .holdMismatch
+    }
+
+    mutating func markHeartbeatExpired(at now: Date) -> Bool {
+        guard hasRouteHold, let lastRouteHeartbeat else { return false }
+        guard now.timeIntervalSince(lastRouteHeartbeat) >= routeHeartbeatExpiry else { return false }
+        if routeRecoveryRequired { return false }
+        routeRecoveryRequired = true
+        return true
     }
 }
 
@@ -720,12 +748,45 @@ private final class TunnelBrokerCoordinator {
     }
 
     private let lock = NSLock()
+    private let watchdogQueue = DispatchQueue(
+        label: "net.kysion.kyclash.tunnel-broker.route-heartbeat",
+        qos: .utility
+    )
+    private var watchdog: DispatchSourceTimer?
     private var nextGeneration: UInt64 = 1
     private var active: ActiveSession?
     // One bounded exact v3 tombstone lets a helper retry release/status after
     // a reply loss without treating stale_generation as positive reap proof.
     private var retiredRouteBindingV3 = RetiredRouteBindingV3Tombstone()
     private let planner = FixedSidecarLaunchPlanner(trustValidator: ManifestSidecarTrustValidator())
+
+    private init() {
+        let timer = DispatchSource.makeTimerSource(queue: watchdogQueue)
+        timer.schedule(
+            deadline: .now() + routeHeartbeatWatchdogInterval,
+            repeating: routeHeartbeatWatchdogInterval
+        )
+        timer.setEventHandler { [weak self] in self?.heartbeatWatchdogTick() }
+        timer.resume()
+        watchdog = timer
+    }
+
+    deinit { watchdog?.cancel() }
+
+    private func heartbeatWatchdogTick() {
+        lock.lock()
+        guard var session = active else {
+            lock.unlock()
+            return
+        }
+        if session.lease.markHeartbeatExpired(at: Date()) {
+            // Keep the exact child and route hold alive. The v3 helper will
+            // observe `unavailable`, enter recovery-only, prove route absence,
+            // fsync its journal, and issue the matching release.
+            active = session
+        }
+        lock.unlock()
+    }
 
     func start(appConnectionID: UUID) -> TunnelSessionReply {
         lock.lock()
@@ -978,7 +1039,7 @@ private final class TunnelBrokerCoordinator {
         if retiredMatch == .exact {
             return TunnelBrokerRouteReplyV3(binding: binding, state: .idle)
         }
-        guard let session = active else {
+        guard var session = active else {
             let error: BrokerErrorCode = retiredMatch == .sameSessionMismatch ? .holdMismatch : .staleGeneration
             return TunnelBrokerRouteReplyV3(binding: binding, state: .idle, errorCode: error)
         }
@@ -987,15 +1048,17 @@ private final class TunnelBrokerCoordinator {
             return TunnelBrokerRouteReplyV3(binding: binding, state: currentStateLocked(), errorCode: error)
         }
         if let error = session.lease.statusV3(binding) {
+            active = session
             return TunnelBrokerRouteReplyV3(binding: binding, state: currentStateLocked(), errorCode: error)
         }
+        active = session
         return TunnelBrokerRouteReplyV3(binding: binding, state: currentStateLocked())
     }
 
     private func childExited(reference: TunnelReference) {
         lock.lock()
         defer { lock.unlock() }
-        guard let session = active, sameReference(reference, session.lease.reference) else { return }
+        guard var session = active, sameReference(reference, session.lease.reference) else { return }
         // Keep a held generation as a tombstone until exact route rollback and
         // release; otherwise a new Connect could race stale private routes.
         if !session.lease.hasRouteHold {
@@ -1003,6 +1066,12 @@ private final class TunnelBrokerCoordinator {
                 retiredRouteBindingV3.record(released)
             }
             active = nil
+        } else {
+            // The sidecar is gone while the helper still owns a route hold.
+            // Preserve both authorities and force the helper down its
+            // recovery/release path; never silently clear the child/session.
+            session.lease.routeRecoveryRequired = true
+            active = session
         }
     }
 
@@ -1223,6 +1292,19 @@ private func runSelfTest() -> Bool {
         try requireSelfTest(leaseV3.holdV3(bindingV3) == nil, "exact v3 hold must pass")
         try requireSelfTest(leaseV3.holdV3(bindingV3) == nil, "duplicate exact v3 hold must be idempotent")
         try requireSelfTest(leaseV3.statusV3(bindingV3) == nil, "exact v3 status must pass")
+        leaseV3.lastRouteHeartbeat = Date(timeIntervalSinceNow: -(routeHeartbeatExpiry + 1))
+        try requireSelfTest(
+            leaseV3.markHeartbeatExpired(at: Date()) && leaseV3.routeRecoveryRequired,
+            "stale route heartbeat must raise recovery signal without dropping hold"
+        )
+        try requireSelfTest(
+            leaseV3.statusV3(bindingV3) == .unavailable && leaseV3.hasRouteHold,
+            "expired heartbeat must retain hold and report bounded recovery"
+        )
+        try requireSelfTest(
+            leaseV3.holdV3(bindingV3) == .unavailable && leaseV3.routeRecoveryRequired,
+            "duplicate exact hold must not clear an expired recovery signal"
+        )
         try requireSelfTest(
             leaseV3.hold(binding) == .holdMismatch,
             "legacy hold must not mix with an active v3 tuple"

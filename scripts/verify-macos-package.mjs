@@ -794,6 +794,8 @@ const assertLabMarker = ({
       'network_sidecar_sha256',
       'route_helper_sha256',
       'route_helper_plist_sha256',
+      'tunnel_broker_sha256',
+      'tunnel_broker_plist_sha256',
       'mihomo_sha256',
       'mihomo_alpha_sha256',
     ],
@@ -911,12 +913,23 @@ export const verifyPackage = ({
     app,
     'Contents/Library/LaunchDaemons/net.kysion.kyclash.route-helper.plist',
   )
+  const tunnelBroker = path.join(
+    app,
+    'Contents/Resources/kyclash-tunnel-broker',
+  )
+  const tunnelBrokerPlist = path.join(
+    app,
+    'Contents/Library/LaunchDaemons/net.kysion.kyclash.tunnel-broker.plist',
+  )
   const trust = path.join(
     app,
     `Contents/Resources/resources/kyclash-network-sidecar-${target}.trust.json`,
   )
   const executable = path.join(app, 'Contents/MacOS/clash-verge')
-  for (const file of [app, helper, sidecar, helperPlist, trust, executable]) {
+  const requiredFiles = [app, helper, sidecar, helperPlist, trust, executable]
+  if (profile === 'networking-production-vm-lab')
+    requiredFiles.push(tunnelBroker, tunnelBrokerPlist)
+  for (const file of requiredFiles) {
     if (file === app) requireDirectory(file, file)
     else requireRegular(file, file)
   }
@@ -931,7 +944,28 @@ export const verifyPackage = ({
   const team = process.env.APPLE_TEAM_ID ?? 'RQUQ8Y3S9H'
   for (const binary of [app, sidecar, helper])
     assertDeveloperIdApplication(binary, team)
+  if (profile === 'networking-production-vm-lab') {
+    run('codesign', ['--verify', '--strict', '--verbose=2', tunnelBroker])
+    assertDeveloperIdApplication(tunnelBroker, team)
+  }
   run('plutil', ['-lint', helperPlist])
+  if (profile === 'networking-production-vm-lab') {
+    run('plutil', ['-lint', tunnelBrokerPlist])
+    const brokerPlist = JSON.parse(
+      output('plutil', ['-convert', 'json', '-o', '-', tunnelBrokerPlist]),
+    )
+    if (
+      JSON.stringify(Object.keys(brokerPlist).sort()) !==
+        JSON.stringify(['BundleProgram', 'Label', 'MachServices']) ||
+      brokerPlist.Label !== 'net.kysion.kyclash.tunnel-broker' ||
+      brokerPlist.BundleProgram !==
+        'Contents/Resources/kyclash-tunnel-broker' ||
+      JSON.stringify(Object.keys(brokerPlist.MachServices ?? {}).sort()) !==
+        JSON.stringify(['net.kysion.kyclash.tunnel-broker']) ||
+      brokerPlist.MachServices['net.kysion.kyclash.tunnel-broker'] !== true
+    )
+      throw new Error('tunnel broker launch plist is not the locked contract')
+  }
   const packageSignature = output('pkgutil', ['--check-signature', pkg])
   if (
     !packageSignature.includes('Developer ID Installer') ||
@@ -1096,6 +1130,16 @@ export const verifyPackage = ({
         marker.build_inputs.route_helper_plist_sha256,
         'route helper plist',
       ],
+      [
+        tunnelBroker,
+        marker.build_inputs.tunnel_broker_sha256,
+        'signed tunnel broker',
+      ],
+      [
+        tunnelBrokerPlist,
+        marker.build_inputs.tunnel_broker_plist_sha256,
+        'tunnel broker plist',
+      ],
     ]
     for (const [file, expectedHash, label] of exactInputComponents) {
       if (fileSha256(file) !== expectedHash)
@@ -1141,6 +1185,7 @@ export const verifyPackage = ({
       ? {
           sidecar_sha256: fileSha256(sidecar),
           route_helper_sha256: fileSha256(helper),
+          tunnel_broker_sha256: fileSha256(tunnelBroker),
           mihomo_sha256: fileSha256(
             path.join(app, 'Contents/MacOS/verge-mihomo'),
           ),

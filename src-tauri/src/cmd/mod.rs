@@ -12,6 +12,8 @@ pub mod media_unlock_checker;
 pub mod network;
 #[cfg(feature = "networking-dev")]
 pub mod networking;
+#[cfg(all(feature = "networking-vm-external-peer-lab-app", target_os = "macos"))]
+pub mod networking_external_peer_lab;
 #[cfg(feature = "networking-production")]
 pub mod networking_production;
 #[cfg(feature = "networking-userspace-lab-app")]
@@ -36,6 +38,8 @@ pub use media_unlock_checker::*;
 pub use network::*;
 #[cfg(feature = "networking-dev")]
 pub use networking::*;
+#[cfg(all(feature = "networking-vm-external-peer-lab-app", target_os = "macos"))]
+pub use networking_external_peer_lab::*;
 #[cfg(feature = "networking-production")]
 pub use networking_production::*;
 #[cfg(feature = "networking-userspace-lab-app")]

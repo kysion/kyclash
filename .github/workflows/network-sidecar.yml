@@ -452,11 +452,21 @@ jobs:
           plist_absent 'ProgramArguments'
           plist_absent 'EnvironmentVariables'
           test "$(grep -c 'interface.setClasses' macos/route-helper/main.swift)" -eq 18
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -target arm64-apple-macos13.0 -mmacosx-version-min=13.0 \
+            -I macos/tunnel-broker -c macos/tunnel-broker/route-client.m \
+            -o "${RUNNER_TEMP}/kyclash-route-client.o"
           xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
-            -framework Foundation -o "${RUNNER_TEMP}/kyclash-route-helper" \
-            macos/route-helper/main.swift
+            -framework Foundation -framework OSLog \
+            -import-objc-header macos/tunnel-broker/route-client.h \
+            -o "${RUNNER_TEMP}/kyclash-route-helper" \
+            macos/route-helper/main.swift \
+            "${RUNNER_TEMP}/kyclash-route-client.o"
           "${RUNNER_TEMP}/kyclash-route-helper" --route-readonly-self-test
           "${RUNNER_TEMP}/kyclash-route-helper" --route-v3-contract-self-test
+          "${RUNNER_TEMP}/kyclash-route-helper" --route-v3-bridge-self-test
+          "${RUNNER_TEMP}/kyclash-route-helper" --route-v3-interlock-self-test
+          "${RUNNER_TEMP}/kyclash-route-helper" --route-v3-durable-store-self-test
           "${RUNNER_TEMP}/kyclash-route-helper" --route-coordinator-self-test
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -mmacosx-version-min=13.0 -c macos/route-helper/client.m \

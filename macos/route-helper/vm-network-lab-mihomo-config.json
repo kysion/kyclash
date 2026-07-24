@@ -1,0 +1,26 @@
+{
+  "allow-lan": false,
+  "bind-address": "127.0.0.1",
+  "mode": "direct",
+  "log-level": "warning",
+  "ipv6": false,
+  "external-controller-unix": "/private/var/tmp/kyclash-vm-network-lab-root/mihomo.sock",
+  "profile": {
+    "store-selected": false,
+    "store-fake-ip": false
+  },
+  "tun": {
+    "enable": true,
+    "device": "utun4094",
+    "stack": "system",
+    "auto-route": true,
+    "auto-detect-interface": true,
+    "strict-route": false,
+    "mtu": 1420,
+    "inet4-address": ["198.18.0.1/30"],
+    "route-address": ["10.88.0.0/24"]
+  },
+  "proxies": [],
+  "proxy-groups": [],
+  "rules": ["MATCH,DIRECT"]
+}

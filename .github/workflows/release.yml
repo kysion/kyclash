@@ -94,6 +94,15 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm network-sidecar:macos aarch64-apple-darwin
 
+      - name: Build and sign tunnel broker
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tunnel-broker:macos
+
+      - name: Verify signed tunnel broker and fixed launch plist
+        run: pnpm tunnel-broker:verify
+
       - name: Build and sign route helper
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}

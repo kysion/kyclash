@@ -66,7 +66,7 @@ pub(super) struct RouteRetirementIssuer {
 }
 
 impl RouteRetirementIssuer {
-    fn allocate() -> Result<Self, NetworkErrorCode> {
+    pub(super) fn allocate() -> Result<Self, NetworkErrorCode> {
         NEXT_ROUTE_BOUNDARY_INCARNATION
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| next.checked_add(1))
             .map(|boundary_incarnation| Self { boundary_incarnation })

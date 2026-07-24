@@ -93,23 +93,28 @@ export interface NetworkingUserspaceLabTransportCheck {
   latency_ms: number
   jitter_ms: number
   loss_percent: number
+  private_reachable: boolean
+  mihomo_coexisting: boolean
 }
 
 /**
- * Status returned only by the explicit no-sign userspace lab App.  The
- * `routes_installed: false` and `tunnel_kind` fields are part of the UI
- * contract so a lab run cannot be mistaken for production networking.
+ * Status returned only by an explicit no-sign lab App. `vm_utun_lab` is the
+ * route-free fixture; `vm_network_lab` is the disposable VirtualMac fixture
+ * whose root harness owns the private route and Mihomo coexistence proof. Both
+ * remain separate from production helpers and credentials.
  */
 export interface NetworkingUserspaceLabStatus {
-  runtime_mode: 'userspace_lab'
-  tunnel_kind: 'userspace_netstack'
+  runtime_mode: 'userspace_lab' | 'vm_utun_lab' | 'vm_network_lab'
+  tunnel_kind: 'userspace_netstack' | 'darwin_utun'
   network_state: NetworkState
   sidecar_state: 'stopped' | 'starting' | 'running' | 'backoff' | 'crash_loop'
   site_id: string
   site_display_name: string
   private_routes: string[]
-  routes_installed: false
-  tunnel_interface: 'userspace' | null
+  routes_installed: boolean
+  private_reachable: boolean
+  mihomo_coexisting: boolean
+  tunnel_interface: string | null
   active_transport: TransportKind | null
   health: {
     reachable: boolean
@@ -121,10 +126,92 @@ export interface NetworkingUserspaceLabStatus {
   last_error: NetworkErrorCode | null
 }
 
+export type NetworkingExternalPeerLabPhase =
+  | 'disconnected'
+  | 'waiting_for_validated_peer'
+  | 'ready'
+  | 'preparing_mihomo'
+  | 'preparing_utun'
+  | 'connecting_quic'
+  | 'connected_quic'
+  | 'switching_to_wss'
+  | 'connected_wss'
+  | 'switching_to_tcp'
+  | 'connected_tcp'
+  | 'peer_lost_cleaning_up'
+  | 'disconnecting'
+  | 'failed'
+
+export type NetworkingExternalPeerImpairmentReason =
+  'carrier_unhealthy_observed'
+
+export interface NetworkingExternalPeerTransportCheck {
+  transport: TransportKind
+  carrier_healthy: boolean
+  private_echo_healthy: boolean
+  mihomo_coexisting: boolean
+  overlay_ssh_verified: boolean
+  system_ssh_verified: boolean
+  latency_ms: number
+  jitter_ms: number
+  loss_percent: number
+  impairment_reason: NetworkingExternalPeerImpairmentReason | null
+}
+
+/**
+ * Redacted status from the default-off two-VirtualMac lab. It deliberately
+ * has no endpoint, port, descriptor, certificate, key, hash, PID, path, or
+ * free-form backend message.
+ */
+export interface NetworkingExternalPeerLabStatus {
+  runtime_mode: 'vm_external_peer_lab'
+  tunnel_kind: 'darwin_utun'
+  phase: NetworkingExternalPeerLabPhase
+  network_state: NetworkState
+  sidecar_state: 'stopped' | 'starting' | 'running' | 'backoff' | 'crash_loop'
+  site_id: 'lab-vm-external-peer'
+  site_display_name: string
+  peer_vm: 'kyclash-macos-lab-peer'
+  non_production: true
+  lan_forwarding_enabled: false
+  tunnel_interface: string | null
+  private_routes: string[]
+  routes_installed: boolean
+  mihomo_interface: 'utun4094' | null
+  mihomo_route: '10.88.0.0/24' | null
+  active_transport: TransportKind | null
+  health: {
+    reachable: boolean
+    latency_ms: number
+    jitter_ms: number
+    loss_percent: number
+  } | null
+  private_echo_healthy: boolean
+  mihomo_coexisting: boolean
+  overlay_ssh_verified: boolean
+  system_ssh_verified: boolean
+  transport_checks: NetworkingExternalPeerTransportCheck[]
+  last_error: NetworkErrorCode | null
+}
+
 export interface ProductionSiteSummary {
   id: string
   display_name: string
   private_route_count: number
+}
+
+export interface ProductionPolicyVariantSummary {
+  catalog_id: 'base' | 'base+.30' | 'base+.31' | 'base+both'
+  display_name: string
+  revision: number
+  profile_sha256: string
+  private_cidrs: string[]
+}
+
+export interface ProductionPolicyCatalogView {
+  schema_version: 1
+  selected_catalog_id: ProductionPolicyVariantSummary['catalog_id'] | null
+  variants: ProductionPolicyVariantSummary[]
 }
 
 export interface ProductionNetworkStatus {
@@ -163,6 +250,17 @@ export type RouteHelperRegistrationStatus =
   | 'requires_approval'
   | 'not_found'
   | 'unknown'
+
+/**
+ * Registration state for the two fixed privileged services required by the
+ * production networking composition. `ready` is authoritative for Connect;
+ * enabling only one service never grants partial production authority.
+ */
+export interface PrivilegedNetworkingServicesStatus {
+  route_helper: RouteHelperRegistrationStatus
+  tunnel_broker: RouteHelperRegistrationStatus
+  ready: boolean
+}
 
 export interface NetworkStateEvent {
   /** Monotonically increasing within one sidecar process lifetime. */

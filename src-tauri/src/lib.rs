@@ -163,10 +163,22 @@ mod app_init {
             cmd::connect_networking_userspace_lab,
             #[cfg(feature = "networking-userspace-lab-app")]
             cmd::disconnect_networking_userspace_lab,
+            #[cfg(all(feature = "networking-vm-external-peer-lab-app", target_os = "macos"))]
+            cmd::get_networking_external_peer_lab_status,
+            #[cfg(all(feature = "networking-vm-external-peer-lab-app", target_os = "macos"))]
+            cmd::connect_networking_external_peer_lab,
+            #[cfg(all(feature = "networking-vm-external-peer-lab-app", target_os = "macos"))]
+            cmd::cancel_networking_external_peer_lab,
+            #[cfg(all(feature = "networking-vm-external-peer-lab-app", target_os = "macos"))]
+            cmd::disconnect_networking_external_peer_lab,
             #[cfg(feature = "networking-production")]
             cmd::initialize_networking,
             #[cfg(feature = "networking-production")]
             cmd::list_networking_sites,
+            #[cfg(feature = "networking-production")]
+            cmd::list_networking_policy_variants,
+            #[cfg(feature = "networking-production")]
+            cmd::select_networking_policy_variant,
             #[cfg(feature = "networking-production")]
             cmd::get_networking_status,
             #[cfg(feature = "networking-production")]
@@ -178,11 +190,11 @@ mod app_init {
             #[cfg(feature = "networking-production")]
             cmd::get_networking_diagnostics,
             #[cfg(feature = "networking-production")]
-            cmd::get_route_helper_registration_status,
+            cmd::get_privileged_networking_services_status,
             #[cfg(feature = "networking-production")]
-            cmd::register_route_helper_service,
+            cmd::register_privileged_networking_services_command,
             #[cfg(feature = "networking-production")]
-            cmd::unregister_route_helper_service,
+            cmd::unregister_privileged_networking_services_command,
             #[cfg(feature = "networking-production")]
             cmd::open_route_helper_system_settings,
             cmd::get_system_hostname,

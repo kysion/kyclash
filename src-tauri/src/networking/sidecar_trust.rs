@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "macos", test))]
+use std::ffi::OsString;
 use std::{fs, io::Read as _, path::Path, process::Command};
 
 use ring::digest::{SHA256, digest};
@@ -123,28 +125,46 @@ fn read_sidecar_bytes_fallback(path: &Path) -> Result<Vec<u8>, NetworkErrorCode>
 #[cfg(target_os = "macos")]
 fn verify_code_signature(path: &Path, manifest: &SidecarTrustManifest) -> Result<(), NetworkErrorCode> {
     let requirement = Command::new("/usr/bin/codesign")
-        .args(["--verify", "--strict", "--verbose=2", "-R"])
-        .arg(&manifest.designated_requirement)
-        .arg(path)
+        .args(codesign_requirement_arguments(path, &manifest.designated_requirement))
         .status()
         .map_err(|_| NetworkErrorCode::AuthenticationFailed)?;
-    if !requirement.success() {
-        return Err(NetworkErrorCode::AuthenticationFailed);
-    }
+    map_codesign_requirement_status(requirement.success())?;
     let details = Command::new("/usr/bin/codesign")
         .args(["-d", "--verbose=4"])
         .arg(path)
         .output()
         .map_err(|_| NetworkErrorCode::AuthenticationFailed)?;
-    let text = String::from_utf8_lossy(&details.stderr);
-    if !details.status.success()
-        || !text
-            .lines()
-            .any(|line| line == format!("TeamIdentifier={}", manifest.team_id))
-    {
-        return Err(NetworkErrorCode::AuthenticationFailed);
+    map_codesign_identity_output(details.status.success(), &details.stderr, &manifest.team_id)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn codesign_requirement_arguments(path: &Path, requirement: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("--verify"),
+        OsString::from("--strict"),
+        OsString::from("--verbose=2"),
+        OsString::from(format!("-R={requirement}")),
+        path.as_os_str().to_owned(),
+    ]
+}
+
+#[cfg(any(target_os = "macos", test))]
+const fn map_codesign_requirement_status(success: bool) -> Result<(), NetworkErrorCode> {
+    if success {
+        Ok(())
+    } else {
+        Err(NetworkErrorCode::AuthenticationFailed)
     }
-    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn map_codesign_identity_output(success: bool, stderr: &[u8], team_id: &str) -> Result<(), NetworkErrorCode> {
+    let expected = format!("TeamIdentifier={team_id}");
+    if success && String::from_utf8_lossy(stderr).lines().any(|line| line == expected) {
+        Ok(())
+    } else {
+        Err(NetworkErrorCode::AuthenticationFailed)
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -201,6 +221,34 @@ mod tests {
         };
         assert_eq!(
             verify_macos_sidecar(Path::new("missing"), &manifest),
+            Err(NetworkErrorCode::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn codesign_requirement_is_one_argument_and_failures_map_closed() {
+        let path = Path::new("/Applications/KyClash.app/Contents/Resources/kyclash-network-sidecar");
+        let requirement = "identifier \"net.kysion.kyclash.network-sidecar\" and anchor apple generic";
+        let arguments = codesign_requirement_arguments(path, requirement);
+        assert_eq!(arguments.len(), 5);
+        assert_eq!(arguments[3], OsString::from(format!("-R={requirement}")));
+        assert!(!arguments.iter().any(|argument| argument == "-R"));
+        assert_eq!(arguments[4], path.as_os_str());
+        assert_eq!(map_codesign_requirement_status(true), Ok(()));
+        assert_eq!(
+            map_codesign_requirement_status(false),
+            Err(NetworkErrorCode::AuthenticationFailed)
+        );
+
+        let team = "RQUQ8Y3S9H";
+        let matching = format!("Executable=/tmp/sidecar\nTeamIdentifier={team}\n");
+        assert_eq!(map_codesign_identity_output(true, matching.as_bytes(), team), Ok(()));
+        assert_eq!(
+            map_codesign_identity_output(false, matching.as_bytes(), team),
+            Err(NetworkErrorCode::AuthenticationFailed)
+        );
+        assert_eq!(
+            map_codesign_identity_output(true, b"TeamIdentifier=WRONGTEAM\n", team),
             Err(NetworkErrorCode::AuthenticationFailed)
         );
     }

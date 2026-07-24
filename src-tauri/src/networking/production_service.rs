@@ -23,6 +23,9 @@ use super::{
     TransportKind, TunnelDeviceFacts, valid_ipc_id,
 };
 
+#[cfg(unix)]
+use super::ControllerStartReceipt;
+
 static NEXT_PRODUCTION_SERVICE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Read-only route-boundary state.  This is an observation only: callers must
@@ -416,13 +419,55 @@ pub trait ProductionRouteBoundary: Send {
         profile_revision: u64,
         mihomo: &MihomoTunSnapshot,
     ) -> Result<(), NetworkErrorCode>;
+    /// Broker-bound v3 apply path.  Legacy boundaries need not implement it;
+    /// a service can reach this method only when it was constructed with the
+    /// one-shot broker-bound controller mode.
+    #[cfg(unix)]
+    fn apply_broker_bound(
+        &mut self,
+        profile: &NetworkProfile,
+        operation_id: &str,
+        tunnel: &TunnelDeviceFacts,
+        profile_revision: u64,
+        mihomo: &MihomoTunSnapshot,
+        receipt: ControllerStartReceipt,
+    ) -> Result<(), NetworkErrorCode> {
+        let _ = (profile, operation_id, tunnel, profile_revision, mihomo, receipt);
+        Err(NetworkErrorCode::InvalidStateTransition)
+    }
     fn heartbeat(&mut self, operation_id: &str) -> Result<(), NetworkErrorCode>;
     fn rollback(&mut self, operation_id: &str) -> Result<(), NetworkErrorCode>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProductionControllerStartMode {
+    Reusable,
+    #[cfg(unix)]
+    BrokerBound,
+}
+
+impl ProductionControllerStartMode {
+    #[cfg(unix)]
+    const fn is_broker_bound(self) -> bool {
+        matches!(self, Self::BrokerBound)
+    }
+
+    #[cfg(not(unix))]
+    const fn is_broker_bound(self) -> bool {
+        false
+    }
+}
+
+enum ControllerStartAuthority {
+    Reusable,
+    #[cfg(unix)]
+    BrokerBound(ControllerStartReceipt),
+}
+
 struct RouteHeartbeatTask {
     cancelled: Arc<AtomicBool>,
-    wake: Arc<tokio::sync::Notify>,
+    health_wake: Arc<tokio::sync::Notify>,
+    lease_wake: Arc<tokio::sync::Notify>,
     handle: tokio::task::JoinHandle<()>,
     runtime: tokio::runtime::Handle,
 }
@@ -530,6 +575,8 @@ pub struct ProductionNetworkStatus {
 pub struct ProductionNetworkingService {
     mutation_gate: Arc<Mutex<ProductionMutationGate>>,
     controller: ProductionControllerHandle,
+    controller_start_mode: ProductionControllerStartMode,
+    controller_start_consumed: AtomicBool,
     profile: NetworkProfile,
     routes: Arc<Mutex<Box<dyn ProductionRouteBoundary>>>,
     mihomo_source: Arc<dyn ActiveMihomoTunSource>,
@@ -575,6 +622,48 @@ impl ProductionNetworkingService {
         profile_revision: u64,
         mihomo_source: Arc<dyn ActiveMihomoTunSource>,
     ) -> Result<Self, NetworkErrorCode> {
+        Self::new_with_start_mode(
+            controller,
+            profile,
+            routes,
+            instance_id,
+            profile_revision,
+            mihomo_source,
+            ProductionControllerStartMode::Reusable,
+        )
+    }
+
+    /// Construct the default-off one-shot service whose controller start
+    /// returns the sealed receipt required by route-helper v3.
+    #[cfg(unix)]
+    pub fn new_broker_bound_with_mihomo_source(
+        controller: ProductionControllerHandle,
+        profile: NetworkProfile,
+        routes: Box<dyn ProductionRouteBoundary>,
+        instance_id: String,
+        profile_revision: u64,
+        mihomo_source: Arc<dyn ActiveMihomoTunSource>,
+    ) -> Result<Self, NetworkErrorCode> {
+        Self::new_with_start_mode(
+            controller,
+            profile,
+            routes,
+            instance_id,
+            profile_revision,
+            mihomo_source,
+            ProductionControllerStartMode::BrokerBound,
+        )
+    }
+
+    fn new_with_start_mode(
+        controller: ProductionControllerHandle,
+        profile: NetworkProfile,
+        routes: Box<dyn ProductionRouteBoundary>,
+        instance_id: String,
+        profile_revision: u64,
+        mihomo_source: Arc<dyn ActiveMihomoTunSource>,
+        controller_start_mode: ProductionControllerStartMode,
+    ) -> Result<Self, NetworkErrorCode> {
         profile.validate()?;
         if profile_revision == 0 {
             return Err(NetworkErrorCode::InvalidConfiguration);
@@ -590,6 +679,8 @@ impl ProductionNetworkingService {
         Ok(Self {
             mutation_gate: Arc::new(Mutex::new(ProductionMutationGate::new(generation))),
             controller,
+            controller_start_mode,
+            controller_start_consumed: AtomicBool::new(false),
             timeout: Duration::from_secs(profile.policy.connect_timeout_seconds.into()),
             route_heartbeat_interval: Duration::from_secs(u64::from(profile.policy.health_interval_seconds).min(5)),
             profile,
@@ -674,7 +765,11 @@ impl ProductionNetworkingService {
                 } else {
                     let routes = self.routes.lock();
                     match routes.disposition() {
-                        ProductionRouteDisposition::Reusable if terminal_candidate => {
+                        ProductionRouteDisposition::Reusable
+                            if terminal_candidate
+                                || (self.controller_start_mode.is_broker_bound()
+                                    && self.controller_start_consumed.load(Ordering::Acquire)) =>
+                        {
                             ProductionServiceDispositionKind::TerminalCandidate
                         }
                         ProductionRouteDisposition::Reusable => ProductionServiceDispositionKind::Reusable,
@@ -694,6 +789,9 @@ impl ProductionNetworkingService {
     /// any unconsumed token makes retirement Busy and is automatically
     /// abandoned if the caller drops it.
     pub fn reserve_connect(&self) -> Result<ProductionConnectReservation, NetworkErrorCode> {
+        if self.controller_start_mode.is_broker_bound() && self.controller_start_consumed.load(Ordering::Acquire) {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
         let mut gate = self.mutation_gate.lock();
         if gate.state != ProductionServiceGateState::Open
             || !gate.reservations.is_empty()
@@ -1079,7 +1177,19 @@ impl ProductionNetworkingService {
 
     async fn connect_inner(&self, operation: &Arc<ProductionOperation>) -> Result<(), NetworkErrorCode> {
         let operation_id = operation.id.as_str();
-        self.controller.start().await?;
+        let start_authority = match self.controller_start_mode {
+            ProductionControllerStartMode::Reusable => {
+                self.controller.start().await?;
+                ControllerStartAuthority::Reusable
+            }
+            #[cfg(unix)]
+            ProductionControllerStartMode::BrokerBound => {
+                if self.controller_start_consumed.swap(true, Ordering::AcqRel) {
+                    return Err(NetworkErrorCode::InvalidStateTransition);
+                }
+                ControllerStartAuthority::BrokerBound(self.controller.start_broker_bound().await?)
+            }
+        };
         self.ensure_operation_active(operation)?;
         self.status.lock().sidecar_state = SidecarLifecycleState::Running;
         self.request(
@@ -1142,7 +1252,8 @@ impl ProductionNetworkingService {
         // must still invoke the idempotent rollback before touching the
         // carrier or tunnel.
         self.routes_active.store(true, Ordering::Release);
-        self.apply_routes(operation_id, &tunnel, &mihomo).await?;
+        self.apply_routes(operation_id, &tunnel, &mihomo, start_authority)
+            .await?;
         self.ensure_operation_active(operation)?;
         let state = if transport == self.profile.transports.primary {
             NetworkState::ConnectedPrimary
@@ -1190,6 +1301,7 @@ impl ProductionNetworkingService {
         operation_id: &str,
         tunnel: &TunnelDeviceFacts,
         mihomo: &MihomoTunSnapshot,
+        start_authority: ControllerStartAuthority,
     ) -> Result<(), NetworkErrorCode> {
         let routes = Arc::clone(&self.routes);
         let profile = self.profile.clone();
@@ -1198,9 +1310,16 @@ impl ProductionNetworkingService {
         let mihomo = mihomo.clone();
         let profile_revision = self.profile_revision;
         self.run_tracked_route_call(NetworkErrorCode::SidecarUnavailable, move || {
-            routes
-                .lock()
-                .apply(&profile, &operation_id, &tunnel, profile_revision, &mihomo)
+            let mut routes = routes.lock();
+            match start_authority {
+                ControllerStartAuthority::Reusable => {
+                    routes.apply(&profile, &operation_id, &tunnel, profile_revision, &mihomo)
+                }
+                #[cfg(unix)]
+                ControllerStartAuthority::BrokerBound(receipt) => {
+                    routes.apply_broker_bound(&profile, &operation_id, &tunnel, profile_revision, &mihomo, receipt)
+                }
+            }
         })
         .await
     }
@@ -1532,8 +1651,10 @@ impl ProductionNetworkingService {
         }
         let cancelled = Arc::new(AtomicBool::new(false));
         let task_cancelled = Arc::clone(&cancelled);
-        let wake = Arc::new(tokio::sync::Notify::new());
-        let task_wake = Arc::clone(&wake);
+        let health_wake = Arc::new(tokio::sync::Notify::new());
+        let task_health_wake = Arc::clone(&health_wake);
+        let lease_wake = Arc::new(tokio::sync::Notify::new());
+        let task_lease_wake = Arc::clone(&lease_wake);
         let routes = Arc::clone(&self.routes);
         let routes_active = Arc::clone(&self.routes_active);
         let status = Arc::clone(&self.status);
@@ -1544,7 +1665,7 @@ impl ProductionNetworkingService {
         let interval = self.route_heartbeat_interval;
         let timeout = self.timeout;
         let health_failure_threshold = self.profile.policy.fallback_threshold;
-        let monitor_cleanup = MonitorCleanupContext {
+        let monitor_cleanup = Arc::new(MonitorCleanupContext {
             status: Arc::clone(&status),
             routes: Arc::clone(&routes),
             route_gate: Arc::clone(&self.mutation_gate),
@@ -1556,145 +1677,212 @@ impl ProductionNetworkingService {
             operation: Arc::clone(operation),
             timeout,
             profile: self.profile.clone(),
-        };
+        });
         let handle = tokio::spawn(async move {
-            let mut consecutive_health_failures = 0_u8;
-            let mut active_transport = transport;
-            loop {
-                if task_cancelled.load(Ordering::Acquire)
-                    || ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled).is_err()
-                {
-                    break;
-                }
-                tokio::select! {
-                    () = tokio::time::sleep(interval) => {}
-                    () = task_wake.notified() => {}
-                }
-                if task_cancelled.load(Ordering::Acquire) {
-                    break;
-                }
-                if ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled).is_err() {
-                    break;
-                }
-                let poll_result = tokio::time::timeout(timeout, controller.poll()).await;
-                if ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled).is_err() {
-                    break;
-                }
-                let sidecar_state = match poll_result {
-                    Ok(Ok(state)) => state,
-                    Ok(Err(error)) => {
-                        monitor_failure_cleanup(&monitor_cleanup, &operation_id, error).await;
-                        break;
-                    }
-                    Err(_) => {
-                        monitor_failure_cleanup(&monitor_cleanup, &operation_id, NetworkErrorCode::OperationTimedOut)
-                            .await;
-                        break;
-                    }
-                };
-                {
-                    let mut current = status.lock();
-                    if current.operation_id.as_deref() != Some(operation_id.as_str()) {
-                        break;
-                    }
-                    current.sidecar_state = sidecar_state;
-                }
-                if sidecar_state != SidecarLifecycleState::Running {
-                    monitor_failure_cleanup(&monitor_cleanup, &operation_id, NetworkErrorCode::SidecarUnavailable)
-                        .await;
-                    break;
-                }
-                let health_result =
-                    monitor_carrier_health(&controller, &request_sequence, &operation_id, active_transport, timeout)
-                        .await;
-                if ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled).is_err() {
-                    break;
-                }
-                match health_result {
-                    Ok(health) => {
-                        consecutive_health_failures = 0;
-                        if ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled).is_err() {
-                            break;
-                        }
-                        let mut current = status.lock();
-                        if current.operation_id.as_deref() != Some(operation_id.as_str()) {
-                            break;
-                        }
-                        current.health = Some(health);
-                    }
-                    Err(error)
-                        if matches!(
-                            error,
-                            NetworkErrorCode::PrimaryTransportUnavailable
-                                | NetworkErrorCode::FallbackTransportUnavailable
-                        ) =>
+            let health_context = Arc::clone(&monitor_cleanup);
+            let health_cancelled = Arc::clone(&task_cancelled);
+            let health_wake = Arc::clone(&task_health_wake);
+            let health_lease_wake = Arc::clone(&task_lease_wake);
+            let health_operation_id = operation_id.clone();
+            let health_monitor = async move {
+                let mut consecutive_health_failures = 0_u8;
+                let mut active_transport = transport;
+                loop {
+                    if health_cancelled.load(Ordering::Acquire)
+                        || ensure_monitor_operation_active(&health_context, &health_operation_id, &health_cancelled)
+                            .is_err()
                     {
-                        consecutive_health_failures = consecutive_health_failures.saturating_add(1);
-                        if consecutive_health_failures >= health_failure_threshold {
-                            match monitor_fallback_after_health_failure(
-                                &monitor_cleanup,
-                                &operation_id,
-                                active_transport,
-                                error,
-                                &task_cancelled,
+                        break;
+                    }
+                    tokio::select! {
+                        () = tokio::time::sleep(interval) => {}
+                        () = health_wake.notified() => {}
+                    }
+                    if health_cancelled.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if ensure_monitor_operation_active(&health_context, &health_operation_id, &health_cancelled)
+                        .is_err()
+                    {
+                        break;
+                    }
+                    let poll_result = tokio::time::timeout(timeout, controller.poll()).await;
+                    if ensure_monitor_operation_active(&health_context, &health_operation_id, &health_cancelled)
+                        .is_err()
+                    {
+                        break;
+                    }
+                    let sidecar_state = match poll_result {
+                        Ok(Ok(state)) => state,
+                        Ok(Err(error)) => {
+                            monitor_failure_cleanup(&health_context, &health_operation_id, error).await;
+                            break;
+                        }
+                        Err(_) => {
+                            monitor_failure_cleanup(
+                                &health_context,
+                                &health_operation_id,
+                                NetworkErrorCode::OperationTimedOut,
                             )
-                            .await
+                            .await;
+                            break;
+                        }
+                    };
+                    {
+                        let mut current = status.lock();
+                        if current.operation_id.as_deref() != Some(health_operation_id.as_str()) {
+                            break;
+                        }
+                        current.sidecar_state = sidecar_state;
+                    }
+                    if sidecar_state != SidecarLifecycleState::Running {
+                        monitor_failure_cleanup(
+                            &health_context,
+                            &health_operation_id,
+                            NetworkErrorCode::SidecarUnavailable,
+                        )
+                        .await;
+                        break;
+                    }
+                    let health_result = monitor_carrier_health(
+                        &controller,
+                        &request_sequence,
+                        &health_operation_id,
+                        active_transport,
+                        timeout,
+                    )
+                    .await;
+                    if ensure_monitor_operation_active(&health_context, &health_operation_id, &health_cancelled)
+                        .is_err()
+                    {
+                        break;
+                    }
+                    match health_result {
+                        Ok(health) => {
+                            consecutive_health_failures = 0;
+                            if ensure_monitor_operation_active(&health_context, &health_operation_id, &health_cancelled)
+                                .is_err()
                             {
-                                Ok((fallback, health)) => {
-                                    if ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled)
+                                break;
+                            }
+                            let mut current = status.lock();
+                            if current.operation_id.as_deref() != Some(health_operation_id.as_str()) {
+                                break;
+                            }
+                            current.health = Some(health);
+                        }
+                        Err(error)
+                            if matches!(
+                                error,
+                                NetworkErrorCode::PrimaryTransportUnavailable
+                                    | NetworkErrorCode::FallbackTransportUnavailable
+                            ) =>
+                        {
+                            consecutive_health_failures = consecutive_health_failures.saturating_add(1);
+                            if consecutive_health_failures >= health_failure_threshold {
+                                match monitor_fallback_after_health_failure(
+                                    &health_context,
+                                    &health_operation_id,
+                                    active_transport,
+                                    error,
+                                    &health_cancelled,
+                                )
+                                .await
+                                {
+                                    Ok((fallback, health)) => {
+                                        if ensure_monitor_operation_active(
+                                            &health_context,
+                                            &health_operation_id,
+                                            &health_cancelled,
+                                        )
                                         .is_err()
+                                        {
+                                            break;
+                                        }
+                                        active_transport = fallback;
+                                        consecutive_health_failures = 0;
+                                        let mut current = status.lock();
+                                        if current.operation_id.as_deref() != Some(health_operation_id.as_str()) {
+                                            break;
+                                        }
+                                        current.state = NetworkState::DegradedFallback;
+                                        current.active_transport = Some(fallback);
+                                        current.health = Some(health);
+                                        current.last_error = Some(error);
+                                    }
+                                    Err(NetworkErrorCode::OperationCancelled)
+                                        if health_cancelled.load(Ordering::Acquire) =>
                                     {
                                         break;
                                     }
-                                    active_transport = fallback;
-                                    consecutive_health_failures = 0;
-                                    let mut current = status.lock();
-                                    if current.operation_id.as_deref() != Some(operation_id.as_str()) {
+                                    Err(fallback_error) => {
+                                        monitor_failure_cleanup(&health_context, &health_operation_id, fallback_error)
+                                            .await;
                                         break;
                                     }
-                                    current.state = NetworkState::DegradedFallback;
-                                    current.active_transport = Some(fallback);
-                                    current.health = Some(health);
-                                    current.last_error = Some(error);
-                                }
-                                Err(NetworkErrorCode::OperationCancelled) if task_cancelled.load(Ordering::Acquire) => {
-                                    break;
-                                }
-                                Err(fallback_error) => {
-                                    monitor_failure_cleanup(&monitor_cleanup, &operation_id, fallback_error).await;
-                                    break;
                                 }
                             }
                         }
+                        Err(error) => {
+                            monitor_failure_cleanup(&health_context, &health_operation_id, error).await;
+                            break;
+                        }
                     }
-                    Err(error) => {
-                        monitor_failure_cleanup(&monitor_cleanup, &operation_id, error).await;
+                }
+
+                // The carrier monitor and lease keeper are one lifecycle
+                // owner, but independent async loops. Ending either carrier
+                // monitoring path wakes the lease loop immediately so cleanup
+                // can positively join both before route rollback.
+                health_cancelled.store(true, Ordering::Release);
+                health_wake.notify_one();
+                health_lease_wake.notify_one();
+            };
+
+            let lease_context = Arc::clone(&monitor_cleanup);
+            let lease_cancelled = Arc::clone(&task_cancelled);
+            let lease_wake = Arc::clone(&task_lease_wake);
+            let lease_health_wake = Arc::clone(&task_health_wake);
+            let lease_operation_id = operation_id;
+            let lease_monitor = async move {
+                loop {
+                    tokio::select! {
+                        () = tokio::time::sleep(interval) => {}
+                        () = lease_wake.notified() => {}
+                    }
+                    if lease_cancelled.load(Ordering::Acquire)
+                        || ensure_monitor_operation_active(&lease_context, &lease_operation_id, &lease_cancelled)
+                            .is_err()
+                        || !monitor_route_lease_state_active(&lease_context, &lease_operation_id)
+                    {
+                        break;
+                    }
+
+                    let result = monitor_route_heartbeat(&lease_context, &lease_operation_id).await;
+                    if ensure_monitor_operation_active(&lease_context, &lease_operation_id, &lease_cancelled).is_err() {
+                        break;
+                    }
+                    if let Err(error) = result {
+                        // Stop an in-flight controller request before waiting
+                        // for fallback's lifecycle guard. Otherwise a failed
+                        // lease refresh could remain hidden behind the profile's
+                        // (up to 300 second) controller timeout.
+                        lease_cancelled.store(true, Ordering::Release);
+                        lease_wake.notify_one();
+                        lease_health_wake.notify_one();
+                        let _ = lease_context.controller.cancel(&lease_operation_id);
+                        monitor_failure_cleanup(&lease_context, &lease_operation_id, error).await;
                         break;
                     }
                 }
-                if ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled).is_err() {
-                    break;
-                }
-                let heartbeat_routes = Arc::clone(&routes);
-                let heartbeat_operation = operation_id.clone();
-                let result = run_tracked_route_call_with_gate(
-                    &monitor_cleanup.route_gate,
-                    NetworkErrorCode::SidecarUnavailable,
-                    move || heartbeat_routes.lock().heartbeat(&heartbeat_operation),
-                )
-                .await;
-                if ensure_monitor_operation_active(&monitor_cleanup, &operation_id, &task_cancelled).is_err() {
-                    break;
-                }
-                if let Err(error) = result {
-                    monitor_failure_cleanup(&monitor_cleanup, &operation_id, error).await;
-                    break;
-                }
-            }
+            };
+
+            tokio::join!(health_monitor, lease_monitor);
         });
         *slot = Some(RouteHeartbeatTask {
             cancelled,
-            wake,
+            health_wake,
+            lease_wake,
             handle,
             runtime: tokio::runtime::Handle::current(),
         });
@@ -1705,7 +1893,8 @@ impl ProductionNetworkingService {
     fn signal_route_heartbeat(&self) {
         if let Some(task) = self.route_heartbeat.lock().as_ref() {
             task.cancelled.store(true, Ordering::Release);
-            task.wake.notify_one();
+            task.health_wake.notify_one();
+            task.lease_wake.notify_one();
         }
     }
 
@@ -1753,7 +1942,8 @@ impl Drop for ProductionNetworkingService {
     fn drop(&mut self) {
         if let Some(task) = self.route_heartbeat.get_mut().take() {
             task.cancelled.store(true, Ordering::Release);
-            task.wake.notify_one();
+            task.health_wake.notify_one();
+            task.lease_wake.notify_one();
             track_dropped_route_heartbeat(task);
         }
     }
@@ -1762,7 +1952,8 @@ impl Drop for ProductionNetworkingService {
 fn track_dropped_route_heartbeat(task: RouteHeartbeatTask) {
     let RouteHeartbeatTask {
         cancelled: _,
-        wake: _,
+        health_wake: _,
+        lease_wake: _,
         handle,
         runtime,
     } = task;
@@ -1895,7 +2086,6 @@ async fn monitor_fallback_after_health_failure(
         current.last_error = Some(failure);
     }
 
-    monitor_route_heartbeat(context, operation_id).await?;
     monitor_disconnect_carrier(context, operation_id).await?;
     {
         let mut current = context.status.lock();
@@ -1919,7 +2109,6 @@ async fn monitor_fallback_after_health_failure(
 
     for transport in ordered.into_iter().skip(failed_index + 1) {
         ensure_monitor_operation_active(context, operation_id, cancelled)?;
-        monitor_route_heartbeat(context, operation_id).await?;
         let request_id = next_request_id(&context.request_sequence, transport_action("carrier", transport))?;
         let connect = controller_request_network_status(
             &context.controller,
@@ -1994,6 +2183,18 @@ fn ensure_monitor_operation_active(
     } else {
         Ok(())
     }
+}
+
+fn monitor_route_lease_state_active(context: &MonitorCleanupContext, operation_id: &str) -> bool {
+    let current = context.status.lock();
+    current.operation_id.as_deref() == Some(operation_id)
+        && matches!(
+            current.state,
+            NetworkState::ConnectingPrimary
+                | NetworkState::ConnectedPrimary
+                | NetworkState::DegradedFallback
+                | NetworkState::Reconnecting
+        )
 }
 
 async fn monitor_route_heartbeat(context: &MonitorCleanupContext, operation_id: &str) -> Result<(), NetworkErrorCode> {
@@ -2357,6 +2558,70 @@ mod tests {
         fail_quic: bool,
     }
 
+    #[cfg(unix)]
+    struct BrokerRuntime {
+        inner: Runtime,
+        instance_id: Option<String>,
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl AsyncProductionRuntime for BrokerRuntime {
+        async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
+            self.inner.events.lock().push("authenticate".into());
+            self.instance_id = Some(context.instance_id.clone());
+            Ok(SidecarHandshake {
+                protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                instance_id: context.instance_id.clone(),
+                auth_proof: crate::networking::sidecar_auth_proof(context.auth_token(), &context.instance_id),
+            })
+        }
+
+        async fn request(
+            &mut self,
+            request: IpcRequest,
+            cancel: Arc<AtomicBool>,
+        ) -> Result<IpcResponse, NetworkErrorCode> {
+            if matches!(&request.payload, IpcRequestPayload::PrepareTunnel) {
+                request.validate_protocol()?;
+                self.inner
+                    .events
+                    .lock()
+                    .push(format!("request-id:{}", request.request_id));
+                if cancel.load(Ordering::Acquire) {
+                    return Err(NetworkErrorCode::OperationCancelled);
+                }
+                let instance_id = self
+                    .instance_id
+                    .as_ref()
+                    .ok_or(NetworkErrorCode::InvalidStateTransition)?
+                    .clone();
+                self.inner.events.lock().push("tunnel:prepare".into());
+                return Ok(IpcResponse {
+                    protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+                    request_id: request.request_id.clone(),
+                    result: Ok(IpcResponsePayload::TunnelPrepared(TunnelDeviceFacts {
+                        interface_name: "utun42".into(),
+                        mtu: 1420,
+                        has_ipv4: true,
+                        has_ipv6: true,
+                        instance_id,
+                        operation_id: request.request_id,
+                    })),
+                });
+            }
+            self.inner.request(request, cancel).await
+        }
+
+        async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
+            self.inner.status().await
+        }
+
+        async fn stop(&mut self) -> Result<(), NetworkErrorCode> {
+            self.inner.stop().await
+        }
+    }
+
     #[async_trait]
     impl AsyncProductionRuntime for Runtime {
         async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
@@ -2695,6 +2960,60 @@ mod tests {
         }
     }
 
+    struct SlowFallbackRuntime {
+        inner: MonitoredRuntime,
+        fallback_entered: Arc<AtomicBool>,
+        fallback_release: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl AsyncProductionRuntime for SlowFallbackRuntime {
+        async fn start(&mut self, context: &SidecarLaunchContext) -> Result<SidecarHandshake, NetworkErrorCode> {
+            self.inner.start(context).await
+        }
+
+        async fn request(
+            &mut self,
+            request: IpcRequest,
+            cancel: Arc<AtomicBool>,
+        ) -> Result<IpcResponse, NetworkErrorCode> {
+            if matches!(
+                &request.payload,
+                IpcRequestPayload::ConnectTransport {
+                    transport: TransportKind::Wss
+                }
+            ) {
+                request.validate_protocol()?;
+                self.inner
+                    .inner
+                    .events
+                    .lock()
+                    .push("carrier:connect:Wss:blocked".into());
+                self.fallback_entered.store(true, Ordering::Release);
+                while !self.fallback_release.load(Ordering::Acquire) {
+                    if cancel.load(Ordering::Acquire) {
+                        self.inner
+                            .inner
+                            .events
+                            .lock()
+                            .push("carrier:connect:Wss:cancelled".into());
+                        return Err(NetworkErrorCode::OperationCancelled);
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+            self.inner.request(request, cancel).await
+        }
+
+        async fn status(&mut self) -> Result<SidecarProcessStatus, NetworkErrorCode> {
+            self.inner.status().await
+        }
+
+        async fn stop(&mut self) -> Result<(), NetworkErrorCode> {
+            self.inner.stop().await
+        }
+    }
+
     struct Routes(Arc<Mutex<Vec<String>>>);
 
     impl ProductionRouteBoundary for Routes {
@@ -2728,6 +3047,67 @@ mod tests {
 
         fn heartbeat(&mut self, _: &str) -> Result<(), NetworkErrorCode> {
             self.0.lock().push("routes:heartbeat".into());
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    struct BrokerRoutes {
+        events: Arc<Mutex<Vec<String>>>,
+        authorized: Arc<AtomicBool>,
+    }
+
+    #[cfg(unix)]
+    impl ProductionRouteBoundary for BrokerRoutes {
+        fn disposition(&self) -> ProductionRouteDisposition {
+            ProductionRouteDisposition::Reusable
+        }
+
+        fn try_retire(&mut self) -> ProductionRouteRetirementResult {
+            ProductionRouteRetirementResult::RecoveryOnly
+        }
+
+        fn apply(
+            &mut self,
+            _: &NetworkProfile,
+            _: &str,
+            _: &TunnelDeviceFacts,
+            _: u64,
+            _: &MihomoTunSnapshot,
+        ) -> Result<(), NetworkErrorCode> {
+            self.events.lock().push("routes:legacy-apply".into());
+            Err(NetworkErrorCode::InvalidStateTransition)
+        }
+
+        fn apply_broker_bound(
+            &mut self,
+            _: &NetworkProfile,
+            operation_id: &str,
+            tunnel: &TunnelDeviceFacts,
+            revision: u64,
+            _: &MihomoTunSnapshot,
+            receipt: ControllerStartReceipt,
+        ) -> Result<(), NetworkErrorCode> {
+            if !tunnel.interface_name.starts_with("utun") || revision == 0 {
+                return Err(NetworkErrorCode::InvalidConfiguration);
+            }
+            let authorization =
+                receipt.authorize_routes(tunnel.clone(), operation_id.to_owned(), operation_id.to_owned())?;
+            if authorization.broker_generation() != 77 {
+                return Err(NetworkErrorCode::AuthenticationFailed);
+            }
+            self.authorized.store(true, Ordering::Release);
+            self.events.lock().push("routes:broker-authorized".into());
+            Ok(())
+        }
+
+        fn rollback(&mut self, _: &str) -> Result<(), NetworkErrorCode> {
+            self.events.lock().push("routes:rollback".into());
+            Ok(())
+        }
+
+        fn heartbeat(&mut self, _: &str) -> Result<(), NetworkErrorCode> {
+            self.events.lock().push("routes:heartbeat".into());
             Ok(())
         }
     }
@@ -3185,6 +3565,83 @@ mod tests {
                 && !request_id.contains('{')
                 && !request_id.contains(' ')
         }));
+        drop(events);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn broker_bound_service_consumes_receipt_only_after_health_and_mihomo_facts() -> anyhow::Result<()> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let authorized = Arc::new(AtomicBool::new(false));
+        let broker_reference = crate::networking::TunnelBrokerSessionReference {
+            protocol_version: crate::networking::TUNNEL_BROKER_PROTOCOL_VERSION,
+            generation: 77,
+            sidecar_instance_id: "broker.instance.service.77".into(),
+        };
+        let instance_id = broker_reference.sidecar_instance_id.clone();
+        let launch = crate::networking::SidecarLaunchMaterial::new(vec![0x31; 32], vec![0x32; 32])
+            .map_err(|error| anyhow::anyhow!("construct broker launch: {error:?}"))?
+            .bind(broker_reference)
+            .map_err(|error| anyhow::anyhow!("bind broker launch: {error:?}"))?;
+        let controller = crate::networking::spawn_broker_bound_production_controller(
+            BrokerRuntime {
+                inner: Runtime {
+                    events: Arc::clone(&events),
+                    fail_quic: false,
+                },
+                instance_id: None,
+            },
+            launch,
+        );
+        let profile: NetworkProfile = serde_json::from_str(PROFILE)?;
+        let service = ProductionNetworkingService::new_broker_bound_with_mihomo_source(
+            controller,
+            profile,
+            Box::new(BrokerRoutes {
+                events: Arc::clone(&events),
+                authorized: Arc::clone(&authorized),
+            }),
+            instance_id,
+            42,
+            Arc::new(ObservedMihomoSource {
+                events: Arc::clone(&events),
+                result: Ok(MihomoTunSnapshot::inactive()),
+            }),
+        )
+        .map_err(|error| anyhow::anyhow!("construct broker service: {error:?}"))?;
+
+        let connected = service
+            .connect("operation.broker.connect".into())
+            .await
+            .map_err(|error| anyhow::anyhow!("connect broker service: {error:?}"))?;
+        assert_eq!(connected.state, NetworkState::ConnectedPrimary);
+        assert!(authorized.load(Ordering::Acquire));
+        service
+            .disconnect("operation.broker.disconnect".into())
+            .await
+            .map_err(|error| anyhow::anyhow!("disconnect broker service: {error:?}"))?;
+        assert_eq!(
+            service.disposition().kind(),
+            ProductionServiceDispositionKind::TerminalCandidate
+        );
+        assert_eq!(
+            service.reserve_connect().err(),
+            Some(NetworkErrorCode::InvalidStateTransition)
+        );
+
+        let events = events.lock();
+        let position = |value: &str| {
+            events
+                .iter()
+                .position(|event| event == value)
+                .ok_or_else(|| anyhow::anyhow!("missing event {value}"))
+        };
+        assert!(position("carrier:health")? < position("mihomo:observe")?);
+        assert!(position("mihomo:observe")? < position("routes:broker-authorized")?);
+        assert!(position("routes:broker-authorized")? < position("routes:rollback")?);
+        assert!(position("routes:rollback")? < position("secret:clear")?);
+        assert!(!events.iter().any(|event| event == "routes:legacy-apply"));
         drop(events);
         Ok(())
     }
@@ -4093,6 +4550,192 @@ mod tests {
             heartbeat_count,
             "heartbeat continued after route cleanup"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn route_lease_heartbeat_survives_health_wait_longer_than_fifteen_second_lease() -> anyhow::Result<()> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let monitor_entered = Arc::new(AtomicBool::new(false));
+        let controller = spawn_production_controller(
+            BlockingMonitorHealthRuntime {
+                inner: Runtime {
+                    events: Arc::clone(&events),
+                    fail_quic: false,
+                },
+                health_calls: 0,
+                monitor_entered: Arc::clone(&monitor_entered),
+            },
+            SidecarLaunchContext::new("instance.test".into(), vec![61; 32]).with_private_key(vec![62; 32]),
+            "proof".into(),
+        );
+        let mut profile: NetworkProfile = serde_json::from_str(PROFILE)?;
+        // The production schema permits a 16-second request deadline while
+        // the native route lease remains fixed at 15 seconds.
+        profile.policy.connect_timeout_seconds = 16;
+        profile.policy.health_interval_seconds = 1;
+        let mut service = ProductionNetworkingService::new(
+            controller,
+            profile,
+            Box::new(Routes(Arc::clone(&events))),
+            "instance.test".into(),
+            42,
+        )
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert!(service.timeout > Duration::from_secs(15));
+        service.route_heartbeat_interval = Duration::from_millis(10);
+        let service = Arc::new(service);
+        service
+            .connect("operation.heartbeat.long-health".into())
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        events.lock().clear();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !monitor_entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        let baseline = events
+            .lock()
+            .iter()
+            .filter(|event| event.as_str() == "routes:heartbeat")
+            .count();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let heartbeats = events
+                    .lock()
+                    .iter()
+                    .filter(|event| event.as_str() == "routes:heartbeat")
+                    .count();
+                if heartbeats >= baseline + 3 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+
+        // The controller health request is still blocked here; independent
+        // lease ticks prove that a >15s IPC deadline cannot silently expire
+        // the route lease before fallback/cleanup gets a chance to run.
+        assert!(monitor_entered.load(Ordering::Acquire));
+        let disconnected = service
+            .disconnect("operation.heartbeat.long-health.disconnect".into())
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(disconnected.state, NetworkState::Disconnected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn route_lease_heartbeat_survives_slow_fallback_connect() -> anyhow::Result<()> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let health_failure = Arc::new(AtomicBool::new(false));
+        let fallback_entered = Arc::new(AtomicBool::new(false));
+        let fallback_release = Arc::new(AtomicBool::new(false));
+        let controller = spawn_production_controller(
+            SlowFallbackRuntime {
+                inner: MonitoredRuntime {
+                    inner: Runtime {
+                        events: Arc::clone(&events),
+                        fail_quic: false,
+                    },
+                    health_failure: Arc::clone(&health_failure),
+                    sidecar_exited: Arc::new(AtomicBool::new(false)),
+                    unhealthy_transports: vec![TransportKind::Quic, TransportKind::Wss],
+                    active_transport: None,
+                },
+                fallback_entered: Arc::clone(&fallback_entered),
+                fallback_release: Arc::clone(&fallback_release),
+            },
+            SidecarLaunchContext::new("instance.test".into(), vec![63; 32]).with_private_key(vec![64; 32]),
+            "proof".into(),
+        );
+        let mut profile: NetworkProfile = serde_json::from_str(PROFILE)?;
+        profile.policy.connect_timeout_seconds = 16;
+        profile.policy.health_interval_seconds = 1;
+        profile.policy.fallback_threshold = 1;
+        let mut service = ProductionNetworkingService::new(
+            controller,
+            profile,
+            Box::new(Routes(Arc::clone(&events))),
+            "instance.test".into(),
+            42,
+        )
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        service.route_heartbeat_interval = Duration::from_millis(10);
+        let service = Arc::new(service);
+        service
+            .connect("operation.heartbeat.slow-fallback".into())
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        events.lock().clear();
+        health_failure.store(true, Ordering::Release);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !fallback_entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        let blocked_index = events
+            .lock()
+            .iter()
+            .position(|event| event == "carrier:connect:Wss:blocked")
+            .ok_or_else(|| anyhow::anyhow!("missing slow fallback marker"))?;
+        let baseline = events
+            .lock()
+            .iter()
+            .skip(blocked_index)
+            .filter(|event| event.as_str() == "routes:heartbeat")
+            .count();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let heartbeats = events
+                    .lock()
+                    .iter()
+                    .skip(blocked_index)
+                    .filter(|event| event.as_str() == "routes:heartbeat")
+                    .count();
+                if heartbeats >= baseline + 3 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        fallback_release.store(true, Ordering::Release);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let current = service.status();
+                if current.state == NetworkState::DegradedFallback
+                    && current.active_transport == Some(TransportKind::Tcp)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        let heartbeats_during_fallback = {
+            let events = events.lock();
+            let wss_connected = events
+                .iter()
+                .position(|event| event == "carrier:connect:Wss")
+                .ok_or_else(|| anyhow::anyhow!("missing released fallback connect"))?;
+            events[blocked_index..wss_connected]
+                .iter()
+                .filter(|event| event.as_str() == "routes:heartbeat")
+                .count()
+        };
+        assert!(heartbeats_during_fallback >= 3);
+        service
+            .disconnect("operation.heartbeat.slow-fallback.disconnect".into())
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         Ok(())
     }
 

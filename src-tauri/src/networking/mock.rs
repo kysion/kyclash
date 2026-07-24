@@ -86,7 +86,8 @@ impl MockNetworkSidecar {
             | IpcRequestPayload::StopTunnel
             | IpcRequestPayload::ConnectTransport { .. }
             | IpcRequestPayload::DisconnectTransport
-            | IpcRequestPayload::SampleHealth => Err(NetworkErrorCode::SidecarUnavailable),
+            | IpcRequestPayload::SampleHealth
+            | IpcRequestPayload::SamplePrivateReachability => Err(NetworkErrorCode::SidecarUnavailable),
         }
     }
 

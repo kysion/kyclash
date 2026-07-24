@@ -38,6 +38,19 @@ networking-system-lab = ["tauri/test", "dep:aws-lc-rs"]
 # deliberately implies the existing lab-only stdio surface and is never part
 # of a normal or production feature set.
 networking-userspace-lab-app = ["networking-dev", "networking-system-lab"]
+# Explicit no-sign App profile that replaces only the userspace lab launch
+# seam with the manually authorized, fixed-socket VirtualMac utun harness.
+# It does not activate or weaken either production privileged service.
+networking-vm-utun-lab-app = ["networking-userspace-lab-app"]
+# Explicit no-sign App profile for the VM-backed real-utun/private-route lab.
+# It shares the userspace IPC commands but connects to the fixed root-owned
+# guest harness socket; it is deliberately default-off and never composes with
+# production or the route-free VM-utun profile.
+networking-vm-network-lab-app = ["networking-userspace-lab-app"]
+# Explicit no-sign two-VirtualMac external-peer profile. It has its own
+# redacted handshake, fixed root socket, async command surface, and UI. It
+# deliberately does not imply the loopback/one-VM lab command module.
+networking-vm-external-peer-lab-app = ["networking-system-lab"]
 updater-verifier = []
 
 [[bin]]

@@ -3,6 +3,9 @@ package userspace
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -228,6 +231,120 @@ func TestBackendPreparesConnectsAndReconnectsExplicitCarriers(t *testing.T) {
 	}
 	if err := backend.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMutualTLSBackendOwnsCertificateThroughFallbackUntilClose(t *testing.T) {
+	_, clientPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := tls.Certificate{
+		Certificate: [][]byte{{1, 2, 3, 4}},
+		PrivateKey:  clientPrivate,
+	}
+	backend, err := NewLabWithMutualTLS(
+		make([]byte, 32),
+		nil,
+		MutualTLSConfig{ClientCertificate: certificate, ExactTLS13: true},
+		netip.MustParseAddrPort("10.88.0.2:8080"),
+		"instance.mutual-tls",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCertificateByte := certificate.Certificate[0][0]
+	originalPrivateKeyByte := clientPrivate[0]
+	clear(certificate.Certificate[0])
+	clear(clientPrivate)
+	if backend.mutualTLS == nil ||
+		backend.mutualTLS.ClientCertificate.Certificate[0][0] != originalCertificateByte ||
+		backend.mutualTLS.ClientCertificate.PrivateKey.(ed25519.PrivateKey)[0] != originalPrivateKeyByte ||
+		!backend.mutualTLS.ExactTLS13 {
+		t.Fatal("backend did not take an independent copy of the mutual TLS identity")
+	}
+
+	backend.dialer = func(_ context.Context, _ profile.Transport, _ profile.NormalizedEndpoint) (carrier.Carrier, error) {
+		return newMemoryCarrier(), nil
+	}
+	networkProfile := testProfile(t)
+	if _, err := backend.Prepare(context.Background(), networkProfile, "request.prepare.mutual-tls"); err != nil {
+		t.Fatal(err)
+	}
+	for _, transport := range []profile.Transport{profile.QUIC, profile.WSS, profile.TCP} {
+		endpoint, endpointErr := networkProfile.Endpoint(transport)
+		if endpointErr != nil {
+			t.Fatal(endpointErr)
+		}
+		if err := backend.Connect(context.Background(), transport, endpoint); err != nil {
+			t.Fatal(err)
+		}
+		if backend.mutualTLS == nil {
+			t.Fatalf("mutual TLS identity was released while %s was active", transport)
+		}
+		if err := backend.Disconnect(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := backend.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if backend.mutualTLS == nil {
+		t.Fatal("mutual TLS identity was released before backend Close")
+	}
+	retainedCertificate := &backend.mutualTLS.ClientCertificate
+	retainedPrivateKey := retainedCertificate.PrivateKey.(ed25519.PrivateKey)
+	retainedDER := retainedCertificate.Certificate[0]
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if backend.mutualTLS != nil {
+		t.Fatal("mutual TLS identity remained retained after backend Close")
+	}
+	if retainedCertificate.PrivateKey != nil || retainedCertificate.Certificate != nil {
+		t.Fatal("retained mutual TLS certificate was not released")
+	}
+	if !bytes.Equal(retainedPrivateKey, make([]byte, len(retainedPrivateKey))) ||
+		!bytes.Equal(retainedDER, make([]byte, len(retainedDER))) {
+		t.Fatal("retained mutual TLS key or certificate bytes were not cleared")
+	}
+}
+
+func TestMutualTLSBackendConfigFailsClosed(t *testing.T) {
+	_, clientPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, config := range []MutualTLSConfig{
+		{},
+		{ClientCertificate: tls.Certificate{Certificate: [][]byte{{1}}}},
+		{ClientCertificate: tls.Certificate{Certificate: [][]byte{{1}}, PrivateKey: struct{}{}}},
+	} {
+		backend, err := NewWithMutualTLS(make([]byte, 32), nil, config, "instance.invalid-mutual-tls")
+		if backend != nil || !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("expected invalid mutual TLS config refusal, got backend=%v err=%v", backend, err)
+		}
+	}
+	backend, err := NewLabWithMutualTLS(
+		make([]byte, 32),
+		nil,
+		MutualTLSConfig{ClientCertificate: tls.Certificate{Certificate: [][]byte{{1}}, PrivateKey: clientPrivate}},
+		netip.AddrPort{},
+		"instance.invalid-mutual-tls-probe",
+	)
+	if backend != nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected invalid probe refusal, got backend=%v err=%v", backend, err)
+	}
+}
+
+func TestOrdinaryBackendDoesNotOptIntoMutualTLS(t *testing.T) {
+	backend, err := New(make([]byte, 32), nil, "instance.ordinary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if backend.mutualTLS != nil {
+		t.Fatal("ordinary backend unexpectedly retained a client certificate")
 	}
 }
 

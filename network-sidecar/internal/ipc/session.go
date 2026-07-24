@@ -17,6 +17,19 @@ type Health struct {
 	LossPercent uint8  `json:"loss_percent"`
 }
 
+// PrivateReachability is deliberately separate from Health. The VM network
+// lab uses this narrow, fixed-scope probe after it has installed its exact
+// private /32 route. Production backends do not implement the optional
+// interface, so production sidecars reject the corresponding request instead
+// of claiming private-route evidence.
+type PrivateReachability struct {
+	Reachable          bool   `json:"reachable"`
+	LatencyMS          uint32 `json:"latency_ms"`
+	MihomoCoexisting   *bool  `json:"mihomo_coexisting,omitempty"`
+	OverlaySSHVerified *bool  `json:"overlay_ssh_verified,omitempty"`
+	SystemSSHVerified  *bool  `json:"system_ssh_verified,omitempty"`
+}
+
 type TunnelDeviceFacts struct {
 	InterfaceName string `json:"interface_name"`
 	MTU           int    `json:"mtu"`
@@ -30,6 +43,12 @@ func (health Health) valid() bool {
 	return health.LossPercent <= 100
 }
 
+func (probe PrivateReachability) valid() bool {
+	// A zero latency is valid on the loopback lab; only the bounded integer
+	// representation itself is exposed on the wire.
+	return true
+}
+
 type Backend interface {
 	Prepare(context.Context, *profile.Profile, string) (TunnelDeviceFacts, error)
 	Connect(context.Context, profile.Transport, profile.NormalizedEndpoint) error
@@ -37,6 +56,13 @@ type Backend interface {
 	Disconnect(context.Context) error
 	Stop(context.Context) error
 	Close() error
+}
+
+// PrivateReachabilityBackend is an optional lab-only extension. It is kept
+// out of Backend so existing production implementations cannot accidentally
+// claim private-route evidence.
+type PrivateReachabilityBackend interface {
+	PrivateReachability(context.Context) (PrivateReachability, error)
 }
 
 type contractBackend struct{}

@@ -142,6 +142,58 @@ func TestQUICCarrierRejectsWrongIdentity(t *testing.T) {
 	}
 }
 
+func TestQUICCarrierUsesMutualTLSWithExactTLS13(t *testing.T) {
+	fixture := testMutualTLSCertificates(t, "127.0.0.1")
+	listener, err := quicgo.ListenAddr("127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{fixture.server},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    fixture.roots,
+		MinVersion:   tls.VersionTLS13,
+		MaxVersion:   tls.VersionTLS13,
+		NextProtos:   []string{quicALPN},
+	}, &quicgo.Config{EnableDatagrams: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	serverResult := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept(ctx)
+		if acceptErr != nil {
+			serverResult <- acceptErr
+			return
+		}
+		defer connection.CloseWithError(0, "")
+		state := connection.ConnectionState().TLS
+		if state.Version != tls.VersionTLS13 || len(state.PeerCertificates) != 1 ||
+			state.PeerCertificates[0].Subject.CommonName != "kyclash-client.test" {
+			serverResult <- errors.New("unexpected mutual TLS client identity")
+			return
+		}
+		serverResult <- nil
+	}()
+
+	client, err := DialQUIC(ctx, QUICConfig{
+		Address:           listener.Addr().String(),
+		ServerName:        "127.0.0.1",
+		RootCAs:           fixture.roots,
+		ClientCertificate: &fixture.client,
+		ExactTLS13:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if client.connection.ConnectionState().TLS.Version != tls.VersionTLS13 {
+		t.Fatal("QUIC client did not negotiate TLS 1.3")
+	}
+	if err := <-serverResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestQUICReceiveCancellationIsBounded(t *testing.T) {
 	certificate, roots := testCertificate(t, "127.0.0.1")
 	listener, err := quicgo.ListenAddr("127.0.0.1:0", &tls.Config{
@@ -248,6 +300,7 @@ func TestQUICConfigAndPacketBoundsFailClosed(t *testing.T) {
 		{Address: "example.test:443"},
 		{Address: "example.test", ServerName: "example.test"},
 		{Address: "example.test:443", ServerName: "example.test", Timeout: -1},
+		{Address: "example.test:443", ServerName: "example.test", ClientCertificate: &tls.Certificate{}},
 	} {
 		if _, err := DialQUIC(context.Background(), config); !errors.Is(err, ErrInvalidEndpoint) {
 			t.Fatalf("expected validation refusal for %#v, got %v", config, err)

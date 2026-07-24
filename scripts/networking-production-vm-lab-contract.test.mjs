@@ -39,6 +39,68 @@ const root = path.resolve(import.meta.dirname, '..')
 const guestAppDataRoot =
   '/Users/supen/Library/Application Support/net.kysion.kyclash'
 
+// The production generator hashes the reviewed helper bytes but never runs
+// them.  Keep generator contract tests independent from an ignored, locally
+// compiled tunnel-broker artifact by installing a bounded fixture only when
+// that artifact is absent.  Existing artifacts are preserved byte-for-byte;
+// a fixture is removed only if its inode is still the one created here.
+const tunnelBrokerFixturePath = path.join(
+  root,
+  'src-tauri',
+  'helpers',
+  'kyclash-tunnel-broker',
+)
+const withTunnelBrokerFixture = (callback) => {
+  let created = false
+  let createdIdentity
+  let stat
+  try {
+    stat = fs.lstatSync(tunnelBrokerFixturePath)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+  if (stat) {
+    if (!stat.isFile() || stat.isSymbolicLink())
+      throw new Error('tunnel broker fixture path must be a regular file')
+  } else {
+    fs.mkdirSync(path.dirname(tunnelBrokerFixturePath), { recursive: true })
+    const fixture = Buffer.from(
+      'KYCLASH-TUNNEL-BROKER-COMPILE-ONLY-FIXTURE-V1\n',
+      'ascii',
+    )
+    fs.writeFileSync(tunnelBrokerFixturePath, fixture, {
+      flag: 'wx',
+      mode: 0o755,
+    })
+    fs.chmodSync(tunnelBrokerFixturePath, 0o755)
+    created = true
+    createdIdentity = fs.lstatSync(tunnelBrokerFixturePath)
+  }
+  let result
+  let callbackError
+  try {
+    result = callback()
+  } catch (error) {
+    callbackError = error
+  }
+  let cleanupError
+  if (created) {
+    try {
+      const current = fs.lstatSync(tunnelBrokerFixturePath)
+      if (
+        current.dev === createdIdentity.dev &&
+        current.ino === createdIdentity.ino
+      )
+        fs.unlinkSync(tunnelBrokerFixturePath)
+    } catch (error) {
+      if (error?.code !== 'ENOENT') cleanupError = error
+    }
+  }
+  if (callbackError) throw callbackError
+  if (cleanupError) throw cleanupError
+  return result
+}
+
 test('production VM package scripts point at the reviewed executable chain', () => {
   const scripts = JSON.parse(
     fs.readFileSync(path.join(root, 'package.json'), 'utf8'),
@@ -74,10 +136,12 @@ test('production system-lab candidates keep the real Tauri App context', () => {
     path.join(root, 'src-tauri', 'src', 'lib.rs'),
     'utf8',
   )
-  const labOnlyPattern =
+  const buildLabOnlyPattern =
+    /all\(\s*feature = "networking-system-lab",\s*not\(feature = "networking-production"\),\s*not\(feature = "networking-userspace-lab-app"\),\s*not\(feature = "networking-vm-external-peer-lab-app"\)\s*\)/gu
+  const appLabOnlyPattern =
     /all\(\s*feature = "networking-system-lab",\s*not\(feature = "networking-production"\),\s*not\(feature = "networking-userspace-lab-app"\)\s*\)/gu
-  assert.equal(buildScript.match(labOnlyPattern)?.length, 2)
-  assert.equal(appSource.match(labOnlyPattern)?.length, 3)
+  assert.equal(buildScript.match(buildLabOnlyPattern)?.length, 2)
+  assert.equal(appSource.match(appLabOnlyPattern)?.length, 3)
   assert.match(buildScript, /feature = "networking-userspace-lab-app"/u)
   assert.match(appSource, /feature = "networking-userspace-lab-app"/u)
   assert.match(appSource, /builder\.build\(tauri::generate_context!\(\)\)/u)
@@ -121,14 +185,16 @@ test('production UI command surface is complete and excluded from userspace buil
   const productionCommands = [
     'initialize_networking',
     'list_networking_sites',
+    'list_networking_policy_variants',
+    'select_networking_policy_variant',
     'get_networking_status',
     'connect_networking',
     'cancel_networking_operation',
     'disconnect_networking',
     'get_networking_diagnostics',
-    'get_route_helper_registration_status',
-    'register_route_helper_service',
-    'unregister_route_helper_service',
+    'get_privileged_networking_services_status',
+    'register_privileged_networking_services_command',
+    'unregister_privileged_networking_services_command',
     'open_route_helper_system_settings',
   ]
   for (const command of productionCommands) {
@@ -142,6 +208,12 @@ test('production UI command surface is complete and excluded from userspace buil
     assert.match(commands, new RegExp(`['"]${command}['"]`, 'u'))
   }
   assert.match(page, /listNetworkingSites\(\)/u)
+  assert.match(page, /getPrivilegedNetworkingServicesStatus\(\)/u)
+  assert.match(page, /registerPrivilegedNetworkingServices\(\)/u)
+  assert.match(page, /unregisterPrivilegedNetworkingServices\(\)/u)
+  assert.match(page, /servicesStatus\?\.ready !== true/u)
+  assert.match(page, /Route helper:/u)
+  assert.match(page, /Tunnel broker:/u)
   assert.match(
     navigation,
     /VITE_NETWORKING_PRODUCTION === 'true' &&\s*import\.meta\.env\.VITE_NETWORKING_SYSTEM_LAB !== 'true'/u,
@@ -585,6 +657,9 @@ test('stages ordinary resources and emits an absolute, closed overlay', () => {
       'Resources/kyclash-route-helper': 'helpers/kyclash-route-helper',
       'Library/LaunchDaemons/net.kysion.kyclash.route-helper.plist':
         '../macos/route-helper/net.kysion.kyclash.route-helper.plist',
+      'Resources/kyclash-tunnel-broker': 'helpers/kyclash-tunnel-broker',
+      'Library/LaunchDaemons/net.kysion.kyclash.tunnel-broker.plist':
+        '../macos/tunnel-broker/net.kysion.kyclash.tunnel-broker.plist',
     })
     assert.deepEqual(overlay.bundle.externalBin, [
       'sidecar/verge-mihomo',
@@ -745,11 +820,16 @@ test('descriptor validation is side-effect free and rejects non-canonical key by
     fs.writeFileSync(descriptorPath, `${JSON.stringify(base)}\n`, {
       mode: 0o644,
     })
-    const inputs = collectReviewedBuildInputs({
-      sourceRoot: path.join(root, 'src-tauri/resources'),
-      baseConfig: path.join(root, 'src-tauri/tauri.networking.macos.conf.json'),
-      target: 'aarch64-apple-darwin',
-    })
+    const inputs = withTunnelBrokerFixture(() =>
+      collectReviewedBuildInputs({
+        sourceRoot: path.join(root, 'src-tauri/resources'),
+        baseConfig: path.join(
+          root,
+          'src-tauri/tauri.networking.macos.conf.json',
+        ),
+        target: 'aarch64-apple-darwin',
+      }),
+    )
     assert.deepEqual(Object.keys(inputs.marker).sort(), [
       'mihomo_alpha_sha256',
       'mihomo_sha256',
@@ -757,6 +837,8 @@ test('descriptor validation is side-effect free and rejects non-canonical key by
       'ordinary_resources_inventory_sha256',
       'route_helper_plist_sha256',
       'route_helper_sha256',
+      'tunnel_broker_plist_sha256',
+      'tunnel_broker_sha256',
     ])
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
@@ -910,15 +992,17 @@ test('generates a run-bound signed policy without serializing a private key', ()
     fs.writeFileSync(descriptorPath, `${JSON.stringify(descriptor)}\n`, {
       mode: 0o644,
     })
-    const result = prepareNetworkingProductionVmLab({
-      runRoot: path.join(directory, 'run'),
-      descriptorPath,
-      policyRevisionPreflightPath,
-      now: 1_800_000_000,
-      revision: 42,
-      policyExpiryCeiling: 1_800_003_900,
-      requireClean: false,
-    })
+    const result = withTunnelBrokerFixture(() =>
+      prepareNetworkingProductionVmLab({
+        runRoot: path.join(directory, 'run'),
+        descriptorPath,
+        policyRevisionPreflightPath,
+        now: 1_800_000_000,
+        revision: 42,
+        policyExpiryCeiling: 1_800_003_900,
+        requireClean: false,
+      }),
+    )
     const policy = JSON.parse(fs.readFileSync(result.policyPath, 'utf8'))
     const trust = JSON.parse(fs.readFileSync(result.trustPath, 'utf8'))
     const marker = JSON.parse(
@@ -958,14 +1042,17 @@ test('generates a run-bound signed policy without serializing a private key', ()
     )
     assert.deepEqual(
       marker.build_inputs,
-      collectReviewedBuildInputs({
-        sourceRoot: path.join(root, 'src-tauri/resources'),
-        baseConfig: path.join(
-          root,
-          'src-tauri/tauri.networking.macos.conf.json',
-        ),
-        target: 'aarch64-apple-darwin',
-      }).marker,
+      withTunnelBrokerFixture(
+        () =>
+          collectReviewedBuildInputs({
+            sourceRoot: path.join(root, 'src-tauri/resources'),
+            baseConfig: path.join(
+              root,
+              'src-tauri/tauri.networking.macos.conf.json',
+            ),
+            target: 'aarch64-apple-darwin',
+          }).marker,
+      ),
     )
     assert.equal(
       JSON.parse(

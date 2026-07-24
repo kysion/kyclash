@@ -19,8 +19,9 @@ type cancellableOperation struct {
 }
 
 type backendOperationResult struct {
-	health Health
-	err    error
+	health              Health
+	privateReachability PrivateReachability
+	err                 error
 }
 
 func (current *session) prepareCancellable(request Request) (*cancellableOperation, Response, bool) {
@@ -55,6 +56,20 @@ func (current *session) prepareCancellable(request Request) (*cancellableOperati
 			return nil, response, false
 		}
 		return &cancellableOperation{request: request}, Response{}, true
+	case "sample_private_reachability":
+		if !emptyData(request.Payload.Data) {
+			response, _ = invalidData(response)
+			return nil, response, false
+		}
+		if current.activeTransport == "" {
+			response, _ = invalidState(response)
+			return nil, response, false
+		}
+		if _, ok := current.backend.(PrivateReachabilityBackend); !ok {
+			response, _ = invalidState(response)
+			return nil, response, false
+		}
+		return &cancellableOperation{request: request}, Response{}, true
 	default:
 		response, _ = invalidState(response)
 		return nil, response, false
@@ -68,6 +83,13 @@ func (operation *cancellableOperation) run(ctx context.Context, backend Backend)
 	case "sample_health":
 		health, err := backend.Health(ctx)
 		return backendOperationResult{health: health, err: err}
+	case "sample_private_reachability":
+		probe, ok := backend.(PrivateReachabilityBackend)
+		if !ok {
+			return backendOperationResult{err: ErrBackendUnavailable}
+		}
+		reachability, err := probe.PrivateReachability(ctx)
+		return backendOperationResult{privateReachability: reachability, err: err}
 	default:
 		return backendOperationResult{err: ErrBackendUnavailable}
 	}
@@ -90,6 +112,15 @@ func (current *session) completeCancellable(operation *cancellableOperation, res
 			return response
 		}
 		response.Result = success(map[string]interface{}{"type": "health", "data": result.health})
+	case "sample_private_reachability":
+		if !result.privateReachability.valid() {
+			response, _ = current.backendFailure(response)
+			return response
+		}
+		response.Result = success(map[string]interface{}{
+			"type": "private_reachability",
+			"data": result.privateReachability,
+		})
 	default:
 		response, _ = current.backendFailure(response)
 	}

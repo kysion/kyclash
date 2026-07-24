@@ -823,6 +823,9 @@ export const collectReviewedBuildInputs = ({
     'Resources/kyclash-route-helper': 'helpers/kyclash-route-helper',
     'Library/LaunchDaemons/net.kysion.kyclash.route-helper.plist':
       '../macos/route-helper/net.kysion.kyclash.route-helper.plist',
+    'Resources/kyclash-tunnel-broker': 'helpers/kyclash-tunnel-broker',
+    'Library/LaunchDaemons/net.kysion.kyclash.tunnel-broker.plist':
+      '../macos/tunnel-broker/net.kysion.kyclash.tunnel-broker.plist',
   }
   if (JSON.stringify(files) !== JSON.stringify(expectedFiles))
     fail('base bundle.macOS.files does not match the reviewed mapping')
@@ -852,6 +855,19 @@ export const collectReviewedBuildInputs = ({
       'route helper plist',
       0o644,
     ),
+    tunnelBroker: reviewedInput(
+      resolveMapped(files['Resources/kyclash-tunnel-broker'], 'tunnel broker'),
+      'tunnel broker',
+      0o755,
+    ),
+    tunnelBrokerPlist: reviewedInput(
+      resolveMapped(
+        files['Library/LaunchDaemons/net.kysion.kyclash.tunnel-broker.plist'],
+        'tunnel broker plist',
+      ),
+      'tunnel broker plist',
+      0o644,
+    ),
     mihomo: reviewedInput(
       resolveMapped(
         `${base.bundle.externalBin[0]}-${target}`,
@@ -875,6 +891,8 @@ export const collectReviewedBuildInputs = ({
       network_sidecar_sha256: fixed.networkSidecar.sha256,
       route_helper_sha256: fixed.routeHelper.sha256,
       route_helper_plist_sha256: fixed.routeHelperPlist.sha256,
+      tunnel_broker_sha256: fixed.tunnelBroker.sha256,
+      tunnel_broker_plist_sha256: fixed.tunnelBrokerPlist.sha256,
       mihomo_sha256: fixed.mihomo.sha256,
       mihomo_alpha_sha256: fixed.mihomoAlpha.sha256,
     },

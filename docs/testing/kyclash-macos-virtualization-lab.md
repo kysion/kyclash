@@ -18,8 +18,11 @@ physical sleep/wake or physical network-interface switching.
 - Disposable clone: `kyclash-macos-lab-work`.
 - Guest allocation: 6 vCPU, 8192 MiB RAM, 50 GB virtual disk, 1440x900
   display on the current 10-core/32 GB development Mac.
-- Repository share: read-only, exposed as
-  `/Volumes/My Shared Files/kyclash` inside the guest.
+- Curated public input share: read-only, exposed as
+  `/Volumes/My Shared Files/kyclash-staging` inside the guest. The repository
+  root and host-private `target` trees are never shared. The work guest may
+  export public review artifacts only through
+  `/Volumes/My Shared Files/kyclash-review-client`.
 
 Tart `2.33.0` was rejected for this host because the signed executable exited
 with status 137 before command dispatch on macOS 26.5.1/M5. Version `2.32.1`
@@ -63,20 +66,23 @@ Remote Login was not enabled at first boot, so SSH automation was pending at
 that checkpoint. It was subsequently enabled for the dedicated guest account,
 and the VM-only key below is now the automation boundary.
 
-To enable password-free automation without sharing the guest password, generate
-a VM-only key under the ignored `target/macos-vm-lab/ssh` directory. In the
-guest, enable **System Settings → General → Sharing → Remote Login**, then run:
+For the current two-VM lab, initialize the fixed role-specific management keys
+and Layer-A inputs through the reviewed host courier. Only the client public
+key is then present in the curated share. In the guest, enable **System
+Settings → General → Sharing → Remote Login**, then install that public key:
 
 ```bash
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
-cat '/Volumes/My Shared Files/kyclash/target/macos-vm-lab/ssh/id_ed25519.pub' \
+cat '/Volumes/My Shared Files/kyclash-staging/layer-a-inputs/client-ssh-bootstrap-layer-a/client-management-ed25519-public.bin' \
   >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 ```
 
-The private key must remain under ignored `target/`, must never be printed or
-committed, and must be deleted when the disposable work VM is discarded.
+The host management private key remains under the ignored, unshared fixed
+private root. It must never be printed, committed, or copied into any Tart
+share. The transactional external-peer bootstrap supersedes this manual block
+for the current acceptance run.
 
 ## Local execution evidence — 2026-07-21
 
@@ -571,42 +577,18 @@ scripts/macos-vm-lab.sh run
 ```
 
 Inside the disposable guest, copy any required build output to a guest-writable
-directory before installing it. Never write build products into the read-only
-repository share.
+directory before executing it. The repository is not mounted in the guest.
+Publish only the exact reviewed public artifacts into `kyclash-staging`; never
+place source trees, build caches, credentials, or private keys there. The
+current dual-VM procedure is
+[`kyclash-vm-external-peer-lab-app.md`](kyclash-vm-external-peer-lab-app.md).
 
-Run the fixed-scope system lab only after Rust and the project dependencies are
-available in the guest:
-
-```bash
-cd '/Volumes/My Shared Files/kyclash'
-KYCLASH_RUNNER_ENVIRONMENT=local-virtualization-framework \
-KYCLASH_VM_LAB_CONFIRM=authorized-kyclash-virtualization-framework-vm \
-  scripts/macos-system-lab.sh
-```
-
-For the current Apple Silicon host and guest pair, the binaries may instead be
-rebuilt on the host and copied from the read-only share into the guest's private
-build directory. This mode is accepted only after the same `VirtualMac` check:
-
-```bash
-# Host
-cargo build -p clash-verge \
-  --features networking-route-lab,networking-keychain-lab,networking-system-lab \
-  --bin kyclash-route-lab --bin kyclash-keychain-lab
-
-# Guest, from the read-only repository share
-KYCLASH_MACOS_LAB_OUTPUT="$HOME/kyclash-lab/evidence" \
-KYCLASH_MACOS_LAB_BUILD="$HOME/kyclash-lab/build" \
-KYCLASH_MACOS_LAB_USE_PREBUILT=1 \
-KYCLASH_RUNNER_ENVIRONMENT=local-virtualization-framework \
-KYCLASH_VM_LAB_CONFIRM=authorized-kyclash-virtualization-framework-vm \
-  scripts/macos-system-lab.sh
-```
-
-The script independently verifies that `hw.model` starts with `VirtualMac`,
-requires the exact confirmation string, restricts Keychain operations to
-`net.kysion.kyclash.test`, and restricts route mutation to `192.0.2.0/24` on
-`lo0`. It refuses a physical Mac even if the environment variables are copied.
+The former workflow that executed `scripts/macos-system-lab.sh` directly from
+a whole-repository share is retired. Re-running that historical system lab now
+requires a separate reviewed builder and exact-artifact publisher; do not
+restore the repository mount or manually copy a source/build tree into the
+guest. Its existing evidence remains historical and does not authorize a new
+runtime.
 
 After collecting redacted evidence, stop and discard the work VM. VM deletion
 is intentionally not automated by the repository script: inspect `tart list`

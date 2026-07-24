@@ -13,9 +13,11 @@ import (
 )
 
 type WSSConfig struct {
-	URL     string
-	RootCAs *x509.CertPool
-	Timeout time.Duration
+	URL               string
+	RootCAs           *x509.CertPool
+	ClientCertificate *tls.Certificate
+	ExactTLS13        bool
+	Timeout           time.Duration
 }
 
 func DialWSS(ctx context.Context, config WSSConfig) (*Stream, error) {
@@ -28,11 +30,13 @@ func DialWSS(ctx context.Context, config WSSConfig) (*Stream, error) {
 	}
 	dialContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		RootCAs:    config.RootCAs,
+	}
+	applyClientTLSOptions(tlsConfig, config.ClientCertificate, config.ExactTLS13)
 	connection, response, err := websocket.Dial(dialContext, config.URL, &websocket.DialOptions{
-		HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13,
-			RootCAs:    config.RootCAs,
-		}}},
+		HTTPClient:      &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}},
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
@@ -45,7 +49,7 @@ func DialWSS(ctx context.Context, config WSSConfig) (*Stream, error) {
 }
 
 func validateWSSConfig(config WSSConfig) error {
-	if config.Timeout < 0 {
+	if config.Timeout < 0 || !validClientCertificate(config.ClientCertificate) {
 		return ErrInvalidEndpoint
 	}
 	parsed, err := url.Parse(config.URL)

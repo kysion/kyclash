@@ -453,6 +453,35 @@ export const disconnectNetworkingUserspaceLab = async () => {
   )
 }
 
+/**
+ * Default-off two-VirtualMac lab commands. Connect, Cancel, and Disconnect
+ * return immediately with a redacted snapshot while their bounded worker
+ * continues in Rust; the UI polls the status command.
+ */
+export const getNetworkingExternalPeerLabStatus = async () => {
+  return invoke<import('@/types/networking').NetworkingExternalPeerLabStatus>(
+    'get_networking_external_peer_lab_status',
+  )
+}
+
+export const connectNetworkingExternalPeerLab = async () => {
+  return invoke<import('@/types/networking').NetworkingExternalPeerLabStatus>(
+    'connect_networking_external_peer_lab',
+  )
+}
+
+export const cancelNetworkingExternalPeerLab = async () => {
+  return invoke<import('@/types/networking').NetworkingExternalPeerLabStatus>(
+    'cancel_networking_external_peer_lab',
+  )
+}
+
+export const disconnectNetworkingExternalPeerLab = async () => {
+  return invoke<import('@/types/networking').NetworkingExternalPeerLabStatus>(
+    'disconnect_networking_external_peer_lab',
+  )
+}
+
 export const getNetworkingStatus = async () => {
   return invoke<import('@/types/networking').ProductionNetworkStatus>(
     'get_networking_status',
@@ -474,6 +503,25 @@ export const initializeNetworking = async () => {
 export const listNetworkingSites = async () => {
   return invoke<import('@/types/networking').ProductionSiteSummary[]>(
     'list_networking_sites',
+  )
+}
+
+export const listNetworkingPolicyVariants = async () => {
+  return invoke<import('@/types/networking').ProductionPolicyCatalogView>(
+    'list_networking_policy_variants',
+  )
+}
+
+/**
+ * Select one backend-defined, signed catalog ID. Route/CIDR input is
+ * intentionally absent from this boundary.
+ */
+export const selectNetworkingPolicyVariant = async (
+  catalogId: import('@/types/networking').ProductionPolicyVariantSummary['catalog_id'],
+) => {
+  return invoke<import('@/types/networking').ProductionPolicyCatalogView>(
+    'select_networking_policy_variant',
+    { catalogId },
   )
 }
 
@@ -499,22 +547,22 @@ export const getNetworkingDiagnostics = async () => {
   )
 }
 
-export const getRouteHelperRegistrationStatus = async () => {
-  return invoke<import('@/types/networking').RouteHelperRegistrationStatus>(
-    'get_route_helper_registration_status',
-  )
+export const getPrivilegedNetworkingServicesStatus = async () => {
+  return invoke<
+    import('@/types/networking').PrivilegedNetworkingServicesStatus
+  >('get_privileged_networking_services_status')
 }
 
-export const registerRouteHelperService = async () => {
-  return invoke<import('@/types/networking').RouteHelperRegistrationStatus>(
-    'register_route_helper_service',
-  )
+export const registerPrivilegedNetworkingServices = async () => {
+  return invoke<
+    import('@/types/networking').PrivilegedNetworkingServicesStatus
+  >('register_privileged_networking_services_command')
 }
 
-export const unregisterRouteHelperService = async () => {
-  return invoke<import('@/types/networking').RouteHelperRegistrationStatus>(
-    'unregister_route_helper_service',
-  )
+export const unregisterPrivilegedNetworkingServices = async () => {
+  return invoke<
+    import('@/types/networking').PrivilegedNetworkingServicesStatus
+  >('unregister_privileged_networking_services_command')
 }
 
 export const openRouteHelperSystemSettings = async () => {

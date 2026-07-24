@@ -114,6 +114,10 @@ const getNavLabel = (
 ) =>
   item.label === 'KyClash Network (Dev)' ||
   item.label === 'KyClash Network (LAB · userspace)' ||
+  item.label === 'KyClash Network (VM LAB · real utun)' ||
+  item.label ===
+    'KyClash Network (VM LAB · real utun · private route · Mihomo)' ||
+  item.label === 'KyClash Network (VM LAB · external peer)' ||
   item.label === 'KyClash Network'
     ? item.label
     : translate(item.label)

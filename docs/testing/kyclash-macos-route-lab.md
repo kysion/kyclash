@@ -118,27 +118,62 @@ This local guest cycle passed on 2026-07-21 on macOS 26.5.2 arm64. Normal
 apply/rollback, expected exit 134 after durable apply, journal recovery, and
 independent final route/journal absence all passed.
 
-## Injected coordinator matrix (no privileges)
+## Injected coordinator matrix (disposable VM, no route mutation)
 
-The signed helper source includes a separate deterministic self-test that does
-not invoke `/sbin/route` or alter host state:
+The helper source includes separate deterministic self-tests that do not invoke
+`/sbin/route` or alter route state. Compile-only checks may run on the build
+host, but the linked helper executable and these self-tests run only after
+re-proving the selected `VirtualMac*` guest; do not execute the helper on the
+host:
 
 ```bash
+bridge_obj="$(mktemp /tmp/kyclash-route-client.XXXXXX)"
+xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+  -target arm64-apple-macos13.0 -mmacosx-version-min=13.0 \
+  -I macos/tunnel-broker -c macos/tunnel-broker/route-client.m \
+  -o "$bridge_obj"
 xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.0 \
-  -framework Foundation -o /tmp/kyclash-route-helper \
-  macos/route-helper/main.swift
+  -framework Foundation -framework OSLog \
+  -import-objc-header macos/tunnel-broker/route-client.h \
+  -o /tmp/kyclash-route-helper \
+  macos/route-helper/main.swift "$bridge_obj"
 /tmp/kyclash-route-helper --route-coordinator-self-test
+/tmp/kyclash-route-helper --route-v3-bridge-self-test
+/tmp/kyclash-route-helper --route-v3-contract-self-test
+/tmp/kyclash-route-helper --route-v3-interlock-self-test
+/tmp/kyclash-route-helper --route-v3-durable-store-self-test
 ```
 
-It uses an in-memory executor and a temporary private journal to cover normal
-IPv4/IPv6 apply and cleanup, duplicate/replayed lease messages, exact route
-conflicts, injected add and rollback failures, heartbeat/lease expiry,
+The production helper's no-argument path now exposes the v3 listener. The
+explicit `--route-v3-lab-listener` plus
+`KYCLASH_ROUTE_HELPER_V3_LAB=1` path remains a separate deterministic lab
+mode; legacy v2 is similarly available only through
+`--route-v2-lab-listener` plus `KYCLASH_ROUTE_HELPER_V2_LAB=1`. Both v3 paths
+use the root-owned atomic plist store and exact-owner startup recovery. The
+injected v3 self-test uses an in-memory executor, broker, and temporary journal
+seam to cover ordering without contacting the broker.
+
+The two fixed v3 native clients use connection epochs to reconnect after a
+transient timeout, interruption, invalidation, or remote failure. They do not
+replay the ambiguous request, and an old connection callback cannot invalidate
+the replacement. Distinct ambiguous/rejected broker results retain a possibly
+committed hold, helper and broker watchdogs preserve the exact recovery tuple,
+and route retirement requires a successful post-delete inspection; a missing
+inspection result is not positive absence.
+
+The v2 matrix uses an in-memory executor and a temporary private journal to
+cover normal IPv4/IPv6 apply and cleanup, duplicate/replayed lease messages,
+exact route conflicts, injected add and rollback failures, heartbeat/lease expiry,
 connection invalidation, helper restart reconciliation, and corrupt-journal
 fail-closed behavior. The signed privileged VM has now also passed dual-stack
 normal apply/rollback, exact IPv4/IPv6 and more-specific IPv4 conflict refusal.
-The current helper fails closed on every non-default overlap, so the historical
-less-specific IPv4/IPv6 probe is superseded and is not accepted coexistence
-evidence. A typed active-Mihomo-interface ownership amendment is required
-before less-specific coverage may be allowed. The complete production-journal
-corruption/restart matrix and packaged Mihomo coexistence remain separate
-gates; see `kyclash-macos-virtualization-lab.md` for the evidence boundary.
+The historical untyped less-specific IPv4/IPv6 probe is superseded. The typed
+v2 active-Mihomo-interface and packaged-Mihomo matrices have passed, but they
+do not substitute for the still-open production broker/v3 exact-candidate VM
+aggregate. See `kyclash-macos-virtualization-lab.md` for the evidence boundary.
+
+The production Connect source gate also checks that both privileged services
+are enabled and that the fixed bundled helper/broker executables satisfy the
+expected identifier/Team-ID code requirements and exact launchd manifests.
+This runbook does not claim that a new signed candidate, helper registration,
+or production v3 VM transaction has been executed.

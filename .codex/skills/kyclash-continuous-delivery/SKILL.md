@@ -26,7 +26,24 @@ Read these files before changing scope or architecture:
 9. `docs/roadmap/kyclash-production-networking-work-program-20260721.md`
    when continuing the single S1 delivery stage; execute its first incomplete
    work package and retain its evidence and authorization checkpoints
-10. `kyclash-handoff-20260721.md` only for historical context
+10. `docs/roadmap/kyclash-privileged-tunnel-broker-review-20260723.md`,
+    `docs/roadmap/kyclash-broker-session-binding-review-20260723.md`, and
+    `docs/roadmap/kyclash-tunnel-route-retirement-interlock-review-20260723.md`
+    when implementing real utun or the privileged broker/route interlock
+11. `docs/roadmap/kyclash-vm-utun-lab-app-review-20260723.md` when the current
+    deliverable is a no-sign App using the disposable-VM real-utun lab path;
+    keep its explicit no-routes and non-production claims intact
+12. `docs/roadmap/kyclash-vm-network-lab-app-review-20260723.md` when the
+    current no-sign App deliverable must prove the core private-network result
+    in the disposable VM: real utun, fixed private route/reachability, Mihomo
+    coexistence, and QUIC -> WSS -> TCP break-before-make; keep its fixed
+    sibling-harness authority and non-production claim boundary intact
+13. `docs/roadmap/kyclash-vm-external-peer-lab-review-20260723.md` when the
+    core private-network result must cross two disposable VirtualMac guests;
+    use its locked client/peer split, courier, listener, SSH, bridge,
+    supervision, evidence, and cleanup contracts without silently falling
+    back to the host or a loopback peer
+14. `kyclash-handoff-20260721.md` only for historical context
 
 Treat the review record and architecture as locked. If they conflict with the
 handoff, follow the locked documents. Require a new review record before
@@ -129,6 +146,11 @@ been selected for the work:
   `VirtualMac*` from inside that same session before invoking a runtime command.
   Prefer the ignored VM-only SSH key; never embed a password in a command,
   script, log, evidence file, or skill.
+- Treat every executable compiled with `kyclash_utun` as guest-runtime capable.
+  The host may cross-compile it but must not execute it, including through
+  `go test` on the same Darwin/arm64 architecture. Use compile-only gates on the
+  host and run the binary or tagged test only after re-proving the selected
+  `VirtualMac*` guest.
 - Interpret “run/open/verify the App” as running `/Applications/KyClash.app`
   inside that guest. Do not substitute a host launch because it is easier to
   observe or automate.
@@ -156,6 +178,69 @@ been selected for the work:
 For the current local lab, use the explicitly selected disposable
 `kyclash-macos-lab-work` guest. Never mutate or use the clean
 `kyclash-macos-lab-base` image for acceptance tests.
+
+### Enforce the current two-VM core-networking checkpoint
+
+When the external-peer review is active, the only runtime targets are
+`kyclash-macos-lab-work` for the client and `kyclash-macos-lab-peer` for the
+peer. The host remains build/courier/orchestration-only, and
+`kyclash-macos-lab-base` remains stopped and immutable. Never replace the peer
+with an in-process, loopback, container, host, or production endpoint and call
+the cross-VM gate complete.
+
+Keep disposable guests stopped while the active work is limited to source
+review, host-only compilation, documentation, or artifact preparation. Start
+`kyclash-macos-lab-work` and `kyclash-macos-lab-peer` only immediately before a
+guest staging or two-VM runtime step that needs them, and stop both again after
+the evidence has been exported. Never leave an idle guest running merely to
+signal progress; preserve host CPU and memory without weakening the two-VM
+acceptance gate.
+
+The current user deliverable is one unsigned `KyClash.app`. Do not spend this
+checkpoint on signing, notarization, PKG, DMG, installer, updater, release, or
+unrelated product work. Cross-compile App/helper binaries on the host, copy
+only the reviewed artifacts into the selected guests, and execute all utun,
+route, Mihomo, carrier, SSH, lifecycle, and App runtime work inside those
+guests.
+
+Keep the SSH meanings explicit:
+
+- `10.88.0.2:22` is the run-bound, public-key-only fixed proof service. It
+  intentionally has no interactive shell.
+- `10.88.0.2:2222` is the fixed proxy to the peer's system
+  `127.0.0.1:22`. Normal interactive SSH is possible only when that peer
+  account's effective sshd/authorized-key policy permits it; the locked
+  automated acceptance uses the restricted `kyclashlabssh` forced command.
+- Both endpoints count only when traffic crosses the client KyClash utun and
+  exact `10.88.0.2/32` route. Management SSH over guest `en0` is only an
+  orchestration channel and never overlay evidence.
+
+Default-NAT VM creation/bootstrap is separate from bridged-LAN attachment.
+Before every `tart run ... --net-bridged=en0`, require a fresh explicit
+authorization for that exact run and re-prove both VM identities, unique MACs,
+unique SSH host keys, listener baselines, and the reviewed user-owned lab LAN.
+An earlier clone/start authorization does not authorize a later bridge.
+
+Administrator actions in either guest must remain visibly user-authorized.
+Never place a password in `sshpass`, `sudo -S`, AppleScript/UI automation,
+stdin, argv, environment, source, logs, evidence, or commentary. Continue all
+independent source/build/test work first; request the minimum visible guest
+action only when it is the sole remaining gate.
+
+### Preserve the Shenzhen read-only boundary
+
+When Shenzhen real-site acceptance is in scope, read and follow
+`docs/testing/kyclash-shenzhen-readonly-acceptance-20260723.md`. Run those
+probes only inside `kyclash-macos-lab-work` after KyClash owns a healthy utun;
+the host must not substitute its own reachability. Install only the locked
+split routes `10.68.72.0/21` and `10.20.81.0/24`, with the two optional VIP
+`/32` routes only when selected. Never add a default route, use the obsolete
+`10.68.72.1` path, log in to a remote management plane, deploy a remote peer,
+or mutate PVE, ROS, K3s, databases, storage, IPMI, or hypervisors. A topology
+or management address is not a KyClash server endpoint; require an already
+reviewed peer endpoint and public trust material before attempting the real
+site tunnel. Never request or expose remote passwords, tokens, or private
+keys.
 
 ## Enforce the App-first visible checkpoint
 

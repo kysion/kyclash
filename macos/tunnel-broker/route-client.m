@@ -11,6 +11,8 @@
 
 #import <Foundation/Foundation.h>
 
+#import "route-client.h"
+
 #include <stdint.h>
 #include <string.h>
 
@@ -20,29 +22,6 @@ static const int64_t KCTBRTimeoutNanoseconds = 5LL * NSEC_PER_SEC;
 static const int32_t KCTBRRouteProtocolVersion = 3;
 static const int32_t KCTBRBrokerProtocolVersion = 1;
 static const size_t KCTBRMaximumIdentifierBytes = 64;
-
-typedef struct {
-  int32_t transport_status;
-  int32_t protocol_version;
-  int32_t broker_protocol_version;
-  int32_t state;
-  int32_t error_code;
-  uint64_t broker_generation;
-  char sidecar_instance_id[65];
-  char route_lease_id[65];
-  char operation_id[65];
-} KCTBRClientReply;
-
-typedef NS_ENUM(int32_t, KCTBRTransportStatus) {
-  KCTBRTransportOK = 0,
-  KCTBRTransportTimeout = 1,
-  KCTBRTransportRemoteFailure = 2,
-  KCTBRTransportInterrupted = 3,
-  KCTBRTransportInvalidated = 4,
-  KCTBRTransportProtocolFailure = 5,
-  KCTBRTransportTerminal = 6,
-  KCTBRTransportInvalidArgument = 7,
-};
 
 @interface KCTunnelRouteBindingV3 : NSObject <NSSecureCoding>
 @property(nonatomic, readonly) uint8_t protocolVersion;
@@ -323,14 +302,19 @@ static KCTBRClientReply KCTBRFailure(KCTBRTransportStatus status) {
   NSLock *_stateLock;
   KCTBRRequest *_pending;
   BOOL _terminal;
+  BOOL _closed;
+  BOOL _needsReconnect;
+  NSUInteger _connectionEpoch;
   KCTBRTransportStatus _terminalStatus;
 }
-@property(nonatomic, readonly) NSXPCConnection *connection;
+@property(nonatomic, strong, readonly) NSXPCConnection *connection;
 - (KCTBRRequest *)begin:(KCTunnelRouteBindingV3 *)binding
         rejectedStatus:(KCTBRTransportStatus *)rejected;
 - (void)finish:(KCTBRRequest *)request
           reply:(KCTunnelBrokerRouteReplyV3 *)reply;
 - (void)terminalize:(KCTBRTransportStatus)status;
+- (void)markTransient:(KCTBRTransportStatus)status epoch:(NSUInteger)epoch;
+- (BOOL)ensureConnection;
 - (void)close;
 @end
 
@@ -357,22 +341,42 @@ static NSXPCInterface *KCTBRInterface(void) {
 }
 
 @implementation KCTBRClient
+- (BOOL)ensureConnection {
+  [_stateLock lock];
+  if (_closed) {
+    [_stateLock unlock];
+    return NO;
+  }
+  if (_connection != nil && !_needsReconnect) {
+    [_stateLock unlock];
+    return YES;
+  }
+  NSUInteger epoch = ++_connectionEpoch;
+  NSXPCConnection *connection = [[NSXPCConnection alloc]
+      initWithMachServiceName:KCTBRMachService
+                      options:NSXPCConnectionPrivileged];
+  connection.remoteObjectInterface = KCTBRInterface();
+  __weak KCTBRClient *weakSelf = self;
+  connection.interruptionHandler = ^{
+    [weakSelf markTransient:KCTBRTransportInterrupted epoch:epoch];
+  };
+  connection.invalidationHandler = ^{
+    [weakSelf markTransient:KCTBRTransportInvalidated epoch:epoch];
+  };
+  _connection = connection;
+  _needsReconnect = NO;
+  [_stateLock unlock];
+  [connection resume];
+  return YES;
+}
+
 - (instancetype)init {
   if ((self = [super init])) {
     _stateLock = [[NSLock alloc] init];
     _terminalStatus = KCTBRTransportTerminal;
-    _connection = [[NSXPCConnection alloc]
-        initWithMachServiceName:KCTBRMachService
-                        options:NSXPCConnectionPrivileged];
-    _connection.remoteObjectInterface = KCTBRInterface();
-    __weak KCTBRClient *weakSelf = self;
-    _connection.interruptionHandler = ^{
-      [weakSelf terminalize:KCTBRTransportInterrupted];
-    };
-    _connection.invalidationHandler = ^{
-      [weakSelf terminalize:KCTBRTransportInvalidated];
-    };
-    [_connection resume];
+    _closed = NO;
+    _needsReconnect = YES;
+    [self ensureConnection];
   }
   return self;
 }
@@ -449,20 +453,47 @@ static NSXPCInterface *KCTBRInterface(void) {
   if (status == KCTBRTransportOK)
     status = KCTBRTransportTerminal;
   [_stateLock lock];
-  if (_terminal) {
+  if (_closed || (_terminal && !_needsReconnect)) {
     [_stateLock unlock];
     return;
   }
-  _terminal = YES;
+  BOOL transient = status == KCTBRTransportTimeout ||
+                   status == KCTBRTransportRemoteFailure ||
+                   status == KCTBRTransportInterrupted ||
+                   status == KCTBRTransportInvalidated;
+  _terminal = !transient;
+  _needsReconnect = transient;
   _terminalStatus = status;
   KCTBRRequest *pending = _pending;
   _pending = nil;
-  [pending complete:KCTBRFailure(status)];
+  NSXPCConnection *connection = _connection;
   [_stateLock unlock];
+  [pending complete:KCTBRFailure(status)];
+  if (transient)
+    [connection invalidate];
+}
+- (void)markTransient:(KCTBRTransportStatus)status epoch:(NSUInteger)epoch {
+  [_stateLock lock];
+  BOOL current = !_closed && epoch == _connectionEpoch;
+  [_stateLock unlock];
+  if (current)
+    [self terminalize:status];
 }
 - (void)close {
-  [self terminalize:KCTBRTransportInvalidated];
-  [_connection invalidate];
+  [_stateLock lock];
+  if (_closed) {
+    [_stateLock unlock];
+    return;
+  }
+  _closed = YES;
+  _terminal = YES;
+  _needsReconnect = NO;
+  KCTBRRequest *pending = _pending;
+  _pending = nil;
+  NSXPCConnection *connection = _connection;
+  [_stateLock unlock];
+  [pending complete:KCTBRFailure(KCTBRTransportInvalidated)];
+  [connection invalidate];
 }
 - (void)dealloc {
   [self close];
@@ -479,6 +510,8 @@ static KCTBRClientReply KCTBRWait(
     KCTBRClient *client, KCTBRMethod method, KCTunnelRouteBindingV3 *binding) {
   if (client == nil || !KCTBRValidBinding(binding))
     return KCTBRFailure(KCTBRTransportInvalidArgument);
+  if (![client ensureConnection])
+    return KCTBRFailure(KCTBRTransportInvalidated);
   KCTBRTransportStatus rejected = KCTBRTransportTerminal;
   KCTBRRequest *request = [client begin:binding rejectedStatus:&rejected];
   if (request == nil)

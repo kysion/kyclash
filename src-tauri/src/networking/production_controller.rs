@@ -416,6 +416,19 @@ fn spawn_controller_actor<R: AsyncProductionRuntime>(
 ) -> ProductionControllerHandle {
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
     let cancellations = Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(unix)]
+    let broker_bound = matches!(&mode, ControllerMode::BrokerBound { .. });
+    #[cfg(unix)]
+    let (initial_runtime_generation, initial_absence) = if broker_bound {
+        // The prepared broker session is intentionally not aliased to a Rust
+        // generation. `StdioRuntime::start` allocates generation one and the
+        // launcher binds it at the exact launch transfer edge.
+        (0, None)
+    } else {
+        (0, Some(ControllerAbsenceKind::NeverSpawned))
+    };
+    #[cfg(not(unix))]
+    let (initial_runtime_generation, initial_absence) = (0, Some(ControllerAbsenceKind::NeverSpawned));
     let actor = ProductionController {
         runtime,
         context: Some(context),
@@ -429,8 +442,11 @@ fn spawn_controller_actor<R: AsyncProductionRuntime>(
         crashes: 0,
         retry_at: None,
         stop_timeout,
-        runtime_generation: 0,
-        absence: Some(ControllerAbsenceKind::NeverSpawned),
+        runtime_generation: initial_runtime_generation,
+        // Broker-bound composition has already prepared a privileged child.
+        // Its absence is unknown until start/shutdown/retirement performs the
+        // exact broker stop/reap contract.
+        absence: initial_absence,
         retired: false,
     };
     tokio::spawn(actor.run());
@@ -558,11 +574,11 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
                     let _ = response.send(result);
                 }
                 Command::Retire { response } => {
-                    let _ = response.send(self.retire());
+                    let _ = response.send(self.retire().await);
                 }
             }
         }
-        if !self.retired && self.state != SidecarLifecycleState::Stopped {
+        if !self.retired && (self.state != SidecarLifecycleState::Stopped || self.absence.is_none()) {
             let _ = self.stop_runtime_bounded(None).await;
         }
         self.cancellations.lock().clear();
@@ -586,10 +602,28 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         if self.state != SidecarLifecycleState::Stopped {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
-        self.runtime_generation = self
-            .runtime_generation
-            .checked_add(1)
-            .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+        match &self.mode {
+            ControllerMode::Reusable => {
+                self.runtime_generation = self
+                    .runtime_generation
+                    .checked_add(1)
+                    .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+            }
+            #[cfg(unix)]
+            ControllerMode::BrokerBound { .. } => {
+                // The privileged broker child was prepared before actor
+                // construction but is not yet bound to a Rust generation.
+                // Allocate the one-shot generation only when the runtime is
+                // actually launched; the prepared launcher binds it then.
+                if self.runtime_generation != 0 || self.absence.is_some() {
+                    return Err(NetworkErrorCode::InvalidStateTransition);
+                }
+                self.runtime_generation = self
+                    .runtime_generation
+                    .checked_add(1)
+                    .ok_or(NetworkErrorCode::InvalidStateTransition)?;
+            }
+        }
         self.absence = None;
         self.state = SidecarLifecycleState::Starting;
         let handshake = match self
@@ -814,7 +848,20 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
             self.record(ProductionEventKind::Failed, operation_id, Some(error));
         } else {
             self.absence = Some(if self.runtime_generation == 0 {
-                ControllerAbsenceKind::NeverSpawned
+                #[cfg(unix)]
+                if matches!(&self.mode, ControllerMode::BrokerBound { .. }) {
+                    // A broker-bound controller can be retired before its
+                    // Rust generation is allocated; cancel_prepared has
+                    // positively reaped the broker session, so this is still
+                    // a Reaped proof rather than NeverSpawned.
+                    ControllerAbsenceKind::Reaped
+                } else {
+                    ControllerAbsenceKind::NeverSpawned
+                }
+                #[cfg(not(unix))]
+                {
+                    ControllerAbsenceKind::NeverSpawned
+                }
             } else {
                 ControllerAbsenceKind::Reaped
             });
@@ -823,11 +870,26 @@ impl<R: AsyncProductionRuntime> ProductionController<R> {
         result
     }
 
-    fn retire(&mut self) -> Result<ControllerRetirementReceipt, NetworkErrorCode> {
+    async fn retire(&mut self) -> Result<ControllerRetirementReceipt, NetworkErrorCode> {
         if self.retired || self.state != SidecarLifecycleState::Stopped || !self.cancellations.lock().is_empty() {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
+        // A broker-bound actor owns a prepared child before its first start.
+        // Retirement must explicitly cancel/reap that exact generation; it
+        // may never issue a generation-zero NeverSpawned receipt.
+        if self.absence.is_none() {
+            self.stop_runtime_bounded(None).await?;
+        }
         let absence = self.absence.ok_or(NetworkErrorCode::SidecarUnavailable)?;
+        #[cfg(unix)]
+        if matches!(&self.mode, ControllerMode::BrokerBound { .. }) {
+            if absence != ControllerAbsenceKind::Reaped {
+                return Err(NetworkErrorCode::InvalidStateTransition);
+            }
+        } else if (self.runtime_generation == 0) != (absence == ControllerAbsenceKind::NeverSpawned) {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        #[cfg(not(unix))]
         if (self.runtime_generation == 0) != (absence == ControllerAbsenceKind::NeverSpawned) {
             return Err(NetworkErrorCode::InvalidStateTransition);
         }
@@ -889,7 +951,7 @@ mod tests {
     #[cfg(unix)]
     impl StdioSidecarLauncher for RejectingLauncher {
         fn launch(&mut self, generation: u64) -> Result<Box<dyn SidecarProcessControl>, NetworkErrorCode> {
-            assert_eq!(generation, 1, "first broker-style launch must use generation one");
+            assert_eq!(generation, 1, "first broker-style launch must allocate generation one");
             self.launches.fetch_add(1, Ordering::AcqRel);
             Err(NetworkErrorCode::SidecarUnavailable)
         }
@@ -1113,6 +1175,13 @@ mod tests {
                     jitter_ms: 0,
                     loss_percent: 0,
                 })),
+                // Production runtimes intentionally do not expose the
+                // VM-only private echo proof.
+                IpcRequestPayload::SamplePrivateReachability => Err(super::super::IpcError {
+                    code: NetworkErrorCode::InvalidStateTransition,
+                    message: "private reachability is VM-lab only".into(),
+                    retryable: false,
+                }),
                 IpcRequestPayload::Connect => Ok(IpcResponsePayload::Status(super::super::NetworkStatus {
                     state: super::super::NetworkState::ConnectedPrimary,
                     active_profile_id: Some("profile.test".into()),
@@ -1250,6 +1319,23 @@ mod tests {
             stopped,
             exited,
         ))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unstarted_broker_controller_retires_only_after_exact_prepared_reap() -> Result<(), NetworkErrorCode> {
+        let (handle, _, starts, stopped, _) = broker_bound_controller(true, false)?;
+
+        let receipt = handle.retire().await?;
+        assert_eq!(starts.load(Ordering::Acquire), 0);
+        assert_eq!(stopped.load(Ordering::Acquire), 1);
+        assert_eq!(receipt.runtime_generation(), 0);
+        assert_eq!(receipt.absence(), ControllerAbsenceKind::Reaped);
+        assert_eq!(
+            handle.start_broker_bound().await,
+            Err(NetworkErrorCode::InvalidStateTransition)
+        );
+        Ok(())
     }
 
     #[cfg(unix)]

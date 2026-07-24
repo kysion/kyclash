@@ -23,10 +23,12 @@ const (
 var ErrDatagramsUnavailable = errors.New("QUIC peer does not support datagrams")
 
 type QUICConfig struct {
-	Address    string
-	ServerName string
-	RootCAs    *x509.CertPool
-	Timeout    time.Duration
+	Address           string
+	ServerName        string
+	RootCAs           *x509.CertPool
+	ClientCertificate *tls.Certificate
+	ExactTLS13        bool
+	Timeout           time.Duration
 }
 
 type QUIC struct {
@@ -52,12 +54,14 @@ func DialQUIC(ctx context.Context, config QUICConfig) (*QUIC, error) {
 	}
 	dialContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	connection, err := quicgo.DialAddr(dialContext, config.Address, &tls.Config{
+	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		ServerName: config.ServerName,
 		RootCAs:    config.RootCAs,
 		NextProtos: []string{quicALPN},
-	}, &quicgo.Config{
+	}
+	applyClientTLSOptions(tlsConfig, config.ClientCertificate, config.ExactTLS13)
+	connection, err := quicgo.DialAddr(dialContext, config.Address, tlsConfig, &quicgo.Config{
 		EnableDatagrams:      true,
 		HandshakeIdleTimeout: timeout,
 	})
@@ -240,7 +244,7 @@ func (carrier *QUIC) isClosed() bool {
 }
 
 func validateQUICConfig(config QUICConfig) error {
-	if config.Timeout < 0 || config.Address == "" || config.ServerName == "" {
+	if config.Timeout < 0 || config.Address == "" || config.ServerName == "" || !validClientCertificate(config.ClientCertificate) {
 		return ErrInvalidEndpoint
 	}
 	host, port, err := net.SplitHostPort(config.Address)

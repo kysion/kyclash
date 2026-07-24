@@ -10,11 +10,13 @@ use tauri::{AppHandle, Manager as _, State};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::networking::{
-    BundleProductionInitializationProvider, NetworkErrorCode, ProductionConnectReservation, ProductionEventKind,
-    ProductionInitializationProvider, ProductionNetworkStatus, ProductionNetworkingService,
+    BASE_VARIANT_ID, BundleProductionInitializationProvider, NetworkErrorCode, PrivilegedNetworkingServicesStatus,
+    ProductionConnectReservation, ProductionEventKind, ProductionInitializationProvider, ProductionNetworkStatus,
+    ProductionNetworkingService, ProductionPolicyCatalogProvider, ProductionPolicyCatalogView,
     ProductionServiceDispositionKind, ProductionServiceFactory, ProductionServiceRetirementReceipt,
-    ProductionServiceRetirementResult, ProductionSiteSummary, RouteHelperRegistrationStatus,
-    open_route_helper_settings, register_route_helper, route_helper_registration_status, unregister_route_helper,
+    ProductionServiceRetirementResult, ProductionSiteSummary, VerifiedProductionPolicyVariant,
+    ensure_privileged_networking_services_ready, open_route_helper_settings, privileged_networking_services_status,
+    register_privileged_networking_services, unregister_privileged_networking_services,
 };
 
 const RETIRED_EVIDENCE_LIMIT: usize = 16;
@@ -45,6 +47,8 @@ pub struct ProductionCommandState {
     service: RwLock<Option<Arc<ProductionNetworkingService>>>,
     factory: RwLock<Option<Arc<dyn ProductionServiceFactory>>>,
     provider: RwLock<Option<Arc<dyn ProductionInitializationProvider>>>,
+    catalog_provider: RwLock<Option<Arc<dyn ProductionPolicyCatalogProvider>>>,
+    selected_variant: RwLock<Option<VerifiedProductionPolicyVariant>>,
     materialize: Mutex<()>,
     sequence: AtomicU64,
     retired_evidence: ParkingMutex<VecDeque<RetiredGenerationEvidence>>,
@@ -56,6 +60,8 @@ impl Default for ProductionCommandState {
             service: RwLock::new(None),
             factory: RwLock::new(None),
             provider: RwLock::new(None),
+            catalog_provider: RwLock::new(None),
+            selected_variant: RwLock::new(None),
             materialize: Mutex::new(()),
             sequence: AtomicU64::new(0),
             retired_evidence: ParkingMutex::new(VecDeque::with_capacity(RETIRED_EVIDENCE_LIMIT)),
@@ -112,6 +118,7 @@ impl ProductionCommandState {
     /// must not borrow its short-lived `App` reference into a `'static`
     /// future. `try_write` also makes setup fail closed rather than blocking
     /// the main thread behind a running operation.
+    #[allow(dead_code)]
     pub fn configure_provider_now(
         &self,
         provider: Arc<dyn ProductionInitializationProvider>,
@@ -132,6 +139,33 @@ impl ProductionCommandState {
         Ok(())
     }
 
+    fn configure_bundle_providers_now(
+        &self,
+        provider: Arc<dyn ProductionInitializationProvider>,
+        catalog_provider: Arc<dyn ProductionPolicyCatalogProvider>,
+    ) -> Result<(), NetworkErrorCode> {
+        let _guard = self
+            .materialize
+            .try_lock()
+            .map_err(|_| NetworkErrorCode::InvalidStateTransition)?;
+        let mut provider_slot = self
+            .provider
+            .try_write()
+            .map_err(|_| NetworkErrorCode::InvalidStateTransition)?;
+        let mut catalog_slot = self
+            .catalog_provider
+            .try_write()
+            .map_err(|_| NetworkErrorCode::InvalidStateTransition)?;
+        if provider_slot.is_some() || catalog_slot.is_some() {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        *provider_slot = Some(provider);
+        *catalog_slot = Some(catalog_provider);
+        drop(catalog_slot);
+        drop(provider_slot);
+        Ok(())
+    }
+
     async fn initialize(&self) -> Result<ProductionNetworkStatus, NetworkErrorCode> {
         // Initialization and connect materialization share one serialization
         // boundary.  Without this guard two UI mounts (or a mount racing a
@@ -140,16 +174,23 @@ impl ProductionCommandState {
         // replay even though both callers addressed the same app state.
         let _guard = self.materialize.lock().await;
         if self.factory.read().await.is_none() {
-            let provider = self
-                .provider
-                .read()
-                .await
-                .clone()
-                .ok_or(NetworkErrorCode::InvalidConfiguration)?;
-            let factory = provider.initialize().await?;
-            // `initialize` already owns `materialize`; use the locked helper
-            // to avoid recursively acquiring the non-reentrant mutex.
-            self.configure_factory_locked(factory).await?;
+            let catalog_provider = { self.catalog_provider.read().await.clone() };
+            if let Some(provider) = catalog_provider {
+                let prepared = provider.prepare_policy_variant(BASE_VARIANT_ID, None).await?;
+                *self.selected_variant.write().await = Some(prepared.selected);
+                self.configure_factory_locked(prepared.factory).await?;
+            } else {
+                let provider = self
+                    .provider
+                    .read()
+                    .await
+                    .clone()
+                    .ok_or(NetworkErrorCode::InvalidConfiguration)?;
+                let factory = provider.initialize().await?;
+                // `initialize` already owns `materialize`; use the locked helper
+                // to avoid recursively acquiring the non-reentrant mutex.
+                self.configure_factory_locked(factory).await?;
+            }
         }
         self.status_snapshot()
             .await
@@ -170,6 +211,24 @@ impl ProductionCommandState {
     /// cannot be duplicated or silently lost during a replacement race.
     async fn service_for_connect(&self) -> Result<ConnectTarget, NetworkErrorCode> {
         let _guard = self.materialize.lock().await;
+
+        // Connect never trusts the catalog verification performed for a
+        // previous display or selection. Reopen and verify the complete
+        // catalog and bind the freshly composed factory to the exact retained
+        // selection before admitting a service generation.
+        let catalog_provider = { self.catalog_provider.read().await.clone() };
+        if let Some(provider) = catalog_provider {
+            let selected = self
+                .selected_variant
+                .read()
+                .await
+                .clone()
+                .ok_or(NetworkErrorCode::InvalidConfiguration)?;
+            let prepared = provider
+                .prepare_policy_variant(&selected.summary.catalog_id, Some(&selected))
+                .await?;
+            *self.factory.write().await = Some(prepared.factory);
+        }
 
         let existing = self.service.read().await.clone();
         if let Some(service) = existing {
@@ -193,6 +252,61 @@ impl ProductionCommandState {
         }
 
         self.build_install_reserved_locked().await
+    }
+
+    async fn policy_catalog_view(&self) -> Result<ProductionPolicyCatalogView, NetworkErrorCode> {
+        let _guard = self.materialize.lock().await;
+        let provider = self
+            .catalog_provider
+            .read()
+            .await
+            .clone()
+            .ok_or(NetworkErrorCode::InvalidConfiguration)?;
+        let variants = provider.verify_policy_variants().await?;
+        let selected = self.selected_variant.read().await.clone();
+        ProductionPolicyCatalogView::from_verified(&variants, selected.as_ref())
+    }
+
+    async fn select_policy_variant(&self, catalog_id: &str) -> Result<ProductionPolicyCatalogView, NetworkErrorCode> {
+        let _guard = self.materialize.lock().await;
+        let current_service = { self.service.read().await.clone() };
+        if current_service
+            .as_ref()
+            .is_some_and(|service| service.status().state != crate::networking::NetworkState::Disconnected)
+        {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        let provider = self
+            .catalog_provider
+            .read()
+            .await
+            .clone()
+            .ok_or(NetworkErrorCode::InvalidConfiguration)?;
+        let prepared = provider.prepare_policy_variant(catalog_id, None).await?;
+
+        // A disconnected materialized service still owns the old immutable
+        // profile. Retire and compare-remove that exact generation before
+        // publishing the newly selected factory.
+        if let Some(service) = current_service {
+            let generation = service.service_generation();
+            let receipt = match service.try_retire().await {
+                ProductionServiceRetirementResult::Retired(receipt) => receipt,
+                ProductionServiceRetirementResult::AlreadyRetired
+                | ProductionServiceRetirementResult::Busy
+                | ProductionServiceRetirementResult::RecoveryOnly => {
+                    return Err(NetworkErrorCode::InvalidStateTransition);
+                }
+            };
+            self.record_retirement(&receipt, service.status().last_error, None);
+            if !self.compare_remove_service(&service, generation).await {
+                self.record_secondary_error(generation, NetworkErrorCode::InvalidStateTransition);
+                return Err(NetworkErrorCode::InvalidStateTransition);
+            }
+        }
+
+        *self.factory.write().await = Some(prepared.factory);
+        *self.selected_variant.write().await = Some(prepared.selected.clone());
+        ProductionPolicyCatalogView::from_verified(&prepared.variants, Some(&prepared.selected))
     }
 
     /// Build and reserve a service completely off-slot, then publish it with
@@ -408,8 +522,11 @@ pub fn configure_bundle_provider_now(app: &AppHandle, state: &ProductionCommandS
         .path()
         .app_data_dir()
         .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
-    let provider = BundleProductionInitializationProvider::new(resource_dir, app_data_dir)?;
-    state.configure_provider_now(Arc::new(provider))
+    let provider = Arc::new(BundleProductionInitializationProvider::new(resource_dir, app_data_dir)?);
+    let provider_for_initialization = Arc::clone(&provider);
+    let initialization_provider: Arc<dyn ProductionInitializationProvider> = provider_for_initialization;
+    let catalog_provider: Arc<dyn ProductionPolicyCatalogProvider> = provider;
+    state.configure_bundle_providers_now(initialization_provider, catalog_provider)
 }
 
 #[tauri::command]
@@ -427,6 +544,21 @@ pub async fn list_networking_sites(
 }
 
 #[tauri::command]
+pub async fn list_networking_policy_variants(
+    state: State<'_, ProductionCommandState>,
+) -> Result<ProductionPolicyCatalogView, String> {
+    state.policy_catalog_view().await.map_err(code)
+}
+
+#[tauri::command]
+pub async fn select_networking_policy_variant(
+    catalog_id: String,
+    state: State<'_, ProductionCommandState>,
+) -> Result<ProductionPolicyCatalogView, String> {
+    state.select_policy_variant(&catalog_id).await.map_err(code)
+}
+
+#[tauri::command]
 pub async fn get_networking_status(
     state: State<'_, ProductionCommandState>,
 ) -> Result<ProductionNetworkStatus, String> {
@@ -435,6 +567,8 @@ pub async fn get_networking_status(
 
 #[tauri::command]
 pub async fn connect_networking(state: State<'_, ProductionCommandState>) -> Result<ProductionNetworkStatus, String> {
+    #[cfg(target_os = "macos")]
+    ensure_privileged_networking_services_ready().map_err(code)?;
     let operation = state.operation_id("connect");
     let target = state.service_for_connect().await.map_err(code)?;
     let service = Arc::clone(&target.service);
@@ -504,20 +638,18 @@ pub async fn get_networking_diagnostics(
 }
 
 #[tauri::command]
-pub fn get_route_helper_registration_status() -> RouteHelperRegistrationStatus {
-    route_helper_registration_status()
+pub fn get_privileged_networking_services_status() -> PrivilegedNetworkingServicesStatus {
+    privileged_networking_services_status()
 }
 
 #[tauri::command]
-pub fn register_route_helper_service() -> Result<RouteHelperRegistrationStatus, String> {
-    register_route_helper().map_err(code)?;
-    Ok(route_helper_registration_status())
+pub fn register_privileged_networking_services_command() -> Result<PrivilegedNetworkingServicesStatus, String> {
+    register_privileged_networking_services().map_err(code)
 }
 
 #[tauri::command]
-pub fn unregister_route_helper_service() -> Result<RouteHelperRegistrationStatus, String> {
-    unregister_route_helper().map_err(code)?;
-    Ok(route_helper_registration_status())
+pub fn unregister_privileged_networking_services_command() -> Result<PrivilegedNetworkingServicesStatus, String> {
+    unregister_privileged_networking_services().map_err(code)
 }
 
 #[tauri::command]
@@ -551,9 +683,10 @@ mod tests {
 
     use super::*;
     use crate::networking::{
-        AsyncProductionRuntime, IpcRequest, IpcResponse, MihomoTunSnapshot, NetworkProfile, ProductionRouteBoundary,
-        ProductionRouteDisposition, ProductionRouteRetirementResult, SidecarHandshake, SidecarLaunchContext,
-        SidecarProcessStatus, TunnelDeviceFacts, spawn_production_controller,
+        AsyncProductionRuntime, IpcRequest, IpcResponse, MihomoTunSnapshot, NetworkProfile,
+        PreparedProductionPolicyVariant, ProductionRouteBoundary, ProductionRouteDisposition,
+        ProductionRouteRetirementResult, SidecarHandshake, SidecarLaunchContext, SidecarProcessStatus,
+        TunnelDeviceFacts, spawn_production_controller,
     };
 
     fn disconnected_status() -> ProductionNetworkStatus {
@@ -591,6 +724,43 @@ mod tests {
     struct CountingProvider {
         initializes: Arc<AtomicUsize>,
         factory: Arc<dyn ProductionServiceFactory>,
+    }
+
+    struct CountingCatalogProvider {
+        verifies: Arc<AtomicUsize>,
+        prepares: Arc<AtomicUsize>,
+        variants: Vec<VerifiedProductionPolicyVariant>,
+        factory: Arc<dyn ProductionServiceFactory>,
+    }
+
+    #[async_trait]
+    impl ProductionPolicyCatalogProvider for CountingCatalogProvider {
+        async fn verify_policy_variants(&self) -> Result<Vec<VerifiedProductionPolicyVariant>, NetworkErrorCode> {
+            self.verifies.fetch_add(1, Ordering::SeqCst);
+            Ok(self.variants.clone())
+        }
+
+        async fn prepare_policy_variant(
+            &self,
+            catalog_id: &str,
+            expected: Option<&VerifiedProductionPolicyVariant>,
+        ) -> Result<PreparedProductionPolicyVariant, NetworkErrorCode> {
+            self.prepares.fetch_add(1, Ordering::SeqCst);
+            let selected = self
+                .variants
+                .iter()
+                .find(|variant| variant.summary.catalog_id == catalog_id)
+                .cloned()
+                .ok_or(NetworkErrorCode::InvalidConfiguration)?;
+            if expected.is_some_and(|expected| expected != &selected) {
+                return Err(NetworkErrorCode::PolicySignatureInvalid);
+            }
+            Ok(PreparedProductionPolicyVariant {
+                variants: self.variants.clone(),
+                selected,
+                factory: Arc::clone(&self.factory),
+            })
+        }
     }
 
     #[async_trait]
@@ -758,6 +928,77 @@ mod tests {
             .map_err(|error| anyhow::anyhow!("{error}"))?
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         assert_eq!(initializes.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn signed_catalog_selection_is_explicit_and_connect_reverifies_binding() -> anyhow::Result<()> {
+        let builds = Arc::new(AtomicUsize::new(0));
+        let initializes = Arc::new(AtomicUsize::new(0));
+        let verifies = Arc::new(AtomicUsize::new(0));
+        let prepares = Arc::new(AtomicUsize::new(0));
+        let factory: Arc<dyn ProductionServiceFactory> = Arc::new(CountingFactory {
+            builds: Arc::clone(&builds),
+        });
+        let variants = [(BASE_VARIANT_ID, 2), ("base+.30", 3), ("base+.31", 3), ("base+both", 4)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (id, route_count))| {
+                VerifiedProductionPolicyVariant::test_binding(id, 100 + index as u64, route_count)
+            })
+            .collect::<Vec<_>>();
+        let state = ProductionCommandState::default();
+        state
+            .configure_bundle_providers_now(
+                Arc::new(CountingProvider {
+                    initializes: Arc::clone(&initializes),
+                    factory: Arc::clone(&factory),
+                }),
+                Arc::new(CountingCatalogProvider {
+                    verifies: Arc::clone(&verifies),
+                    prepares: Arc::clone(&prepares),
+                    variants,
+                    factory,
+                }),
+            )
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+
+        state.initialize().await.map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(initializes.load(Ordering::SeqCst), 0);
+        assert_eq!(prepares.load(Ordering::SeqCst), 1);
+        let initial_view = state
+            .policy_catalog_view()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(initial_view.selected_catalog_id.as_deref(), Some(BASE_VARIANT_ID));
+        assert_eq!(initial_view.variants.len(), 4);
+        assert_eq!(verifies.load(Ordering::SeqCst), 1);
+
+        let selected = state
+            .select_policy_variant("base+.30")
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(selected.selected_catalog_id.as_deref(), Some("base+.30"));
+        assert_eq!(prepares.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            state
+                .status_or_error()
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?
+                .state,
+            crate::networking::NetworkState::Disconnected
+        );
+
+        assert!(matches!(
+            state.service_for_connect().await,
+            Err(NetworkErrorCode::SidecarUnavailable)
+        ));
+        assert_eq!(prepares.load(Ordering::SeqCst), 3);
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            state.select_policy_variant("unknown").await.err(),
+            Some(NetworkErrorCode::InvalidConfiguration)
+        );
         Ok(())
     }
 

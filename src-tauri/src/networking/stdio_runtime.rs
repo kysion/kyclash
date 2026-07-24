@@ -11,7 +11,7 @@ mod unix {
 
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
     use ring::hmac;
-    #[cfg(feature = "networking-dev")]
+    #[cfg(any(feature = "networking-dev", feature = "networking-vm-external-peer-lab-app"))]
     use serde::Deserialize;
     use serde::Serialize;
 
@@ -26,6 +26,8 @@ mod unix {
     const DEFAULT_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
     const CHILD_REAP_TIMEOUT: Duration = Duration::from_secs(2);
     const CHILD_REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+    #[cfg(feature = "networking-vm-external-peer-lab-app")]
+    const EXTERNAL_PEER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 
     #[derive(Serialize)]
     struct BootstrapRecord<'a> {
@@ -44,6 +46,38 @@ mod unix {
         pub auth_proof: String,
         pub lab_profile: super::super::NetworkProfile,
         pub cancel_endpoint: String,
+        /// VM-network lab fields are optional for the older userspace and
+        /// route-free utun fixtures.  They remain allowlisted under
+        /// `deny_unknown_fields`; the VM-network App path requires the exact
+        /// values before accepting the handshake.
+        #[serde(default)]
+        pub runtime_mode: Option<String>,
+        #[serde(default)]
+        pub tunnel_kind: Option<String>,
+        #[serde(default)]
+        pub tunnel_interface: Option<String>,
+        #[serde(default)]
+        pub mihomo_device: Option<String>,
+    }
+
+    /// Closed, redacted handshake used only by the two-VM external-peer App.
+    ///
+    /// Unlike the older lab handshake, this structure intentionally cannot
+    /// carry a NetworkProfile, endpoint URL/port, descriptor, certificate,
+    /// key, hash, PID, or filesystem path. The root harness owns and
+    /// pre-applies the strict external profile.
+    #[cfg(feature = "networking-vm-external-peer-lab-app")]
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ExternalPeerLabHandshake {
+        pub protocol_version: u8,
+        pub instance_id: String,
+        pub auth_proof: String,
+        pub runtime_mode: String,
+        pub tunnel_kind: String,
+        pub peer_vm: String,
+        pub mihomo_device: String,
+        pub transport_order: [super::super::TransportKind; 3],
     }
 
     /// The process-control seam owned by the stdio runtime.
@@ -100,6 +134,15 @@ mod unix {
     /// command, argument, environment, route, or secret fields.
     pub trait StdioSidecarLauncher: Send {
         fn launch(&mut self, generation: u64) -> Result<Box<dyn SidecarProcessControl>, NetworkErrorCode>;
+
+        /// Cancel and positively reap a child that was prepared before
+        /// `launch` transferred its exact process-control handle. Ordinary
+        /// local launchers have no such state; the macOS broker launcher
+        /// overrides this method so abandoning an unpublished service cannot
+        /// detach a privileged child.
+        fn cancel_prepared(&mut self) -> Result<(), NetworkErrorCode> {
+            Ok(())
+        }
     }
 
     /// Local process implementation used by the existing userspace and
@@ -270,7 +313,8 @@ mod unix {
         }
 
         /// Protocol v2 remains single-flight except for one exact Cancel control
-        /// request targeting an active connect or health request. Both
+        /// request targeting an active connect, health, or private-echo
+        /// request. Both
         /// correlated responses are validated and drained before stream reuse.
         pub fn request_cancellable(
             &mut self,
@@ -280,7 +324,9 @@ mod unix {
             request.validate_protocol()?;
             let cancellable = matches!(
                 request.payload,
-                IpcRequestPayload::ConnectTransport { .. } | IpcRequestPayload::SampleHealth
+                IpcRequestPayload::ConnectTransport { .. }
+                    | IpcRequestPayload::SampleHealth
+                    | IpcRequestPayload::SamplePrivateReachability
             );
             if cancellable && cancel.load(Ordering::Acquire) {
                 return Err(NetworkErrorCode::OperationCancelled);
@@ -457,6 +503,27 @@ mod unix {
             Ok(handshake)
         }
 
+        #[cfg(feature = "networking-vm-external-peer-lab-app")]
+        pub fn start_external_peer_lab(
+            &mut self,
+            context: &SidecarLaunchContext,
+        ) -> Result<ExternalPeerLabHandshake, NetworkErrorCode> {
+            let steady_state_timeout = self.response_timeout;
+            self.response_timeout = EXTERNAL_PEER_STARTUP_TIMEOUT;
+            let record = self.start_record(context);
+            self.response_timeout = steady_state_timeout;
+            let record = record?;
+            let handshake: ExternalPeerLabHandshake = serde_json::from_slice(&record).map_err(|_| {
+                let _ = self.terminate_child();
+                NetworkErrorCode::AuthenticationFailed
+            })?;
+            if handshake.protocol_version != NETWORK_IPC_PROTOCOL_VERSION {
+                let _ = self.terminate_child();
+                return Err(NetworkErrorCode::UnsupportedProtocolVersion);
+            }
+            Ok(handshake)
+        }
+
         fn start_record(&mut self, context: &SidecarLaunchContext) -> Result<Vec<u8>, NetworkErrorCode> {
             if self.child.is_some() || context.private_key().len() != 32 {
                 return Err(NetworkErrorCode::InvalidConfiguration);
@@ -567,6 +634,9 @@ mod unix {
             self.stdin.take();
             self.records.take();
             let Some(expected_generation) = self.generation else {
+                if self.child.is_none() {
+                    return self.launcher.cancel_prepared();
+                }
                 return terminate_child_handle(&mut self.child);
             };
             let Some(process) = self.child.as_ref() else {
@@ -621,7 +691,7 @@ mod unix {
 
         fn stop(&mut self) -> Result<(), NetworkErrorCode> {
             if self.child.is_none() {
-                return Ok(());
+                return self.launcher.cancel_prepared();
             }
             let request = IpcRequest {
                 protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
@@ -1806,6 +1876,32 @@ mod unix {
                 SidecarController::new(runtime, RestartPolicy::default(), context, "wrong-proof".into());
             assert_eq!(controller.start(0), Err(NetworkErrorCode::AuthenticationFailed));
             assert_eq!(controller.state(), SidecarLifecycleState::Stopped);
+        }
+
+        #[cfg(feature = "networking-vm-external-peer-lab-app")]
+        #[test]
+        fn external_handshake_is_redacted_and_rejects_a_profile_or_endpoint() -> anyhow::Result<()> {
+            let valid = r#"{
+                "protocol_version":2,
+                "instance_id":"external.ui.0123456789abcdef",
+                "auth_proof":"proof",
+                "runtime_mode":"vm_external_peer_lab",
+                "tunnel_kind":"darwin_utun",
+                "peer_vm":"kyclash-macos-lab-peer",
+                "mihomo_device":"utun4094",
+                "transport_order":["quic","wss","tcp"]
+            }"#;
+            let handshake: ExternalPeerLabHandshake = serde_json::from_str(valid)?;
+            assert_eq!(handshake.peer_vm, "kyclash-macos-lab-peer");
+            for forbidden in [
+                r#","lab_profile":{}"#,
+                r#","endpoint":"quic://192.0.2.1:1234""#,
+                r#","descriptor":"public.json""#,
+            ] {
+                let injected = valid.replacen("\n            }", &format!("{forbidden}\n            }}"), 1);
+                assert!(serde_json::from_str::<ExternalPeerLabHandshake>(&injected).is_err());
+            }
+            Ok(())
         }
     }
 }

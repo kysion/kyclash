@@ -1,14 +1,27 @@
-//! Explicit userspace networking lab commands.
+//! Explicit no-sign networking lab commands.
 //!
 //! This module is intentionally behind `networking-userspace-lab-app`, which
 //! implies both `networking-dev` and `networking-system-lab`.  It is the only
 //! App-facing path for the unsigned loopback lab candidate.  The path starts
 //! the fixed, bundled Go lab sidecar and exercises its userspace WireGuard
-//! netstack over QUIC, WSS, and TCP.  It never opens the production route
-//! helper, reads Keychain, creates utun, or changes routes/DNS.
+//! netstack over QUIC, WSS, and TCP. With the additional default-off
+//! `networking-vm-utun-lab-app` feature on macOS, only the launch seam changes
+//! to the fixed, manually authorized VirtualMac root socket and the same
+//! protocol creates a real utun. The sibling `networking-vm-network-lab-app`
+//! profile uses a second fixed socket whose guest harness additionally owns
+//! the private echo route and Mihomo coexistence fixture. Neither mode opens
+//! the production route helper, reads Keychain, or changes routes/DNS from the
+//! App process.
 
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
+#[cfg(all(
+    feature = "networking-vm-network-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-utun-lab-app"),
+    not(feature = "networking-production"),
+))]
+use std::time::Duration;
 
 use getrandom::fill as fill_random;
 use reqwest::Url;
@@ -20,14 +33,220 @@ use crate::networking::{
     SidecarLaunchContext, SidecarLifecycleState, SidecarRuntime as _, StdioSidecarRuntime, TransportKind,
     sidecar_auth_proof,
 };
+#[cfg(all(
+    feature = "networking-vm-network-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-utun-lab-app"),
+    not(feature = "networking-production"),
+))]
+use crate::networking::{VM_NETWORK_LAB_SOCKET_PATH, VmNetworkLabSocketLauncher};
+#[cfg(all(
+    feature = "networking-vm-utun-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-network-lab-app"),
+    not(feature = "networking-production"),
+))]
+use crate::networking::{VM_UTUN_LAB_SOCKET_PATH, VmUtunLabSocketLauncher};
 
+#[cfg(not(any(
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+)))]
 const LAB_SIDECAR_RESOURCE: &str = "kyclash-network-sidecar-lab";
+#[cfg(not(any(
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+)))]
 const LAB_MODE: &str = "userspace_lab";
+#[cfg(all(
+    feature = "networking-vm-network-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-utun-lab-app"),
+    not(feature = "networking-production"),
+))]
+const LAB_MODE: &str = "vm_network_lab";
+#[cfg(all(
+    feature = "networking-vm-utun-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-network-lab-app"),
+    not(feature = "networking-production"),
+))]
+const LAB_MODE: &str = "vm_utun_lab";
+#[cfg(not(any(
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+)))]
 const LAB_TUNNEL_KIND: &str = "userspace_netstack";
+#[cfg(any(
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+))]
+const LAB_TUNNEL_KIND: &str = "darwin_utun";
+#[cfg(not(any(
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+)))]
 const LAB_SITE_ID: &str = "lab";
+#[cfg(all(
+    feature = "networking-vm-network-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-utun-lab-app"),
+    not(feature = "networking-production"),
+))]
+const LAB_SITE_ID: &str = "lab-vm-network";
+#[cfg(all(
+    feature = "networking-vm-utun-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-network-lab-app"),
+    not(feature = "networking-production"),
+))]
+const LAB_SITE_ID: &str = "lab-vm-utun";
+#[cfg(not(any(
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+)))]
 const LAB_SITE_NAME: &str = "KyClash loopback userspace lab";
+#[cfg(all(
+    feature = "networking-vm-network-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-utun-lab-app"),
+    not(feature = "networking-production"),
+))]
+const LAB_SITE_NAME: &str = "KyClash VM lab · real utun · private route · Mihomo";
+#[cfg(all(
+    feature = "networking-vm-utun-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-network-lab-app"),
+    not(feature = "networking-production"),
+))]
+const LAB_SITE_NAME: &str = "KyClash VM lab · real utun · no routes";
+#[cfg(not(any(
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+)))]
 const LAB_PROFILE_ID: &str = "lab.actual-child";
+#[cfg(all(
+    feature = "networking-vm-network-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-utun-lab-app"),
+    not(feature = "networking-production"),
+))]
+const LAB_PROFILE_ID: &str = "lab.vm-network.actual-child";
+#[cfg(all(
+    feature = "networking-vm-utun-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-network-lab-app"),
+    not(feature = "networking-production"),
+))]
+const LAB_PROFILE_ID: &str = "lab.vm-utun.actual-child";
 const LAB_CONNECT_SEQUENCE: [TransportKind; 3] = [TransportKind::Quic, TransportKind::Wss, TransportKind::Tcp];
+#[cfg(all(
+    feature = "networking-vm-network-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-utun-lab-app"),
+    not(feature = "networking-production"),
+))]
+const VM_NETWORK_LAB_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(all(
+    feature = "networking-vm-network-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-utun-lab-app"),
+    not(feature = "networking-production"),
+))]
+type LabSidecarRuntime = StdioSidecarRuntime<VmNetworkLabSocketLauncher>;
+#[cfg(all(
+    feature = "networking-vm-utun-lab-app",
+    target_os = "macos",
+    not(feature = "networking-vm-network-lab-app"),
+    not(feature = "networking-production"),
+))]
+type LabSidecarRuntime = StdioSidecarRuntime<VmUtunLabSocketLauncher>;
+#[cfg(not(any(
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+)))]
+type LabSidecarRuntime = StdioSidecarRuntime;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +256,11 @@ pub struct UserspaceLabTransportCheck {
     pub latency_ms: u32,
     pub jitter_ms: u32,
     pub loss_percent: u8,
+    /// The VM-network harness' private echo result for this carrier sample.
+    /// Other lab profiles leave it false because they intentionally have no
+    /// route mutation or private-network assertion.
+    pub private_reachable: bool,
+    pub mihomo_coexisting: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +273,8 @@ pub struct UserspaceLabStatus {
     pub site_display_name: String,
     pub private_routes: Vec<String>,
     pub routes_installed: bool,
+    pub private_reachable: bool,
+    pub mihomo_coexisting: bool,
     pub tunnel_interface: Option<String>,
     pub active_transport: Option<TransportKind>,
     pub health: Option<NetworkHealth>,
@@ -57,13 +283,16 @@ pub struct UserspaceLabStatus {
 }
 
 struct UserspaceLabSession {
-    runtime: StdioSidecarRuntime,
+    runtime: LabSidecarRuntime,
     profile: NetworkProfile,
     instance_id: String,
     tunnel_interface: Option<String>,
     active_transport: Option<TransportKind>,
     health: Option<NetworkHealth>,
     checks: Vec<UserspaceLabTransportCheck>,
+    routes_installed: bool,
+    private_reachable: bool,
+    mihomo_coexisting: bool,
     request_sequence: u64,
 }
 
@@ -87,6 +316,20 @@ fn error_code(error: NetworkErrorCode) -> String {
     format!("{error:?}")
 }
 
+#[cfg(not(any(
+    all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ),
+    all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ),
+)))]
 fn fixed_sidecar_path(app: &AppHandle<Wry>) -> Result<PathBuf, NetworkErrorCode> {
     let resource_dir = app
         .path()
@@ -106,6 +349,135 @@ fn fixed_sidecar_path(app: &AppHandle<Wry>) -> Result<PathBuf, NetworkErrorCode>
         }
     }
     Ok(resource)
+}
+
+fn lab_runtime_identity(app: &AppHandle<Wry>) -> Result<PathBuf, NetworkErrorCode> {
+    #[cfg(all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ))]
+    {
+        let _ = app
+            .path()
+            .resource_dir()
+            .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+        Ok(PathBuf::from(VM_NETWORK_LAB_SOCKET_PATH))
+    }
+    #[cfg(all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ))]
+    {
+        // Preserve a real AppHandle/path failure boundary even though this
+        // profile intentionally has no bundled sidecar resource.
+        let _ = app
+            .path()
+            .resource_dir()
+            .map_err(|_| NetworkErrorCode::InvalidConfiguration)?;
+        Ok(PathBuf::from(VM_UTUN_LAB_SOCKET_PATH))
+    }
+    #[cfg(not(any(
+        all(
+            feature = "networking-vm-utun-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-network-lab-app"),
+            not(feature = "networking-production"),
+        ),
+        all(
+            feature = "networking-vm-network-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-utun-lab-app"),
+            not(feature = "networking-production"),
+        ),
+    )))]
+    {
+        fixed_sidecar_path(app)
+    }
+}
+
+fn new_lab_runtime(identity: PathBuf) -> LabSidecarRuntime {
+    #[cfg(all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ))]
+    {
+        // Route-table, controller, process-identity, and private-echo
+        // inspections all happen inside the fixed root fixture. A busy
+        // disposable VM can legitimately exceed the generic two-second stdio
+        // timeout, but the lab must still retain a strict per-request bound.
+        StdioSidecarRuntime::with_launcher(identity, VmNetworkLabSocketLauncher::new())
+            .with_response_timeout(VM_NETWORK_LAB_RESPONSE_TIMEOUT)
+    }
+    #[cfg(all(
+        feature = "networking-vm-utun-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-network-lab-app"),
+        not(feature = "networking-production"),
+    ))]
+    {
+        StdioSidecarRuntime::with_launcher(identity, VmUtunLabSocketLauncher::new())
+    }
+    #[cfg(not(any(
+        all(
+            feature = "networking-vm-utun-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-network-lab-app"),
+            not(feature = "networking-production"),
+        ),
+        all(
+            feature = "networking-vm-network-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-utun-lab-app"),
+            not(feature = "networking-production"),
+        ),
+    )))]
+    {
+        StdioSidecarRuntime::new(identity)
+    }
+}
+
+fn valid_lab_interface(interface_name: &str) -> bool {
+    #[cfg(any(
+        all(
+            feature = "networking-vm-utun-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-network-lab-app"),
+            not(feature = "networking-production"),
+        ),
+        all(
+            feature = "networking-vm-network-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-utun-lab-app"),
+            not(feature = "networking-production"),
+        ),
+    ))]
+    {
+        let suffix = interface_name.strip_prefix("utun");
+        suffix.is_some_and(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+    }
+    #[cfg(not(any(
+        all(
+            feature = "networking-vm-utun-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-network-lab-app"),
+            not(feature = "networking-production"),
+        ),
+        all(
+            feature = "networking-vm-network-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-utun-lab-app"),
+            not(feature = "networking-production"),
+        ),
+    )))]
+    {
+        interface_name == "userspace"
+    }
 }
 
 fn random_bytes<const N: usize>() -> Result<Vec<u8>, NetworkErrorCode> {
@@ -187,6 +559,20 @@ impl UserspaceLabSession {
         Ok(())
     }
 
+    /// Observe the exact child handle before sending another IPC request.
+    ///
+    /// The userspace lab is deliberately a small App-facing harness rather
+    /// than the production restart controller, but it still must not report
+    /// `running` after its child has exited. `StdioSidecarRuntime::status`
+    /// releases only its own generation-bound handle, so this check cannot
+    /// accidentally inspect or terminate an unrelated process.
+    fn poll_liveness(&mut self) -> Result<(), NetworkErrorCode> {
+        match self.runtime.status()? {
+            crate::networking::SidecarProcessStatus::Running => Ok(()),
+            crate::networking::SidecarProcessStatus::Exited { .. } => Err(NetworkErrorCode::SidecarUnavailable),
+        }
+    }
+
     fn stop(mut self) -> Result<(), NetworkErrorCode> {
         let _ = self.disconnect_active();
         if self.tunnel_interface.is_some() {
@@ -206,6 +592,23 @@ impl UserspaceLabRuntime {
                 }
             } else {
                 self.executable = Some(path);
+            }
+        }
+        if self.session.is_some() {
+            // Poll the exact child before issuing GetStatus. An EOF or a
+            // crashed sidecar must converge to a disconnected, retryable
+            // snapshot instead of leaving the UI stuck at
+            // `sidecar_state=running` forever.
+            let liveness = match self.session.as_mut() {
+                Some(session) => session.poll_liveness(),
+                None => Ok(()),
+            };
+            if let Err(error) = liveness {
+                if let Some(session) = self.session.take() {
+                    let _ = session.stop();
+                }
+                self.last_error = Some(error);
+                return Ok(self.snapshot_disconnected());
             }
         }
         if let Some(session) = self.session.as_mut() {
@@ -234,7 +637,9 @@ impl UserspaceLabRuntime {
             site_display_name: profile
                 .map_or_else(|| LAB_SITE_NAME.to_owned(), |value| value.site.display_name.clone()),
             private_routes: profile.map_or_else(Vec::new, |value| value.site.private_cidrs.clone()),
-            routes_installed: false,
+            routes_installed: session.is_some_and(|value| value.routes_installed),
+            private_reachable: session.is_some_and(|value| value.private_reachable),
+            mihomo_coexisting: session.is_some_and(|value| value.mihomo_coexisting),
             tunnel_interface: session.and_then(|value| value.tunnel_interface.clone()),
             active_transport: session.and_then(|value| value.active_transport),
             health: session.and_then(|value| value.health.clone()),
@@ -266,6 +671,8 @@ impl UserspaceLabRuntime {
                 .as_ref()
                 .map_or_else(Vec::new, |value| value.site.private_cidrs.clone()),
             routes_installed: false,
+            private_reachable: false,
+            mihomo_coexisting: false,
             tunnel_interface: None,
             active_transport: None,
             health: None,
@@ -276,7 +683,13 @@ impl UserspaceLabRuntime {
 
     fn connect(&mut self, executable: PathBuf) -> Result<UserspaceLabStatus, NetworkErrorCode> {
         if self.session.is_some() {
-            return self.status(Some(executable));
+            let status = self.status(Some(executable.clone()))?;
+            // `status` may have retired a crashed child. In that case carry
+            // on with one fresh lab launch so a single Connect click can
+            // recover from an EOF/crash. A live session remains idempotent.
+            if self.session.is_some() {
+                return Ok(status);
+            }
         }
         self.last_error = None;
         self.executable = Some(executable.clone());
@@ -284,11 +697,24 @@ impl UserspaceLabRuntime {
         let auth_token = random_bytes::<32>()?;
         let private_key = random_bytes::<32>()?;
         let context = SidecarLaunchContext::new(instance_id.clone(), auth_token.clone()).with_private_key(private_key);
-        let mut runtime = StdioSidecarRuntime::new(executable);
+        let mut runtime = new_lab_runtime(executable);
         let handshake = runtime.start_lab(&context)?;
         if handshake.protocol_version != crate::networking::NETWORK_IPC_PROTOCOL_VERSION
             || handshake.instance_id != instance_id
             || handshake.auth_proof != sidecar_auth_proof(&auth_token, &instance_id)
+        {
+            let _ = runtime.stop();
+            return Err(NetworkErrorCode::AuthenticationFailed);
+        }
+        if cfg!(all(
+            feature = "networking-vm-network-lab-app",
+            target_os = "macos",
+            not(feature = "networking-vm-utun-lab-app"),
+            not(feature = "networking-production"),
+        )) && (handshake.runtime_mode.as_deref() != Some("vm_network_lab")
+            || handshake.tunnel_kind.as_deref() != Some("darwin_utun")
+            || handshake.tunnel_interface.is_some()
+            || handshake.mihomo_device.as_deref() != Some("utun4094"))
         {
             let _ = runtime.stop();
             return Err(NetworkErrorCode::AuthenticationFailed);
@@ -302,6 +728,9 @@ impl UserspaceLabRuntime {
             active_transport: None,
             health: None,
             checks: Vec::new(),
+            routes_installed: false,
+            private_reachable: false,
+            mihomo_coexisting: false,
             request_sequence: 0,
         };
         let result = (|| {
@@ -313,7 +742,10 @@ impl UserspaceLabRuntime {
             let IpcResponsePayload::TunnelPrepared(facts) = prepared else {
                 return Err(NetworkErrorCode::InvalidStateTransition);
             };
-            if facts.interface_name != "userspace" || facts.instance_id != session.instance_id || facts.mtu != 1420 {
+            if !valid_lab_interface(&facts.interface_name)
+                || facts.instance_id != session.instance_id
+                || facts.mtu != 1420
+            {
                 return Err(NetworkErrorCode::AuthenticationFailed);
             }
             session.tunnel_interface = Some(facts.interface_name);
@@ -335,15 +767,45 @@ impl UserspaceLabRuntime {
                 if !health.reachable {
                     return Err(NetworkErrorCode::PrimaryTransportUnavailable);
                 }
+                // The VM-network profile performs its separate, empty-data
+                // typed private echo probe only after carrier health.  The
+                // production sidecar rejects this request, and route-free
+                // profiles never send it.
+                let (private_reachable, mihomo_coexisting) = if cfg!(all(
+                    feature = "networking-vm-network-lab-app",
+                    target_os = "macos",
+                    not(feature = "networking-vm-utun-lab-app"),
+                    not(feature = "networking-production"),
+                )) {
+                    let probe = session.request(IpcRequestPayload::SamplePrivateReachability, "private")?;
+                    let IpcResponsePayload::PrivateReachability(fact) = probe else {
+                        return Err(NetworkErrorCode::InvalidStateTransition);
+                    };
+                    if !fact.reachable {
+                        return Err(NetworkErrorCode::PrimaryTransportUnavailable);
+                    }
+                    // The fixed harness only emits this fact after checking
+                    // the authenticated Mihomo child/device/covering route.
+                    (fact.reachable, true)
+                } else {
+                    (false, false)
+                };
+                // Route visibility is set only after the private probe, never
+                // at PrepareTunnel or before the first healthy carrier.
                 session.checks.push(UserspaceLabTransportCheck {
                     transport,
                     reachable: health.reachable,
                     latency_ms: health.latency_ms,
                     jitter_ms: health.jitter_ms,
                     loss_percent: health.loss_percent,
+                    private_reachable,
+                    mihomo_coexisting,
                 });
                 session.health = Some(health);
                 session.active_transport = Some(transport);
+                session.routes_installed |= private_reachable;
+                session.private_reachable = private_reachable;
+                session.mihomo_coexisting = mihomo_coexisting;
                 if index + 1 != LAB_CONNECT_SEQUENCE.len() {
                     session.disconnect_active()?;
                 }
@@ -385,7 +847,7 @@ fn with_runtime<T>(
 }
 
 fn app_path(app: &AppHandle<Wry>) -> Result<PathBuf, String> {
-    fixed_sidecar_path(app).map_err(error_code)
+    lab_runtime_identity(app).map_err(error_code)
 }
 
 #[tauri::command]
@@ -438,10 +900,72 @@ mod tests {
         assert_eq!(status.runtime_mode, LAB_MODE);
         assert_eq!(status.tunnel_kind, LAB_TUNNEL_KIND);
         assert!(!status.routes_installed);
+        assert!(!status.private_reachable);
+        assert!(!status.mihomo_coexisting);
         assert!(status.tunnel_interface.is_none());
         let json = serde_json::to_string(&status)?;
         assert!(!json.contains("keychain"));
         assert!(!json.contains("private_key"));
         Ok(())
+    }
+
+    #[test]
+    fn lab_interface_contract_matches_the_selected_launcher() {
+        #[cfg(any(
+            all(
+                feature = "networking-vm-utun-lab-app",
+                target_os = "macos",
+                not(feature = "networking-vm-network-lab-app"),
+                not(feature = "networking-production"),
+            ),
+            all(
+                feature = "networking-vm-network-lab-app",
+                target_os = "macos",
+                not(feature = "networking-vm-utun-lab-app"),
+                not(feature = "networking-production"),
+            ),
+        ))]
+        {
+            assert!(valid_lab_interface("utun7"));
+            assert!(!valid_lab_interface("userspace"));
+            assert!(!valid_lab_interface("utun7;route"));
+        }
+        #[cfg(not(any(
+            all(
+                feature = "networking-vm-utun-lab-app",
+                target_os = "macos",
+                not(feature = "networking-vm-network-lab-app"),
+                not(feature = "networking-production"),
+            ),
+            all(
+                feature = "networking-vm-network-lab-app",
+                target_os = "macos",
+                not(feature = "networking-vm-utun-lab-app"),
+                not(feature = "networking-production"),
+            ),
+        )))]
+        {
+            assert!(valid_lab_interface("userspace"));
+            assert!(!valid_lab_interface("utun7"));
+        }
+    }
+
+    #[cfg(all(
+        feature = "networking-vm-network-lab-app",
+        target_os = "macos",
+        not(feature = "networking-vm-utun-lab-app"),
+        not(feature = "networking-production"),
+    ))]
+    #[test]
+    fn vm_network_profile_has_the_locked_identity_and_fixed_socket() {
+        assert_eq!(LAB_MODE, "vm_network_lab");
+        assert_eq!(LAB_TUNNEL_KIND, "darwin_utun");
+        assert_eq!(LAB_SITE_ID, "lab-vm-network");
+        assert_eq!(LAB_PROFILE_ID, "lab.vm-network.actual-child");
+        assert_eq!(
+            VM_NETWORK_LAB_SOCKET_PATH,
+            "/var/run/net.kysion.kyclash.vm-network-lab.sock"
+        );
+        assert_eq!(VM_NETWORK_LAB_RESPONSE_TIMEOUT, Duration::from_secs(10));
     }
 }

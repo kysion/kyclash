@@ -2,6 +2,7 @@ package carrier
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -16,10 +17,12 @@ const defaultDialTimeout = 10 * time.Second
 var ErrInvalidEndpoint = errors.New("invalid carrier endpoint")
 
 type TCPConfig struct {
-	Address    string
-	ServerName string
-	RootCAs    *x509.CertPool
-	Timeout    time.Duration
+	Address           string
+	ServerName        string
+	RootCAs           *x509.CertPool
+	ClientCertificate *tls.Certificate
+	ExactTLS13        bool
+	Timeout           time.Duration
 }
 
 func DialTCP(ctx context.Context, config TCPConfig) (*Stream, error) {
@@ -35,11 +38,13 @@ func DialTCP(ctx context.Context, config TCPConfig) (*Stream, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial TCP carrier: %w", err)
 	}
-	tlsConnection := tls.Client(connection, &tls.Config{
+	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		ServerName: config.ServerName,
 		RootCAs:    config.RootCAs,
-	})
+	}
+	applyClientTLSOptions(tlsConfig, config.ClientCertificate, config.ExactTLS13)
+	tlsConnection := tls.Client(connection, tlsConfig)
 	if err := tlsConnection.HandshakeContext(ctx); err != nil {
 		_ = connection.Close()
 		return nil, fmt.Errorf("authenticate TCP carrier: %w", err)
@@ -58,8 +63,25 @@ func validateTCPConfig(config TCPConfig) error {
 	if strings.TrimSpace(config.ServerName) != config.ServerName || config.ServerName == "" {
 		return ErrInvalidEndpoint
 	}
-	if config.Timeout < 0 {
+	if config.Timeout < 0 || !validClientCertificate(config.ClientCertificate) {
 		return ErrInvalidEndpoint
 	}
 	return nil
+}
+
+func applyClientTLSOptions(config *tls.Config, certificate *tls.Certificate, exactTLS13 bool) {
+	if certificate != nil {
+		config.Certificates = []tls.Certificate{*certificate}
+	}
+	if exactTLS13 {
+		config.MaxVersion = tls.VersionTLS13
+	}
+}
+
+func validClientCertificate(certificate *tls.Certificate) bool {
+	if certificate == nil {
+		return true
+	}
+	_, signer := certificate.PrivateKey.(crypto.Signer)
+	return len(certificate.Certificate) != 0 && signer
 }

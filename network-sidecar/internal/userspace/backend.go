@@ -5,6 +5,8 @@ package userspace
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
@@ -32,6 +34,7 @@ type Backend struct {
 	mu              sync.Mutex
 	privateKey      []byte
 	roots           *x509.CertPool
+	mutualTLS       *MutualTLSConfig
 	wireGuard       *device.Device
 	network         *netstack.Net
 	switchboard     *wgcarrier.Switchboard
@@ -56,13 +59,43 @@ type operationCancellation struct {
 	cancel context.CancelFunc
 }
 
+type MutualTLSConfig struct {
+	ClientCertificate tls.Certificate
+	ExactTLS13        bool
+}
+
 func New(privateKey []byte, labRoots *x509.CertPool, instanceID string) (*Backend, error) {
-	if len(privateKey) != 32 || !validOwnerID(instanceID) {
+	return newBackend(privateKey, labRoots, nil, instanceID)
+}
+
+// NewWithMutualTLS retains one client certificate across explicit carrier
+// fallback and releases that ownership only when the backend closes. Existing
+// constructors deliberately retain their server-auth-only behavior.
+func NewWithMutualTLS(privateKey []byte, roots *x509.CertPool, mutualTLS MutualTLSConfig, instanceID string) (*Backend, error) {
+	return newBackend(privateKey, roots, &mutualTLS, instanceID)
+}
+
+func newBackend(privateKey []byte, roots *x509.CertPool, mutualTLS *MutualTLSConfig, instanceID string) (*Backend, error) {
+	if len(privateKey) != 32 || !validOwnerID(instanceID) || !validMutualTLSConfig(mutualTLS) {
 		return nil, ErrInvalidState
 	}
-	backend := &Backend{privateKey: append([]byte(nil), privateKey...), roots: labRoots, instanceID: instanceID}
+	backend := &Backend{privateKey: append([]byte(nil), privateKey...), roots: roots, instanceID: instanceID}
+	if mutualTLS != nil {
+		cloned := *mutualTLS
+		cloned.ClientCertificate = cloneTLSCertificate(mutualTLS.ClientCertificate)
+		backend.mutualTLS = &cloned
+	}
 	backend.dialer = backend.dialCarrier
 	return backend, nil
+}
+
+func validMutualTLSConfig(config *MutualTLSConfig) bool {
+	if config == nil {
+		return true
+	}
+	privateKey, validPrivateKey := config.ClientCertificate.PrivateKey.(ed25519.PrivateKey)
+	return len(config.ClientCertificate.Certificate) != 0 &&
+		validPrivateKey && len(privateKey) == ed25519.PrivateKeySize
 }
 
 // NewLab enables a bounded payload probe over the userspace WireGuard
@@ -70,6 +103,20 @@ func New(privateKey []byte, labRoots *x509.CertPool, instanceID string) (*Backen
 func NewLab(privateKey []byte, labRoots *x509.CertPool, probeAddress netip.AddrPort, instanceID string) (*Backend, error) {
 	backend, err := New(privateKey, labRoots, instanceID)
 	if err != nil || !probeAddress.IsValid() {
+		return nil, ErrInvalidState
+	}
+	backend.probeAddress = probeAddress
+	return backend, nil
+}
+
+// NewLabWithMutualTLS adds the bounded lab payload probe without weakening
+// the client-certificate or TLS-version policy selected by the caller.
+func NewLabWithMutualTLS(privateKey []byte, roots *x509.CertPool, mutualTLS MutualTLSConfig, probeAddress netip.AddrPort, instanceID string) (*Backend, error) {
+	backend, err := NewWithMutualTLS(privateKey, roots, mutualTLS, instanceID)
+	if err != nil || !probeAddress.IsValid() {
+		if backend != nil {
+			_ = backend.Close()
+		}
 		return nil, ErrInvalidState
 	}
 	backend.probeAddress = probeAddress
@@ -366,6 +413,10 @@ func (backend *Backend) Close() error {
 	backend.active = ""
 	backend.interfaceName = ""
 	backend.ownerOperation = ""
+	if backend.mutualTLS != nil {
+		clearTLSCertificate(&backend.mutualTLS.ClientCertificate)
+	}
+	backend.mutualTLS = nil
 	return nil
 }
 
@@ -432,16 +483,69 @@ func addressFamilies(networkProfile *profile.Profile) (bool, bool) {
 
 func (backend *Backend) dialCarrier(ctx context.Context, transport profile.Transport, endpoint profile.NormalizedEndpoint) (carrier.Carrier, error) {
 	timeout := 10 * time.Second
+	backend.mu.Lock()
+	var clientCertificate *tls.Certificate
+	var exactTLS13 bool
+	if backend.mutualTLS != nil {
+		clientCertificate = &backend.mutualTLS.ClientCertificate
+		exactTLS13 = backend.mutualTLS.ExactTLS13
+	}
+	backend.mu.Unlock()
 	switch transport {
 	case profile.QUIC:
-		return carrier.DialQUIC(ctx, carrier.QUICConfig{Address: endpoint.Address, ServerName: endpoint.ServerName, RootCAs: backend.roots, Timeout: timeout})
+		return carrier.DialQUIC(ctx, carrier.QUICConfig{Address: endpoint.Address, ServerName: endpoint.ServerName, RootCAs: backend.roots, ClientCertificate: clientCertificate, ExactTLS13: exactTLS13, Timeout: timeout})
 	case profile.WSS:
-		return carrier.DialWSS(ctx, carrier.WSSConfig{URL: endpoint.URL, RootCAs: backend.roots, Timeout: timeout})
+		return carrier.DialWSS(ctx, carrier.WSSConfig{URL: endpoint.URL, RootCAs: backend.roots, ClientCertificate: clientCertificate, ExactTLS13: exactTLS13, Timeout: timeout})
 	case profile.TCP:
-		return carrier.DialTCP(ctx, carrier.TCPConfig{Address: endpoint.Address, ServerName: endpoint.ServerName, RootCAs: backend.roots, Timeout: timeout})
+		return carrier.DialTCP(ctx, carrier.TCPConfig{Address: endpoint.Address, ServerName: endpoint.ServerName, RootCAs: backend.roots, ClientCertificate: clientCertificate, ExactTLS13: exactTLS13, Timeout: timeout})
 	default:
 		return nil, ErrInvalidState
 	}
+}
+
+func cloneTLSCertificate(source tls.Certificate) tls.Certificate {
+	cloned := source
+	cloned.Certificate = cloneByteSlices(source.Certificate)
+	cloned.SupportedSignatureAlgorithms = append([]tls.SignatureScheme(nil), source.SupportedSignatureAlgorithms...)
+	cloned.OCSPStaple = append([]byte(nil), source.OCSPStaple...)
+	cloned.SignedCertificateTimestamps = cloneByteSlices(source.SignedCertificateTimestamps)
+	if privateKey, ok := source.PrivateKey.(ed25519.PrivateKey); ok {
+		cloned.PrivateKey = append(ed25519.PrivateKey(nil), privateKey...)
+	}
+	return cloned
+}
+
+func clearTLSCertificate(certificate *tls.Certificate) {
+	if certificate == nil {
+		return
+	}
+	for index := range certificate.Certificate {
+		clear(certificate.Certificate[index])
+	}
+	clear(certificate.OCSPStaple)
+	for index := range certificate.SignedCertificateTimestamps {
+		clear(certificate.SignedCertificateTimestamps[index])
+	}
+	if privateKey, ok := certificate.PrivateKey.(ed25519.PrivateKey); ok {
+		clear(privateKey)
+	}
+	certificate.Certificate = nil
+	certificate.PrivateKey = nil
+	certificate.SupportedSignatureAlgorithms = nil
+	certificate.OCSPStaple = nil
+	certificate.SignedCertificateTimestamps = nil
+	certificate.Leaf = nil
+}
+
+func cloneByteSlices(source [][]byte) [][]byte {
+	if source == nil {
+		return nil
+	}
+	cloned := make([][]byte, len(source))
+	for index := range source {
+		cloned[index] = append([]byte(nil), source[index]...)
+	}
+	return cloned
 }
 
 func configure(wireGuard *device.Device, privateKey []byte, networkProfile *profile.Profile) error {

@@ -90,9 +90,6 @@ pub struct MacOsKeychainCredentialStore {
 }
 
 #[cfg(target_os = "macos")]
-const ERR_SEC_ITEM_NOT_FOUND: i32 = -25_300;
-
-#[cfg(target_os = "macos")]
 impl Default for MacOsKeychainCredentialStore {
     fn default() -> Self {
         Self::new()
@@ -143,6 +140,7 @@ impl MacOsKeychainCredentialStore {
         &self,
         reference: &CredentialReference,
     ) -> Result<Option<CredentialMaterial>, NetworkErrorCode> {
+        const ERR_SEC_ITEM_NOT_FOUND: i32 = -25_300;
         match security_framework::passwords::generic_password(
             security_framework::passwords::PasswordOptions::new_generic_password(
                 &self.service,

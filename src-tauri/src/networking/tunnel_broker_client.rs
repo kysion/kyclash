@@ -228,9 +228,12 @@ impl TunnelBrokerSidecarLauncher {
         Self { factory }
     }
 
-    pub fn prepare(&mut self, runtime_generation: u64) -> Result<PreparedTunnelBrokerLauncher, NetworkErrorCode> {
+    /// Prepare one fixed-service broker session without assigning a Rust
+    /// runtime generation.  The generation belongs to the stdio runtime and
+    /// is allocated at the exact `launch(generation)` transfer edge.
+    pub fn prepare(&mut self) -> Result<PreparedTunnelBrokerLauncher, NetworkErrorCode> {
         let client = TunnelBrokerClient::with_generation(self.factory.create()?);
-        client.start(runtime_generation).map(PreparedTunnelBrokerLauncher::new)
+        client.start().map(PreparedTunnelBrokerLauncher::new)
     }
 }
 
@@ -264,14 +267,35 @@ impl PreparedTunnelBrokerLauncher {
 
 impl StdioSidecarLauncher for PreparedTunnelBrokerLauncher {
     fn launch(&mut self, generation: u64) -> Result<Box<dyn SidecarProcessControl>, NetworkErrorCode> {
-        let process = self.process.as_ref().ok_or(NetworkErrorCode::InvalidStateTransition)?;
-        if generation == 0 || process.runtime_generation != generation {
-            return Err(NetworkErrorCode::InvalidStateTransition);
-        }
+        let process = self.process.as_mut().ok_or(NetworkErrorCode::InvalidStateTransition)?;
+        process.bind_runtime_generation(generation)?;
         self.process
             .take()
             .map(|process| Box::new(process) as Box<dyn SidecarProcessControl>)
             .ok_or(NetworkErrorCode::InvalidStateTransition)
+    }
+
+    fn cancel_prepared(&mut self) -> Result<(), NetworkErrorCode> {
+        let Some(process) = self.process.as_mut() else {
+            return Ok(());
+        };
+        process.kill_owned().map_err(|_| NetworkErrorCode::SidecarUnavailable)?;
+        match process.try_wait_status() {
+            Ok(Some(_)) => {
+                self.process.take();
+                Ok(())
+            }
+            Ok(None) | Err(_) => Err(NetworkErrorCode::SidecarUnavailable),
+        }
+    }
+}
+
+impl Drop for PreparedTunnelBrokerLauncher {
+    fn drop(&mut self) {
+        // Controller retirement is the authoritative, error-reporting path.
+        // This is the last-resort exact-generation cleanup for construction
+        // errors before the launcher is installed into a controller.
+        let _ = self.cancel_prepared();
     }
 }
 
@@ -294,13 +318,10 @@ impl TunnelBrokerClient {
         Self { broker }
     }
 
-    pub fn start(mut self, runtime_generation: u64) -> Result<TunnelBrokerProcessControl, NetworkErrorCode> {
-        if runtime_generation == 0 {
-            return Err(NetworkErrorCode::InvalidStateTransition);
-        }
+    pub fn start(mut self) -> Result<TunnelBrokerProcessControl, NetworkErrorCode> {
         let started = decode_start_reply(self.broker.start())?;
         Ok(TunnelBrokerProcessControl {
-            runtime_generation,
+            runtime_generation: 0,
             session: started.reference,
             broker: self.broker,
             input: Some(File::from(started.input)),
@@ -332,6 +353,18 @@ pub struct TunnelBrokerProcessControl {
 }
 
 impl TunnelBrokerProcessControl {
+    /// Bind the exact Rust runtime generation at the one-shot launch transfer
+    /// edge. A prepared broker process is deliberately unbound (`0`) so a
+    /// controller cannot alias a generation before `StdioRuntime::start`
+    /// allocates it. Binding is strictly one-time.
+    const fn bind_runtime_generation(&mut self, generation: u64) -> Result<(), NetworkErrorCode> {
+        if generation == 0 || self.runtime_generation != 0 || self.reaped.is_some() || self.recovery_only {
+            return Err(NetworkErrorCode::InvalidStateTransition);
+        }
+        self.runtime_generation = generation;
+        Ok(())
+    }
+
     /// The broker-owned identity is deliberately distinct from the stdio
     /// runtime generation. Future route interlock wiring must persist this
     /// exact reference; it must never synthesize it from the runtime counter
@@ -339,6 +372,17 @@ impl TunnelBrokerProcessControl {
     #[must_use]
     pub const fn session_reference(&self) -> &TunnelBrokerSessionReference {
         &self.session
+    }
+}
+
+impl Drop for TunnelBrokerProcessControl {
+    fn drop(&mut self) {
+        // The stdio runtime normally reaps before dropping this handle. Keep
+        // direct construction/early-error paths from silently detaching the
+        // exact broker generation; a stale or held lease remains fail-closed.
+        if self.reaped.is_none() && !self.recovery_only {
+            let _ = self.kill_owned();
+        }
     }
 }
 
@@ -639,7 +683,6 @@ mod tests {
     }
 
     fn launcher(
-        runtime_generation: u64,
         statuses: VecDeque<NativeReply>,
         stops: VecDeque<NativeReply>,
         stop_calls: Arc<AtomicUsize>,
@@ -654,7 +697,7 @@ mod tests {
                 drops,
             })),
         }));
-        factory.prepare(runtime_generation)
+        factory.prepare()
     }
 
     #[test]
@@ -677,7 +720,9 @@ mod tests {
             stop_calls: Arc::new(AtomicUsize::new(0)),
             drops: Arc::new(AtomicUsize::new(0)),
         }));
-        let process = client.start(9)?;
+        let mut process = client.start()?;
+        assert_eq!(SidecarProcessControl::generation(&process), 0);
+        process.bind_runtime_generation(9)?;
         assert_eq!(SidecarProcessControl::generation(&process), 9);
         assert_eq!(process.session_reference().generation, 77);
         assert_eq!(
@@ -692,11 +737,10 @@ mod tests {
     }
 
     #[test]
-    fn launcher_keeps_runtime_generation_and_reaps_exact_session_once() -> Result<(), NetworkErrorCode> {
+    fn launcher_binds_runtime_generation_once_and_reaps_exact_session_once() -> Result<(), NetworkErrorCode> {
         let stop_calls = Arc::new(AtomicUsize::new(0));
         let drops = Arc::new(AtomicUsize::new(0));
         let mut launcher = launcher(
-            9,
             VecDeque::new(),
             VecDeque::from([status_reply(0, 0)]),
             Arc::clone(&stop_calls),
@@ -707,9 +751,12 @@ mod tests {
             launcher.session_reference().sidecar_instance_id,
             "broker-instance-00000077"
         );
-        assert_eq!(launcher.launch(8).err(), Some(NetworkErrorCode::InvalidStateTransition));
-        let mut process = launcher.launch(9)?;
-        assert_eq!(process.generation(), 9);
+        assert_eq!(launcher.launch(0).err(), Some(NetworkErrorCode::InvalidStateTransition));
+        let mut process = launcher.launch(8)?;
+        assert_eq!(process.generation(), 8);
+        // The one-shot transfer consumed the prepared process; a second
+        // launch cannot bind or transfer it again.
+        assert_eq!(launcher.launch(9).err(), Some(NetworkErrorCode::InvalidStateTransition));
         assert!(process.take_stdin().is_some());
         assert!(process.take_stdin().is_none());
         assert!(process.take_stdout().is_some());
@@ -724,11 +771,30 @@ mod tests {
     }
 
     #[test]
+    fn prepared_launcher_cancels_and_reaps_before_launch_transfer() -> Result<(), NetworkErrorCode> {
+        let stop_calls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut prepared = launcher(
+            VecDeque::new(),
+            VecDeque::from([status_reply(0, 0)]),
+            Arc::clone(&stop_calls),
+            Arc::clone(&drops),
+        )?;
+
+        prepared.cancel_prepared()?;
+        assert_eq!(stop_calls.load(Ordering::Acquire), 1);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+        assert_eq!(prepared.cancel_prepared(), Ok(()));
+        drop(prepared);
+        assert_eq!(stop_calls.load(Ordering::Acquire), 1);
+        Ok(())
+    }
+
+    #[test]
     fn route_hold_refuses_stop_without_claiming_child_absence() -> Result<(), NetworkErrorCode> {
         let stop_calls = Arc::new(AtomicUsize::new(0));
         let drops = Arc::new(AtomicUsize::new(0));
         let mut launcher = launcher(
-            1,
             VecDeque::from([status_reply(2, 0)]),
             VecDeque::from([status_reply(2, 6)]),
             Arc::clone(&stop_calls),
@@ -747,7 +813,6 @@ mod tests {
     #[test]
     fn stale_idle_status_requires_recovery_and_never_claims_reaped() -> Result<(), NetworkErrorCode> {
         let mut launcher = launcher(
-            1,
             // A stale reference may be answered with the *current* state of
             // a newer session, not necessarily idle.  It must still enter
             // recovery-only mode.
@@ -774,7 +839,6 @@ mod tests {
     fn stale_stop_requires_recovery_and_never_claims_reaped() -> Result<(), NetworkErrorCode> {
         let stop_calls = Arc::new(AtomicUsize::new(0));
         let mut launcher = launcher(
-            1,
             VecDeque::new(),
             VecDeque::from([status_reply(2, 5)]),
             Arc::clone(&stop_calls),

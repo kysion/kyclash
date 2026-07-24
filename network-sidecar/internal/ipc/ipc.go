@@ -69,6 +69,26 @@ func ServeWithBackend(reader *bufio.Reader, readerCloser io.Closer, writer io.Wr
 	return ServeWithBackendContext(context.Background(), reader, readerCloser, writer, backend)
 }
 
+// ServeWithPreappliedProfileContext is the external-peer lab's sealed
+// bootstrap. The strict profile stays inside the root harness/Go IPC owner;
+// the App process receives no endpoint URL, port, key, certificate, or raw
+// descriptor and therefore never sends ApplyProfile. Existing sidecars keep
+// using ServeWithBackendContext and retain their original wire semantics.
+func ServeWithPreappliedProfileContext(
+	ctx context.Context,
+	reader *bufio.Reader,
+	readerCloser io.Closer,
+	writer io.Writer,
+	backend Backend,
+	networkProfile *profile.Profile,
+) error {
+	if networkProfile == nil || networkProfile.Validate() != nil {
+		return ErrInvalidRequest
+	}
+	profileCopy := *networkProfile
+	return serveWithBackendContext(ctx, reader, readerCloser, writer, backend, &profileCopy)
+}
+
 // ServeWithBackendContext is the cancellable process boundary used by the
 // real sidecar. Cancellation is deliberately handled at the IPC owner rather
 // than through a second backend cancellation channel: it cancels the exact
@@ -77,6 +97,17 @@ func ServeWithBackend(reader *bufio.Reader, readerCloser io.Closer, writer io.Wr
 // cleanup from racing userspace WireGuard work and leaving an owned device
 // behind. readerCloser must own and interrupt reader's underlying input.
 func ServeWithBackendContext(ctx context.Context, reader *bufio.Reader, readerCloser io.Closer, writer io.Writer, backend Backend) (serveErr error) {
+	return serveWithBackendContext(ctx, reader, readerCloser, writer, backend, nil)
+}
+
+func serveWithBackendContext(
+	ctx context.Context,
+	reader *bufio.Reader,
+	readerCloser io.Closer,
+	writer io.Writer,
+	backend Backend,
+	initialProfile *profile.Profile,
+) (serveErr error) {
 	if reader == nil || readerCloser == nil || backend == nil {
 		return ErrInvalidRequest
 	}
@@ -86,6 +117,7 @@ func ServeWithBackendContext(ctx context.Context, reader *bufio.Reader, readerCl
 	ownerContext, cancelOwner := context.WithCancel(context.Background())
 	encoder := json.NewEncoder(writer)
 	current := newSessionWithBackend(backend)
+	current.profile = initialProfile
 	type decodedRequest struct {
 		request Request
 		err     error
@@ -246,7 +278,9 @@ func ServeWithBackendContext(ctx context.Context, reader *bufio.Reader, readerCl
 				}
 				continue
 			}
-			if request.Payload.Type == "connect_transport" || request.Payload.Type == "sample_health" {
+			if request.Payload.Type == "connect_transport" ||
+				request.Payload.Type == "sample_health" ||
+				request.Payload.Type == "sample_private_reachability" {
 				operation, response, valid := current.prepareCancellable(request)
 				if !valid {
 					if err := writeResponse(response); err != nil {

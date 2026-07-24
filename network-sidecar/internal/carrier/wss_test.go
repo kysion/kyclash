@@ -74,6 +74,49 @@ func TestWSSCarrierRejectsWrongServerIdentity(t *testing.T) {
 	}
 }
 
+func TestWSSCarrierUsesMutualTLSWithExactTLS13(t *testing.T) {
+	fixture := testMutualTLSCertificates(t, "127.0.0.1")
+	serverResult := make(chan error, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.TLS == nil || request.TLS.Version != tls.VersionTLS13 ||
+			len(request.TLS.PeerCertificates) != 1 ||
+			request.TLS.PeerCertificates[0].Subject.CommonName != "kyclash-client.test" {
+			serverResult <- errors.New("unexpected mutual TLS client identity")
+			return
+		}
+		connection, err := websocket.Accept(response, request, &websocket.AcceptOptions{
+			CompressionMode: websocket.CompressionDisabled,
+		})
+		if err == nil {
+			err = connection.CloseNow()
+		}
+		serverResult <- err
+	}))
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{fixture.server},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    fixture.roots,
+		MinVersion:   tls.VersionTLS13,
+		MaxVersion:   tls.VersionTLS13,
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	client, err := DialWSS(context.Background(), WSSConfig{
+		URL:               "wss" + strings.TrimPrefix(server.URL, "https"),
+		RootCAs:           fixture.roots,
+		ClientCertificate: &fixture.client,
+		ExactTLS13:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := <-serverResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWSSConfigFailsClosed(t *testing.T) {
 	for _, config := range []WSSConfig{
 		{},
@@ -82,6 +125,7 @@ func TestWSSConfigFailsClosed(t *testing.T) {
 		{URL: "wss://example.test/tunnel?token=secret"},
 		{URL: "wss://example.test/tunnel#fragment"},
 		{URL: "wss://example.test/tunnel", Timeout: -1},
+		{URL: "wss://example.test/tunnel", ClientCertificate: &tls.Certificate{}},
 	} {
 		if _, err := DialWSS(context.Background(), config); !errors.Is(err, ErrInvalidEndpoint) {
 			t.Fatalf("expected validation refusal for %#v, got %v", config, err)

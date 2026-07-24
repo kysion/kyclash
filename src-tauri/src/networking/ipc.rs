@@ -24,6 +24,9 @@ pub enum IpcRequestPayload {
     },
     DisconnectTransport,
     SampleHealth,
+    /// VM-network lab-only probe. Production sidecars reject this request;
+    /// the request carries no data and the response is a bounded typed fact.
+    SamplePrivateReachability,
     /// Legacy POC request. Production controllers use `ConnectTransport`.
     Connect,
     Disconnect,
@@ -47,6 +50,7 @@ pub enum IpcResponsePayload {
     CancelAccepted { target_request_id: String },
     Status(NetworkStatus),
     Health(NetworkHealth),
+    PrivateReachability(PrivateReachability),
     TunnelPrepared(TunnelDeviceFacts),
 }
 
@@ -93,6 +97,23 @@ pub struct NetworkHealth {
     pub latency_ms: u32,
     pub jitter_ms: u32,
     pub loss_percent: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateReachability {
+    pub reachable: bool,
+    pub latency_ms: u32,
+    /// Optional lab-only proof bits. Older sidecars omit them; the external
+    /// two-VM controller requires explicit Mihomo/overlay success and an
+    /// explicit carrier-dependent system-SSH result. It never infers any
+    /// independent proof from reachability.
+    #[serde(default)]
+    pub mihomo_coexisting: Option<bool>,
+    #[serde(default)]
+    pub overlay_ssh_verified: Option<bool>,
+    #[serde(default)]
+    pub system_ssh_verified: Option<bool>,
 }
 
 impl NetworkHealth {
@@ -224,6 +245,12 @@ fn validate_response_payload(request: &IpcRequest, response: &IpcResponsePayload
             Ok(())
         }
         (IpcRequestPayload::SampleHealth, IpcResponsePayload::Health(health)) => health.validate(),
+        (IpcRequestPayload::SamplePrivateReachability, IpcResponsePayload::PrivateReachability(reachability)) => {
+            // The VM echo is loopback-backed, so zero latency is valid. Keep
+            // the wire fact intentionally bounded to the typed fields above.
+            let _ = reachability;
+            Ok(())
+        }
         _ => Err(NetworkErrorCode::InvalidConfiguration),
     }
 }
@@ -523,6 +550,63 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<IpcResponse>(response).is_err());
         }
+    }
+
+    #[test]
+    fn private_reachability_is_an_empty_typed_request_with_a_closed_response() -> anyhow::Result<()> {
+        let request = IpcRequest {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: "request.private.1".into(),
+            payload: IpcRequestPayload::SamplePrivateReachability,
+        };
+        let request_json = serde_json::to_value(&request)?;
+        assert_eq!(request_json["payload"]["type"], "sample_private_reachability");
+        assert!(
+            request_json["payload"]
+                .get("data")
+                .is_none_or(serde_json::Value::is_null)
+        );
+
+        let response = IpcResponse {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            result: Ok(IpcResponsePayload::PrivateReachability(PrivateReachability {
+                reachable: true,
+                latency_ms: 0,
+                mihomo_coexisting: None,
+                overlay_ssh_verified: None,
+                system_ssh_verified: None,
+            })),
+        };
+        assert_eq!(response.validate_protocol(&request), Ok(()));
+        let legacy: IpcResponse = serde_json::from_str(
+            r#"{"protocol_version":2,"request_id":"request.private.1","result":{"Ok":{"type":"private_reachability","data":{"reachable":true,"latency_ms":0}}}}"#,
+        )?;
+        assert_eq!(legacy.validate_protocol(&request), Ok(()));
+        let external: IpcResponse = serde_json::from_str(
+            r#"{"protocol_version":2,"request_id":"request.private.1","result":{"Ok":{"type":"private_reachability","data":{"reachable":true,"latency_ms":0,"mihomo_coexisting":true,"overlay_ssh_verified":true,"system_ssh_verified":true}}}}"#,
+        )?;
+        assert_eq!(external.validate_protocol(&request), Ok(()));
+
+        let wrong = IpcResponse {
+            protocol_version: NETWORK_IPC_PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            result: Ok(IpcResponsePayload::Health(NetworkHealth {
+                reachable: true,
+                latency_ms: 0,
+                jitter_ms: 0,
+                loss_percent: 0,
+            })),
+        };
+        assert_eq!(
+            wrong.validate_protocol(&request),
+            Err(NetworkErrorCode::InvalidConfiguration)
+        );
+        assert!(serde_json::from_str::<IpcResponse>(
+            r#"{"protocol_version":2,"request_id":"request.private.1","result":{"Ok":{"type":"private_reachability","data":{"reachable":true,"latency_ms":0,"unknown":true}}}}"#,
+        )
+        .is_err());
+        Ok(())
     }
 
     #[test]

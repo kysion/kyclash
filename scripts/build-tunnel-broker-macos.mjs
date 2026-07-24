@@ -25,6 +25,12 @@ const trustPath = path.join(
 const buildRoot = path.join(root, 'target', 'tunnel-broker-build')
 const generatedManifest = path.join(buildRoot, 'manifest.generated.swift')
 const output = path.join(buildRoot, 'kyclash-tunnel-broker')
+const bundledOutput = path.join(
+  root,
+  'src-tauri',
+  'helpers',
+  'kyclash-tunnel-broker',
+)
 const selfTest = process.argv.slice(2).includes('--self-test')
 
 const allowedManifestKeys = [
@@ -36,10 +42,12 @@ const allowedManifestKeys = [
 ]
 const expectedRequirement =
   'identifier "net.kysion.kyclash.network-sidecar" and anchor apple generic and certificate leaf[subject.OU] = "RQUQ8Y3S9H"'
+const brokerRequirement =
+  'identifier "net.kysion.kyclash.tunnel-broker" and anchor apple generic and certificate leaf[subject.OU] = "RQUQ8Y3S9H"'
 const hasBuildInputs = fs.existsSync(sidecar) && fs.existsSync(trustPath)
 // Generated sidecars are intentionally ignored by git. Keep the protocol
 // self-test runnable from a clean checkout without pretending that a synthetic
-// manifest is production trust evidence; the normal scaffold build below
+// manifest is production trust evidence; the normal signed build below
 // still requires the real sidecar and public trust manifest.
 const manifest = hasBuildInputs
   ? JSON.parse(fs.readFileSync(trustPath, 'utf8'))
@@ -53,7 +61,7 @@ const manifest = hasBuildInputs
       }
     : (() => {
         throw new Error(
-          'sidecar and trust manifest are required for a scaffold build',
+          'sidecar and trust manifest are required for a signed broker build',
         )
       })()
 if (
@@ -81,7 +89,7 @@ if (hasBuildInputs) {
     throw new Error('sidecar bytes do not match the public trust manifest')
 } else if (!selfTest) {
   throw new Error(
-    'sidecar and trust manifest are required for a scaffold build',
+    'sidecar and trust manifest are required for a signed broker build',
   )
 }
 
@@ -133,8 +141,38 @@ if (selfTest) {
       'arm64 tunnel broker self-test requires an arm64 build host',
     )
   execFileSync(output, ['--self-test'], { stdio: 'inherit' })
+} else {
+  const identity = process.env.APPLE_SIGNING_IDENTITY
+  const teamID = process.env.APPLE_TEAM_ID
+  if (!identity || teamID !== 'RQUQ8Y3S9H')
+    throw new Error(
+      'APPLE_SIGNING_IDENTITY and the locked APPLE_TEAM_ID are required to sign the tunnel broker',
+    )
+  execFileSync(
+    '/usr/bin/codesign',
+    [
+      '--force',
+      '--options',
+      'runtime',
+      '--timestamp',
+      '--identifier',
+      'net.kysion.kyclash.tunnel-broker',
+      '--sign',
+      identity,
+      output,
+    ],
+    { stdio: 'inherit' },
+  )
+  execFileSync(
+    '/usr/bin/codesign',
+    ['--verify', '--strict', '--verbose=2', `-R=${brokerRequirement}`, output],
+    { stdio: 'inherit' },
+  )
+  fs.mkdirSync(path.dirname(bundledOutput), { recursive: true })
+  fs.copyFileSync(output, bundledOutput)
+  fs.chmodSync(bundledOutput, 0o755)
 }
 
 console.log(
-  `[INFO] unsigned tunnel broker ${selfTest ? 'self-test' : 'scaffold'} built at ${output}`,
+  `[INFO] ${selfTest ? 'unsigned tunnel broker self-test' : 'signed tunnel broker bundle'} built at ${selfTest ? output : bundledOutput}`,
 )

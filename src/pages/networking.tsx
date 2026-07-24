@@ -8,6 +8,11 @@ import {
   Card,
   CardContent,
   Chip,
+  FormControl,
+  FormHelperText,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   Typography,
 } from '@mui/material'
@@ -20,18 +25,21 @@ import {
   disconnectNetworking,
   getNetworkingDiagnostics,
   getNetworkingStatus,
-  getRouteHelperRegistrationStatus,
+  getPrivilegedNetworkingServicesStatus,
   initializeNetworking,
+  listNetworkingPolicyVariants,
   listNetworkingSites,
   openRouteHelperSystemSettings,
-  registerRouteHelperService,
-  unregisterRouteHelperService,
+  registerPrivilegedNetworkingServices,
+  selectNetworkingPolicyVariant,
+  unregisterPrivilegedNetworkingServices,
 } from '@/services/cmds'
 import type {
   NetworkErrorCode,
+  PrivilegedNetworkingServicesStatus,
   ProductionNetworkStatus,
+  ProductionPolicyCatalogView,
   ProductionSiteSummary,
-  RouteHelperRegistrationStatus,
 } from '@/types/networking'
 
 const pollingStates = new Set([
@@ -118,8 +126,10 @@ const NetworkingPage = () => {
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [diagnosticCount, setDiagnosticCount] = useState(0)
-  const [helperStatus, setHelperStatus] =
-    useState<RouteHelperRegistrationStatus>('unknown')
+  const [servicesStatus, setServicesStatus] =
+    useState<PrivilegedNetworkingServicesStatus>()
+  const [policyCatalog, setPolicyCatalog] =
+    useState<ProductionPolicyCatalogView>()
 
   const run = useCallback(
     async (action: () => Promise<ProductionNetworkStatus>) => {
@@ -142,12 +152,12 @@ const NetworkingPage = () => {
   )
 
   const refresh = useCallback(() => run(getNetworkingStatus), [run])
-  const refreshHelper = useCallback(async () => {
+  const refreshServices = useCallback(async () => {
     try {
-      setHelperStatus(await getRouteHelperRegistrationStatus())
+      setServicesStatus(await getPrivilegedNetworkingServicesStatus())
     } catch (reason) {
       setError(formatNetworkError(reason))
-      setHelperStatus('unknown')
+      setServicesStatus(undefined)
     }
   }, [])
   // Initialization verifies only the signed app-owned policy and registers a
@@ -157,12 +167,13 @@ const NetworkingPage = () => {
     () =>
       void run(async () => {
         const initialized = await initializeNetworking()
+        setPolicyCatalog(await listNetworkingPolicyVariants())
         setSites(await listNetworkingSites())
         return initialized
       }),
     [run],
   )
-  useEffect(() => void refreshHelper(), [refreshHelper])
+  useEffect(() => void refreshServices(), [refreshServices])
 
   useEffect(() => {
     if (!status || !pollingStates.has(status.state)) return
@@ -175,6 +186,9 @@ const NetworkingPage = () => {
   }, [status])
 
   const isTransitioning = status ? cancellableStates.has(status.state) : false
+  const selectedVariant = policyCatalog?.variants.find(
+    (variant) => variant.catalog_id === policyCatalog.selected_catalog_id,
+  )
   return (
     <BasePage
       title="KyClash Network"
@@ -196,57 +210,88 @@ const NetworkingPage = () => {
         <Card variant="outlined">
           <CardContent>
             <Stack spacing={1.5}>
-              <Typography variant="h6">Private route permission</Typography>
+              <Typography variant="h6">
+                Production networking permission
+              </Typography>
               <Alert severity="info">
-                KyClash uses a signed, narrowly scoped macOS helper only to
-                discover, apply, and roll back the private CIDRs shown for this
-                site. It cannot run shell commands, change DNS, or take over a
-                default route. Registration happens only when you choose Enable.
+                KyClash uses two signed, narrowly scoped macOS services. The
+                tunnel broker owns the exact sidecar and utun generation; the
+                route helper discovers, applies, and rolls back only the private
+                CIDRs shown for this site. Neither service can run arbitrary
+                shell commands, change DNS, or take over a default route.
+                Registration happens only when you choose Enable.
               </Alert>
-              <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-                <Chip label={`Helper: ${helperStatus}`} variant="outlined" />
+              <Stack
+                direction="row"
+                spacing={1}
+                useFlexGap
+                sx={{ alignItems: 'center', flexWrap: 'wrap' }}
+              >
+                <Chip
+                  label={`Route helper: ${servicesStatus?.route_helper ?? 'unknown'}`}
+                  variant="outlined"
+                />
+                <Chip
+                  label={`Tunnel broker: ${servicesStatus?.tunnel_broker ?? 'unknown'}`}
+                  variant="outlined"
+                />
                 <Button
-                  disabled={busy || helperStatus === 'enabled'}
+                  disabled={busy || servicesStatus?.ready === true}
                   onClick={() => {
                     setBusy(true)
-                    void registerRouteHelperService()
-                      .then(setHelperStatus)
+                    setError(undefined)
+                    void registerPrivilegedNetworkingServices()
+                      .then(setServicesStatus)
                       .catch((reason: unknown) =>
                         setError(formatNetworkError(reason)),
                       )
-                      .finally(() => setBusy(false))
+                      .finally(() => {
+                        setBusy(false)
+                        void refreshServices()
+                      })
                   }}
                 >
                   Enable
                 </Button>
                 <Button
-                  disabled={busy || helperStatus === 'not_registered'}
+                  disabled={
+                    busy ||
+                    !servicesStatus ||
+                    (servicesStatus.route_helper === 'not_registered' &&
+                      servicesStatus.tunnel_broker === 'not_registered')
+                  }
                   onClick={() => {
                     setBusy(true)
-                    void unregisterRouteHelperService()
-                      .then(setHelperStatus)
+                    setError(undefined)
+                    void unregisterPrivilegedNetworkingServices()
+                      .then(setServicesStatus)
                       .catch((reason: unknown) =>
                         setError(formatNetworkError(reason)),
                       )
-                      .finally(() => setBusy(false))
+                      .finally(() => {
+                        setBusy(false)
+                        void refreshServices()
+                      })
                   }}
                 >
                   Disable
                 </Button>
-                {helperStatus === 'requires_approval' && (
+                {(servicesStatus?.route_helper === 'requires_approval' ||
+                  servicesStatus?.tunnel_broker === 'requires_approval') && (
                   <Button onClick={() => void openRouteHelperSystemSettings()}>
                     Open System Settings
                   </Button>
                 )}
-                <Button disabled={busy} onClick={() => void refreshHelper()}>
+                <Button disabled={busy} onClick={() => void refreshServices()}>
                   Refresh permission
                 </Button>
               </Stack>
-              {helperStatus === 'not_found' && (
+              {(servicesStatus?.route_helper === 'not_found' ||
+                servicesStatus?.tunnel_broker === 'not_found') && (
                 <Alert severity="warning">
-                  The signed route helper is not available in this App. Connect
-                  remains disabled; this build cannot claim a real utun or
-                  private routes.
+                  One or both signed networking services are not available in
+                  this App. Connect remains disabled; this build cannot claim a
+                  production utun or private routes.
                 </Alert>
               )}
             </Stack>
@@ -259,6 +304,66 @@ const NetworkingPage = () => {
                 {status?.site.display_name ?? 'No configured site'}
               </Typography>
               <Typography color="text.secondary">{status?.site.id}</Typography>
+              <FormControl
+                disabled={
+                  busy ||
+                  !status ||
+                  status.state !== 'disconnected' ||
+                  !policyCatalog
+                }
+                fullWidth
+              >
+                <InputLabel id="network-policy-variant-label">
+                  Signed route policy
+                </InputLabel>
+                <Select
+                  label="Signed route policy"
+                  labelId="network-policy-variant-label"
+                  value={policyCatalog?.selected_catalog_id ?? ''}
+                  onChange={(event) => {
+                    const variant = policyCatalog?.variants.find(
+                      (candidate) =>
+                        candidate.catalog_id === event.target.value,
+                    )
+                    if (!variant) {
+                      setError(networkErrorLabel.invalid_configuration)
+                      return
+                    }
+                    setBusy(true)
+                    setError(undefined)
+                    void selectNetworkingPolicyVariant(variant.catalog_id)
+                      .then(async (catalog) => {
+                        setPolicyCatalog(catalog)
+                        setStatus(await getNetworkingStatus())
+                        setSites(await listNetworkingSites())
+                      })
+                      .catch((reason: unknown) =>
+                        setError(formatNetworkError(reason)),
+                      )
+                      .finally(() => setBusy(false))
+                  }}
+                >
+                  {policyCatalog?.variants.map((variant) => (
+                    <MenuItem
+                      key={variant.catalog_id}
+                      value={variant.catalog_id}
+                    >
+                      {variant.display_name} —{' '}
+                      {variant.private_cidrs.join(', ')}
+                    </MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText>
+                  Only individually verified, pre-signed route variants are
+                  available. Selection is disabled while connected.
+                </FormHelperText>
+              </FormControl>
+              {selectedVariant && (
+                <Typography color="text.secondary" variant="caption">
+                  Policy revision {selectedVariant.revision}; profile digest{' '}
+                  {selectedVariant.profile_sha256.slice(0, 12)}…
+                </Typography>
+              )}
               <Stack
                 direction="row"
                 spacing={1}
@@ -298,7 +403,7 @@ const NetworkingPage = () => {
                 <Button
                   disabled={
                     busy ||
-                    helperStatus !== 'enabled' ||
+                    servicesStatus?.ready !== true ||
                     status?.state !== 'disconnected'
                   }
                   onClick={() => void run(connectNetworking)}

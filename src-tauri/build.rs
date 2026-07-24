@@ -7,7 +7,8 @@ fn main() {
         all(
             feature = "networking-system-lab",
             not(feature = "networking-production"),
-            not(feature = "networking-userspace-lab-app")
+            not(feature = "networking-userspace-lab-app"),
+            not(feature = "networking-vm-external-peer-lab-app")
         )
     ))]
     {
@@ -20,7 +21,8 @@ fn main() {
         all(
             feature = "networking-system-lab",
             not(feature = "networking-production"),
-            not(feature = "networking-userspace-lab-app")
+            not(feature = "networking-userspace-lab-app"),
+            not(feature = "networking-vm-external-peer-lab-app")
         )
     )))]
     tauri_build::build();
@@ -37,11 +39,16 @@ fn build_route_helper_registration() {
     let sources = [
         std::path::Path::new("../macos/route-helper/registration.m"),
         std::path::Path::new("../macos/route-helper/client.m"),
+        // Keep the broker-bound v3 client in the same production-only archive;
+        // the production factory still constructs it only after explicit
+        // Connect and after the broker has issued its bound session receipt.
+        std::path::Path::new("../macos/route-helper/client-v3.m"),
         std::path::Path::new("../macos/tunnel-broker/client.m"),
     ];
     let objects = [
         output.join("kyclash-route-helper-registration.o"),
         output.join("kyclash-route-helper-client.o"),
+        output.join("kyclash-route-helper-client-v3.o"),
         output.join("kyclash-tunnel-broker-client.o"),
     ];
     let archive = output.join("libkyclash_route_helper_registration.a");
@@ -78,4 +85,5 @@ fn build_route_helper_registration() {
     println!("cargo:rustc-link-lib=static=kyclash_route_helper_registration");
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=ServiceManagement");
+    println!("cargo:rustc-link-lib=framework=Security");
 }
