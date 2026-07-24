@@ -115,14 +115,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/binary-manifest-v1-native
-          find build/binary-manifest-v1-native \
-            -maxdepth 1 \
-            -type f \
-            ! -name evidence.sha256 \
-            -print0 |
-            sort -z |
-            xargs -0 -r sha256sum \
-              >build/binary-manifest-v1-native/evidence.sha256
+          (
+            cd build/binary-manifest-v1-native
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name evidence.sha256 \
+              -print0 |
+              sort -z |
+              xargs -0 -r sha256sum \
+                >evidence.sha256
+          )
 
       - name: Upload native evidence
         if: always()
